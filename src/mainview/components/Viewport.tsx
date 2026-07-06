@@ -4,23 +4,37 @@
 
 import { createSignal, onCleanup, onMount } from "solid-js";
 import type { Rect } from "../../shared/shellRpc";
-import { notifyViewportReady, reportUiEvent } from "../shell";
+import { notifyViewportReady, notifyViewportResized, reportUiEvent } from "../shell";
 
 export function Viewport() {
 	const [status, setStatus] = createSignal("waiting for native viewport");
 	let element: WgpuTagElement | undefined;
+	let viewId: number | undefined;
 
 	onMount(() => {
 		let attached = false;
 		let disposed = false;
+		let resizeScheduled = false;
 		const handleReady = (event: CustomEvent<{ id: number }>) => {
 			void announce(event.detail.id);
 		};
 
 		void attach();
 
-		// Keep the native surface aligned with the DOM element as the panel resizes.
-		const observer = new ResizeObserver(() => element?.syncDimensions?.(true));
+		// Keep the native child window (and its Vulkan swapchain) aligned with the
+		// DOM pane as the window and panel resize.
+		const observer = new ResizeObserver(() => {
+			if (viewId === undefined || element === undefined || resizeScheduled) {
+				return;
+			}
+			resizeScheduled = true;
+			requestAnimationFrame(() => {
+				resizeScheduled = false;
+				if (viewId !== undefined && element !== undefined) {
+					void notifyViewportResized(viewId, rectOf(element));
+				}
+			});
+		});
 		if (element) observer.observe(element);
 
 		onCleanup(() => {
@@ -47,6 +61,14 @@ export function Viewport() {
 			if (element === undefined) {
 				return;
 			}
+			// Let flex layout settle so the reported rect is the full pane, not a
+			// transient size — the native window is sized to this rect.
+			await nextFrame();
+			await nextFrame();
+			if (disposed || element === undefined) {
+				return;
+			}
+			viewId = id;
 			setStatus(`native view ${id}`);
 			try {
 				const result = await notifyViewportReady(id, rectOf(element));
@@ -60,7 +82,11 @@ export function Viewport() {
 
 	return (
 		<div class="relative min-w-0 flex-1 bg-black">
-			<electrobun-wgpu id="native-viewport" class="h-full w-full" ref={(el) => (element = el as WgpuTagElement)} />
+			<electrobun-wgpu
+				id="native-viewport"
+				class="absolute inset-0 h-full w-full"
+				ref={(el) => (element = el as WgpuTagElement)}
+			/>
 			<div class="pointer-events-none absolute bottom-3 right-3 rounded-md bg-black/40 px-2 py-1 font-mono text-[11px] text-muted-foreground">
 				{status()}
 			</div>
@@ -71,4 +97,8 @@ export function Viewport() {
 function rectOf(element: HTMLElement): Rect {
 	const rect = element.getBoundingClientRect();
 	return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+}
+
+function nextFrame(): Promise<void> {
+	return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }

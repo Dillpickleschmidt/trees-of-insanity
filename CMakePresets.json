@@ -20,6 +20,17 @@
         "CMAKE_BUILD_TYPE": "Release",
         "TOI_BUILD_TESTS": "ON"
       }
+    },
+    {
+      "name": "desktop",
+      "displayName": "Desktop (native viewport)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/desktop",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "TOI_BUILD_TESTS": "ON",
+        "TOI_ENABLE_VIEWPORT": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -30,6 +41,10 @@
     {
       "name": "release-core",
       "configurePreset": "release-core"
+    },
+    {
+      "name": "desktop",
+      "configurePreset": "desktop"
     }
   ],
   "testPresets": [

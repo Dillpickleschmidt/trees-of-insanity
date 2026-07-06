@@ -24,6 +24,14 @@ export type NativeCoreOptions = {
 	prototypeAssetPath?: string;
 };
 
+export type ViewportAttachResult = {
+	ok: boolean;
+	error?: string;
+	device?: string;
+	width?: number;
+	height?: number;
+};
+
 export class NativeCoreCommandError extends Error {
 	readonly code: string | undefined;
 
@@ -63,12 +71,7 @@ export class NativeCore {
 		}
 		const requestBuf = cString(JSON.stringify(req));
 		const resultPtr = lib().symbols.toi_handle_command(this.#handle, requestBuf);
-		if (resultPtr === null) {
-			throw new Error("toi_handle_command returned null");
-		}
-		const text = new CString(resultPtr).toString();
-		lib().symbols.toi_free_string(resultPtr);
-		return JSON.parse(text) as CommandResponse;
+		return JSON.parse(readCoreString(resultPtr)) as CommandResponse;
 	}
 
 	// Typed convenience: issues one command and returns its result, throwing a
@@ -79,6 +82,25 @@ export class NativeCore {
 			throw new NativeCoreCommandError(response.error, response.code);
 		}
 		return response.result;
+	}
+
+	// Attach the Vulkan viewport to the shell's native X11 window (XID) and start
+	// its present loop. Only functional when the core is built with viewport
+	// support (desktop preset); otherwise the result reports ok:false.
+	attachX11Viewport(xWindow: number, width: number, height: number): ViewportAttachResult {
+		if (this.#closed) {
+			throw new Error("native core is closed");
+		}
+		const resultPtr = lib().symbols.toi_attach_x11_viewport(this.#handle, xWindow, Math.round(width), Math.round(height));
+		return JSON.parse(readCoreString(resultPtr)) as ViewportAttachResult;
+	}
+
+	detachViewport(): void {
+		if (this.#closed) {
+			return;
+		}
+		const resultPtr = lib().symbols.toi_detach_viewport(this.#handle);
+		readCoreString(resultPtr);
 	}
 
 	close(): void {
@@ -106,17 +128,24 @@ function openLibrary() {
 		toi_handle_command: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
 		toi_last_error_json: { args: [], returns: FFIType.ptr },
 		toi_free_string: { args: [FFIType.ptr], returns: FFIType.void },
+		toi_attach_x11_viewport: { args: [FFIType.ptr, FFIType.u64, FFIType.i32, FFIType.i32], returns: FFIType.ptr },
+		toi_detach_viewport: { args: [FFIType.ptr], returns: FFIType.ptr },
 	});
+}
+
+// Reads a heap-allocated C string returned by the core and releases it.
+function readCoreString(resultPtr: Pointer | null): string {
+	if (resultPtr === null) {
+		throw new Error("native core returned a null string");
+	}
+	const text = new CString(resultPtr).toString();
+	lib().symbols.toi_free_string(resultPtr);
+	return text;
 }
 
 function lastErrorJson(): string {
 	const ptr = lib().symbols.toi_last_error_json();
-	if (ptr === null) {
-		return '{"ok":false,"error":"no error information"}';
-	}
-	const text = new CString(ptr).toString();
-	lib().symbols.toi_free_string(ptr);
-	return text;
+	return ptr === null ? '{"ok":false,"error":"no error information"}' : readCoreString(ptr);
 }
 
 // NUL-terminated UTF-8 buffer. Bun pins the TypedArray for the duration of the
@@ -148,6 +177,8 @@ export function resolveNativeCorePath(): string {
 
 	const fileName = `libtoi_native_core.${suffix}`;
 	const relative = [
+		join("build", "desktop", fileName), // dev/run: native viewport enabled
+		join("build", "release-desktop", fileName),
 		join("build", "release-core", fileName),
 		join("build", "core", fileName),
 		fileName, // packaged: next to the bun executable

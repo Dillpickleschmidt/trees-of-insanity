@@ -15,6 +15,10 @@
 
 #include <nlohmann/json.hpp>
 
+#ifdef TOI_ENABLE_VIEWPORT
+#include "toi/viewport/viewport_session.hpp"
+#endif
+
 struct ToiNativeCore {
     explicit ToiNativeCore(toi::app::ApplicationController controller)
         : controller(std::move(controller))
@@ -22,6 +26,9 @@ struct ToiNativeCore {
     }
 
     toi::app::ApplicationController controller;
+#ifdef TOI_ENABLE_VIEWPORT
+    std::unique_ptr<toi::viewport::ViewportSession> viewport;
+#endif
 };
 
 namespace {
@@ -152,4 +159,46 @@ extern "C" char* toi_last_error_json()
 extern "C" void toi_free_string(char* value)
 {
     std::free(value);
+}
+
+extern "C" char* toi_attach_x11_viewport(ToiNativeCore* core, unsigned long x_window, int width, int height)
+{
+    if (core == nullptr) {
+        return copy_json_string(json{{"ok", false}, {"error", "native core handle is null"}}.dump());
+    }
+#ifdef TOI_ENABLE_VIEWPORT
+    try {
+        auto session = toi::viewport::ViewportSession::attach(x_window, width, height);
+        if (!session) {
+            return copy_json_string(json{{"ok", false}, {"error", session.error().message}}.dump());
+        }
+        core->viewport = std::move(*session);
+        const auto& info = core->viewport->info();
+        return copy_json_string(json{{"ok", true},
+                                     {"device", info.device_name},
+                                     {"width", info.width},
+                                     {"height", info.height}}
+                                    .dump());
+    } catch (const std::exception& error) {
+        return copy_json_string(json{{"ok", false}, {"error", error.what()}}.dump());
+    }
+#else
+    (void)x_window;
+    (void)width;
+    (void)height;
+    return copy_json_string(json{{"ok", false}, {"error", "viewport support not built in this core"}}.dump());
+#endif
+}
+
+extern "C" char* toi_detach_viewport(ToiNativeCore* core)
+{
+    if (core == nullptr) {
+        return copy_json_string(json{{"ok", false}, {"error", "native core handle is null"}}.dump());
+    }
+#ifdef TOI_ENABLE_VIEWPORT
+    core->viewport.reset();
+    return copy_json_string(json{{"ok", true}}.dump());
+#else
+    return copy_json_string(json{{"ok", false}, {"error", "viewport support not built in this core"}}.dump());
+#endif
 }
