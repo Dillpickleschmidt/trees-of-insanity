@@ -125,6 +125,18 @@ function cString(value: string): Uint8Array {
 	return new TextEncoder().encode(`${value}\0`);
 }
 
+// Default core options for dev/run: writable project file at the repo root and
+// bundled assets from the repo tree. Overridable via env for packaging.
+export function defaultNativeCoreOptions(): NativeCoreOptions {
+	const root = findRepoRoot(process.cwd()) ?? findRepoRoot(import.meta.dir) ?? process.cwd();
+	return {
+		projectPath: process.env.TOI_PROJECT_PATH ?? join(root, "toi.project.json"),
+		assetRootPath: process.env.TOI_ASSET_ROOT ?? join(root, "assets"),
+		prototypeAssetPath:
+			process.env.TOI_PROTOTYPE_ASSET ?? join(root, "assets", "prototypes", "TOI_Module_Prototypes.obj"),
+	};
+}
+
 export function resolveNativeCorePath(): string {
 	const override = process.env.TOI_NATIVE_CORE_LIB;
 	if (override) {

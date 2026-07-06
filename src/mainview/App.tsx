@@ -1,6 +1,8 @@
 import { Electroview } from "electrobun/view";
-import { createSignal, onCleanup, onMount } from "solid-js";
+import { createSignal, onCleanup, onMount, Show } from "solid-js";
+import type { AppState } from "../shared/appCommands";
 import type { Rect, ShellRpcSchema } from "../shared/shellRpc";
+import { createAppClient } from "./appClient";
 
 const rpc = Electroview.defineRPC<ShellRpcSchema>({
 	maxRequestTime: 10_000,
@@ -14,8 +16,12 @@ const electrobun = new Electroview({ rpc });
 void electrobun;
 void reportUiEvent("module-loaded");
 
+const appClient = createAppClient((request) => rpc.request.appCommand(request));
+
 export function App() {
 	const [viewportStatus, setViewportStatus] = createSignal("waiting for native viewport");
+	const [appState, setAppState] = createSignal<AppState>();
+	const [stateError, setStateError] = createSignal<string>();
 	let viewportElement: WgpuTagElement | undefined;
 
 	onMount(() => {
@@ -26,6 +32,7 @@ export function App() {
 		};
 
 		reportUiEvent("app-mounted");
+		void loadAppState();
 		void attachViewportReadyListener();
 
 		onCleanup(() => {
@@ -49,6 +56,21 @@ export function App() {
 			}
 		}
 	});
+
+	async function loadAppState() {
+		try {
+			const state = await appClient.command("app.get_state");
+			setAppState(state);
+			reportUiEvent("app-state-loaded", {
+				active_workspace: state.active_workspace,
+				prototypes: state.prototypes.length,
+				plant_types: state.plant_types.length,
+			});
+		} catch (error) {
+			setStateError(String(error));
+			reportUiEvent("app-state-failed", { message: String(error) });
+		}
+	}
 
 	async function notifyViewportReady(id: number) {
 		reportUiEvent("viewport-ready-callback", { id });
@@ -78,6 +100,31 @@ export function App() {
 				<section class="mt-8 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
 					<h2 class="text-sm font-medium text-zinc-200">Viewport</h2>
 					<p class="mt-2 text-sm text-zinc-400">{viewportStatus()}</p>
+				</section>
+
+				<section class="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
+					<h2 class="text-sm font-medium text-zinc-200">Native core</h2>
+					<Show
+						when={appState()}
+						fallback={<p class="mt-2 text-sm text-zinc-400">{stateError() ?? "loading application state…"}</p>}
+					>
+						{(state) => (
+							<dl class="mt-2 space-y-1 text-sm text-zinc-400">
+								<div class="flex justify-between">
+									<dt>Workspace</dt>
+									<dd class="text-zinc-200">{state().active_workspace}</dd>
+								</div>
+								<div class="flex justify-between">
+									<dt>Prototypes</dt>
+									<dd class="text-zinc-200">{state().prototypes.length}</dd>
+								</div>
+								<div class="flex justify-between">
+									<dt>Plant types</dt>
+									<dd class="text-zinc-200">{state().plant_types.length}</dd>
+								</div>
+							</dl>
+						)}
+					</Show>
 				</section>
 			</aside>
 

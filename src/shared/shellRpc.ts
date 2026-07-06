@@ -1,4 +1,5 @@
 import type { RPCSchema } from "electrobun/bun";
+import type { CommandRequest, CommandResponse } from "./appCommands";
 
 export type Rect = {
 	x: number;
@@ -6,6 +7,9 @@ export type Rect = {
 	width: number;
 	height: number;
 };
+
+export type AppCommandParams = CommandRequest;
+export type AppCommandResult = CommandResponse;
 
 export type ViewportReadyParams = {
 	id: number;
@@ -40,6 +44,10 @@ export type ShellRpcSchema = {
 			uiEvent: {
 				params: UiEventParams;
 				response: UiEventResult;
+			};
+			appCommand: {
+				params: AppCommandParams;
+				response: AppCommandResult;
 			};
 		};
 		messages: EmptyMessages;

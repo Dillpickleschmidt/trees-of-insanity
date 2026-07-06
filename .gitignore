@@ -6,3 +6,5 @@ artifacts/
 *.log
 .env
 .env.*
+toi.project.json
+*.toi.project.json

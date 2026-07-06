@@ -1,7 +1,9 @@
 import { BrowserView, BrowserWindow, Updater, WGPUView } from "electrobun/bun";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import type { AppCommandParams, AppCommandResult } from "../shared/shellRpc";
 import type { ShellRpcSchema, UiEventParams, UiEventResult, ViewportReadyParams, ViewportReadyResult } from "../shared/shellRpc";
+import { defaultNativeCoreOptions, NativeCore } from "./nativeCore";
 
 const DEV_SERVER_PORT = 5173;
 const DEV_SERVER_URL = `http://127.0.0.1:${DEV_SERVER_PORT}`;
@@ -10,6 +12,8 @@ const USE_DEV_SERVER = process.env.TOI_USE_VITE_DEV_SERVER === "1";
 let mainWindow: BrowserWindow | undefined;
 
 writeAutomationEvent("main-starting");
+
+const core = openNativeCore();
 
 process.on("uncaughtException", (error) => {
 	writeAutomationEvent("uncaught-exception", { message: error.message, stack: error.stack });
@@ -25,6 +29,18 @@ const rpc = BrowserView.defineRPC<ShellRpcSchema>({
 			uiEvent: ({ type, data }: UiEventParams): UiEventResult => {
 				writeAutomationEvent(`ui:${type}`, data);
 				return { ok: true };
+			},
+			appCommand: (request: AppCommandParams): AppCommandResult => {
+				const id = request.id ?? null;
+				if (core === undefined) {
+					return { id, ok: false, error: "native core unavailable" };
+				}
+				try {
+					return core.request(request);
+				} catch (error) {
+					writeAutomationEvent("app-command-failed", { method: request.method, message: String(error) });
+					return { id, ok: false, error: String(error) };
+				}
 			},
 			viewportReady: ({ id, rect }: ViewportReadyParams): ViewportReadyResult => {
 				const view = WGPUView.getById(id) ?? WGPUView.adoptExisting(id, {
@@ -71,6 +87,25 @@ mainWindow.webview.on("dom-ready", () => {
 
 console.log("Trees of Insanity shell started");
 writeAutomationEvent("main-started");
+
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+	process.on(signal, () => {
+		core?.close();
+		process.exit(0);
+	});
+}
+
+function openNativeCore(): NativeCore | undefined {
+	try {
+		const core = NativeCore.open(defaultNativeCoreOptions());
+		writeAutomationEvent("native-core-ready");
+		return core;
+	} catch (error) {
+		console.error("failed to open native core:", error);
+		writeAutomationEvent("native-core-failed", { message: String(error) });
+		return undefined;
+	}
+}
 
 function writeAutomationEvent(type: string, data: Record<string, unknown> = {}) {
 	const reportPath = process.env.TOI_AUTOMATION_REPORT;
