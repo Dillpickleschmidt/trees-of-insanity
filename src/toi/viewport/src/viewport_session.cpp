@@ -391,41 +391,6 @@ void ViewportSession::set_guide_options(bool guides_visible, bool world_origin_a
     world_origin_axes_visible_ = world_origin_axes_visible;
 }
 
-void ViewportSession::orbit_camera(float azimuth_delta_radians, float elevation_delta_radians)
-{
-    std::lock_guard<std::mutex> lock(camera_mutex_);
-    if (!orbit_initialized_) {
-        if (!has_base_camera_) {
-            return;
-        }
-        orbit_ = render::orbit_view_from_camera(base_camera_);
-        orbit_initialized_ = true;
-    }
-    orbit_ = render::rotate_orbit_view(orbit_, azimuth_delta_radians, elevation_delta_radians);
-    orbit_dirty_ = true;
-}
-
-void ViewportSession::dolly_camera(float radius_multiplier)
-{
-    std::lock_guard<std::mutex> lock(camera_mutex_);
-    if (!orbit_initialized_) {
-        if (!has_base_camera_) {
-            return;
-        }
-        orbit_ = render::orbit_view_from_camera(base_camera_);
-        orbit_initialized_ = true;
-    }
-    orbit_ = render::dolly_orbit_view(orbit_, radius_multiplier);
-    orbit_dirty_ = true;
-}
-
-void ViewportSession::reset_camera()
-{
-    std::lock_guard<std::mutex> lock(camera_mutex_);
-    orbit_initialized_ = false;
-    orbit_dirty_ = true;
-}
-
 // Poll the pointer against the viewport window: left drag orbits, right drag
 // dollies. Polling (not events) sidesteps the shell's input routing.
 void ViewportSession::poll_pointer()
@@ -452,10 +417,19 @@ void ViewportSession::poll_pointer()
     if ((left || right) && last_dragging_) {
         const int dx = win_x - last_pointer_x_;
         const int dy = win_y - last_pointer_y_;
-        if (left) {
-            orbit_camera(static_cast<float>(-dx) * 0.006F, static_cast<float>(dy) * 0.006F);
-        } else {
-            dolly_camera(1.0F + static_cast<float>(dy) * 0.004F);
+        std::lock_guard<std::mutex> lock(camera_mutex_);
+        if (!orbit_initialized_ && has_base_camera_) {
+            orbit_ = render::orbit_view_from_camera(base_camera_);
+            orbit_initialized_ = true;
+        }
+        if (orbit_initialized_) {
+            if (left) {
+                orbit_ = render::rotate_orbit_view(orbit_, static_cast<float>(-dx) * 0.006F,
+                                                   static_cast<float>(dy) * 0.006F);
+            } else {
+                orbit_ = render::dolly_orbit_view(orbit_, 1.0F + static_cast<float>(dy) * 0.004F);
+            }
+            orbit_dirty_ = true;
         }
     }
     last_dragging_ = left || right;

@@ -177,12 +177,6 @@ export type CommandMap = {
 	};
 	"viewport.get_preferences": { params: NoParams; result: ViewportPreferencesView };
 	"viewport.set_preferences": { params: Partial<ViewportPreferences>; result: NoParams };
-	"viewport.orbit_camera": {
-		params: { azimuth_delta_radians: number; elevation_delta_radians: number };
-		result: NoParams;
-	};
-	"viewport.dolly_camera": { params: { radius_multiplier: number }; result: NoParams };
-	"viewport.reset_camera": { params: NoParams; result: NoParams };
 };
 
 export type CommandMethod = keyof CommandMap;

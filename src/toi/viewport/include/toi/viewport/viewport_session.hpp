@@ -50,11 +50,6 @@ public:
     // command thread when a preview-changing command runs).
     void set_pending_stage(render::GrowthPreviewStageProjection stage);
     void set_guide_options(bool guides_visible, bool world_origin_axes_visible);
-
-    // Camera interaction (also driven by pointer polling on the render thread).
-    void orbit_camera(float azimuth_delta_radians, float elevation_delta_radians);
-    void dolly_camera(float radius_multiplier);
-    void reset_camera();
 #endif
 
 private:
