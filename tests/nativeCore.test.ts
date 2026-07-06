@@ -38,7 +38,16 @@ test("plant type create/update/delete mutates the library", () => {
 	const created = core.command("plant_types.create", { name: "Test Fir", preset_key: "c" });
 	expect(created.name).toBe("Test Fir");
 
-	core.command("plant_types.update", { plant_type_id: created.id, name: "Renamed Fir" });
+	const fetched = core.command("plant_types.get", { plant_type_id: created.id });
+	expect(fetched.parameters).toEqual(created.parameters);
+
+	core.command("plant_types.update", {
+		plant_type_id: created.id,
+		name: "Renamed Fir",
+		parameters: { tropism_strength: 0.5 },
+	});
+	const reFetched = core.command("plant_types.get", { plant_type_id: created.id });
+	expect(reFetched.parameters.tropism_strength).toBeCloseTo(0.5);
 	const list = core.command("plant_types.list");
 	expect(list.find((entry) => entry.id === created.id)?.name).toBe("Renamed Fir");
 

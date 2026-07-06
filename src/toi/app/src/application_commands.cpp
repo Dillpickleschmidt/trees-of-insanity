@@ -423,6 +423,10 @@ json handle_application_command(ApplicationController& controller, const json& r
                 return response_error(id, state.error());
             return response_ok(id, to_json(*state).at("plant_types"));
         }
+        if (method == "plant_types.get") {
+            auto plant_type = controller.plant_type(json_string(params, "plant_type_id"));
+            return plant_type ? response_ok(id, to_json(*plant_type)) : response_error(id, plant_type.error());
+        }
         if (method == "plant_types.create") {
             auto plant_type = controller.create_plant_type(json_string(params, "name"), plant_type_preset_key(params));
             return plant_type ? response_ok(id, to_json(*plant_type)) : response_error(id, plant_type.error());

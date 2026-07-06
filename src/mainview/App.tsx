@@ -1,158 +1,427 @@
-import { Electroview } from "electrobun/view";
-import { createSignal, onCleanup, onMount, Show } from "solid-js";
-import type { AppState } from "../shared/appCommands";
-import type { Rect, ShellRpcSchema } from "../shared/shellRpc";
-import { createAppClient } from "./appClient";
+import { TriangleAlert } from "lucide-solid";
+import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from "solid-js";
 
-const rpc = Electroview.defineRPC<ShellRpcSchema>({
-	maxRequestTime: 10_000,
-	handlers: {
-		requests: {},
-		messages: {},
-	},
-});
+import { PlantTypesDialog } from "~/components/PlantTypesDialog";
+import { Field, PlantTypeOption, PrototypeOption, Readout, Section } from "~/components/panelPrimitives";
+import { PrototypeTreeView } from "~/components/PrototypeTree";
+import { ResizeHandle } from "~/components/ResizeHandle";
+import { TopBar } from "~/components/TopBar";
+import { Select, SelectContent, SelectItem, SelectTrigger } from "~/components/ui/select";
+import { Slider } from "~/components/ui/slider";
+import { Viewport } from "~/components/Viewport";
+import { appClient, reportUiEvent } from "~/shell";
+import type { AppState, GrowthSnapshotSummary, PlantTypeSummary, PrototypeSummary, PrototypeTree } from "~/types";
+import {
+	type ColorTheme,
+	colorThemes,
+	type PlantTypePresetKey,
+	plantTypePresetLabel,
+	type StatusTone,
+	storedTheme,
+	type UiTheme,
+	uiThemes,
+} from "~/uiOptions";
 
-const electrobun = new Electroview({ rpc });
-void electrobun;
-void reportUiEvent("module-loaded");
+const ageSubmitDelayMs = 33;
+const minPanelWidth = 320;
+const maxPanelWidth = 720;
 
-const appClient = createAppClient((request) => rpc.request.appCommand(request));
+const initialState: AppState = {
+	active_workspace: "module",
+	workspace_previews: [
+		{ workspace: "plant", implemented: false },
+		{ workspace: "ecosystem", implemented: false },
+	],
+	prototypes: [],
+	active_prototype_id: 0,
+	plant_types: [],
+	active_plant_type_id: "",
+	module_physiological_age: 0,
+	fully_grown_age: 0,
+	plant_type_parameter_descriptors: [],
+};
+
+const initialSummary: GrowthSnapshotSummary = {
+	module_physiological_age: 0,
+	growth_rate: 0,
+	visible_segment_count: 0,
+	growing_segment_count: 0,
+	mature_segment_count: 0,
+	max_diameter: 0,
+};
+
+function formatNumber(value: number, digits = 3) {
+	if (!Number.isFinite(value)) return "—";
+	return value.toFixed(digits);
+}
 
 export function App() {
-	const [viewportStatus, setViewportStatus] = createSignal("waiting for native viewport");
-	const [appState, setAppState] = createSignal<AppState>();
-	const [stateError, setStateError] = createSignal<string>();
-	let viewportElement: WgpuTagElement | undefined;
+	const [state, setState] = createSignal(initialState);
+	const [tree, setTree] = createSignal<PrototypeTree | null>(null);
+	const [summary, setSummary] = createSignal(initialSummary);
+	const [status, setStatus] = createSignal("Starting");
+	const [error, setError] = createSignal<string | null>(null);
+	const [busy, setBusy] = createSignal(false);
+	const [showPlantTypes, setShowPlantTypes] = createSignal(false);
+	const [newPlantTypeName, setNewPlantTypeName] = createSignal("");
+	const [newPlantTypePresetKey, setNewPlantTypePresetKey] = createSignal<PlantTypePresetKey>("o");
+	const [uiTheme, setUiTheme] = createSignal<UiTheme>(storedTheme("toi.uiTheme", "system", uiThemes));
+	const [colorTheme, setColorTheme] = createSignal<ColorTheme>(storedTheme("toi.colorTheme", "neutral", colorThemes));
+	const [panelWidth, setPanelWidth] = createSignal(384);
+	const [dragSliderValue, setDragSliderValue] = createSignal<number | null>(null);
+	let latestAgeGeneration = 0;
+	let pendingAgeUpdate: { age: number; generation: number } | null = null;
+	let ageRequestInFlight = false;
+	let ageSubmitTimer: number | undefined;
 
-	onMount(() => {
-		let attached = false;
-		let disposed = false;
-		const handleReady = (event: CustomEvent<{ id: number }>) => {
-			void notifyViewportReady(event.detail.id);
-		};
+	const activePrototype = () => state().prototypes.find((prototype) => prototype.id === state().active_prototype_id);
+	const activePlantType = () => state().plant_types.find((plantType) => plantType.id === state().active_plant_type_id);
+	const sliderValue = () => {
+		const dragValue = dragSliderValue();
+		if (dragValue !== null) return dragValue;
 
-		reportUiEvent("app-mounted");
-		void loadAppState();
-		void attachViewportReadyListener();
+		const current = state().module_physiological_age;
+		const max = state().fully_grown_age;
+		if (max <= 0) return 0;
+		return Math.round(Math.max(0, Math.min(1, current / max)) * 1000);
+	};
+	const sliderValues = createMemo<[number]>(() => [sliderValue()]);
+	const isMature = () => {
+		const max = state().fully_grown_age;
+		return max > 0 && state().module_physiological_age >= max - 1e-6;
+	};
+	const ready = () => state().prototypes.length > 0;
 
-		onCleanup(() => {
-			disposed = true;
-			if (attached) {
-				viewportElement?.off("ready", handleReady);
+	const statusTone = (): StatusTone => {
+		if (error() || status() === "Command failed") return "error";
+		if (status() === "Connected") return "live";
+		return "idle";
+	};
+
+	async function refreshAll() {
+		setBusy(true);
+		setError(null);
+		try {
+			const [nextState, nextTree, nextSummary] = await Promise.all([
+				appClient.command("app.get_state"),
+				appClient.command("module.get_prototype_tree"),
+				appClient.command("module.get_growth_snapshot_summary"),
+			]);
+			setState(nextState);
+			setTree(nextTree);
+			setSummary(nextSummary);
+			setStatus("Connected");
+			reportUiEvent("app-state-loaded", {
+				active_workspace: nextState.active_workspace,
+				prototypes: nextState.prototypes.length,
+				plant_types: nextState.plant_types.length,
+			});
+		} catch (caught) {
+			setError(caught instanceof Error ? caught.message : String(caught));
+			setStatus("Command failed");
+			reportUiEvent("app-state-failed", { message: error() ?? "unknown" });
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function runCommand(action: () => Promise<unknown>) {
+		setBusy(true);
+		setError(null);
+		try {
+			await action();
+			await refreshAll();
+		} catch (caught) {
+			setError(caught instanceof Error ? caught.message : String(caught));
+			setStatus("Command failed");
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function createPlantType() {
+		setBusy(true);
+		setError(null);
+		try {
+			const plantType = await appClient.command("plant_types.create", {
+				name: newPlantTypeName().trim(),
+				preset_key: newPlantTypePresetKey(),
+			});
+			await appClient.command("module.set_active_plant_type", { plant_type_id: plantType.id });
+			setNewPlantTypeName("");
+			await refreshAll();
+		} catch (caught) {
+			setError(caught instanceof Error ? caught.message : String(caught));
+			setStatus("Command failed");
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	function selectNewPlantTypePreset(key: PlantTypePresetKey) {
+		setNewPlantTypePresetKey(key);
+		if (newPlantTypeName().trim() === "") {
+			setNewPlantTypeName(plantTypePresetLabel(key));
+		}
+	}
+
+	function moduleAgeFromSliderValue(value: number) {
+		const max = state().fully_grown_age;
+		return max <= 0 ? 0 : (value / 1000) * max;
+	}
+
+	function queueModuleAgeFromSlider(value: number, options: { commit?: boolean; immediate?: boolean } = {}) {
+		const age = moduleAgeFromSliderValue(value);
+		const generation = ++latestAgeGeneration;
+		pendingAgeUpdate = { age, generation };
+		setDragSliderValue(options.commit ? null : value);
+		setState((current) => ({ ...current, module_physiological_age: age }));
+		setError(null);
+
+		if (options.immediate) {
+			if (ageSubmitTimer !== undefined) {
+				window.clearTimeout(ageSubmitTimer);
+				ageSubmitTimer = undefined;
 			}
-		});
+			void flushQueuedModuleAge();
+			return;
+		}
+		scheduleQueuedModuleAgeSubmit(ageSubmitDelayMs);
+	}
 
-		async function attachViewportReadyListener() {
-			await customElements.whenDefined("electrobun-wgpu");
-			reportUiEvent("wgpu-defined", { hasElement: viewportElement !== undefined });
-			if (disposed || viewportElement === undefined) {
-				return;
+	function scheduleQueuedModuleAgeSubmit(delayMs: number) {
+		if (ageSubmitTimer !== undefined || ageRequestInFlight) return;
+		ageSubmitTimer = window.setTimeout(() => {
+			ageSubmitTimer = undefined;
+			void flushQueuedModuleAge();
+		}, delayMs);
+	}
+
+	async function flushQueuedModuleAge() {
+		if (ageRequestInFlight || pendingAgeUpdate === null) return;
+
+		const update = pendingAgeUpdate;
+		pendingAgeUpdate = null;
+		ageRequestInFlight = true;
+		try {
+			await appClient.command("module.set_age", { age: update.age });
+			if (update.generation === latestAgeGeneration) {
+				const nextSummary = await appClient.command("module.get_growth_snapshot_summary");
+				setSummary(nextSummary);
+				setStatus("Connected");
 			}
-			viewportElement.on("ready", handleReady);
-			attached = true;
-			reportUiEvent("wgpu-listener-attached", { wgpuViewId: viewportElement.wgpuViewId });
-			if (viewportElement.wgpuViewId !== null) {
-				void notifyViewportReady(viewportElement.wgpuViewId);
+		} catch (caught) {
+			if (update.generation === latestAgeGeneration) {
+				setError(caught instanceof Error ? caught.message : String(caught));
+				setStatus("Command failed");
 			}
+		} finally {
+			ageRequestInFlight = false;
+			if (pendingAgeUpdate !== null) {
+				scheduleQueuedModuleAgeSubmit(ageSubmitDelayMs);
+			}
+		}
+	}
+
+	createEffect(() => {
+		document.documentElement.dataset.uiTheme = uiTheme();
+		document.documentElement.dataset.colorTheme = colorTheme();
+		window.localStorage.setItem("toi.uiTheme", uiTheme());
+		window.localStorage.setItem("toi.colorTheme", colorTheme());
+	});
+
+	onCleanup(() => {
+		if (ageSubmitTimer !== undefined) {
+			window.clearTimeout(ageSubmitTimer);
 		}
 	});
 
-	async function loadAppState() {
-		try {
-			const state = await appClient.command("app.get_state");
-			setAppState(state);
-			reportUiEvent("app-state-loaded", {
-				active_workspace: state.active_workspace,
-				prototypes: state.prototypes.length,
-				plant_types: state.plant_types.length,
-			});
-		} catch (error) {
-			setStateError(String(error));
-			reportUiEvent("app-state-failed", { message: String(error) });
-		}
-	}
-
-	async function notifyViewportReady(id: number) {
-		reportUiEvent("viewport-ready-callback", { id });
-		if (viewportElement === undefined) {
-			return;
-		}
-		const rect = viewportRect(viewportElement);
-		setViewportStatus(`native view ${id} attached`);
-		try {
-			const result = await rpc.request.viewportReady({ id, rect });
-			setViewportStatus(result.ok ? `native handle ${result.nativeHandle}` : "native handle unavailable");
-		} catch (error) {
-			console.error("viewportReady failed", error);
-			setViewportStatus("native viewport attach failed");
-		}
-	}
+	onMount(() => {
+		reportUiEvent("app-mounted");
+		void refreshAll();
+	});
 
 	return (
-		<div class="grid min-h-screen grid-cols-[360px_minmax(0,1fr)] bg-zinc-950 text-zinc-100">
-			<aside class="border-r border-zinc-800 bg-zinc-950/95 p-6">
-				<p class="text-xs uppercase tracking-[0.28em] text-emerald-300">Trees of Insanity</p>
-				<h1 class="mt-4 text-2xl font-semibold tracking-tight">Growth lab</h1>
-				<p class="mt-3 text-sm leading-6 text-zinc-400">
-					Solid/Tailwind controls on the left. Native GPU viewport on the right.
-				</p>
+		<div class="flex h-screen w-screen overflow-hidden bg-background text-foreground">
+			<div
+				class="relative flex h-full shrink-0 flex-col border-r border-border"
+				style={{ width: `${panelWidth()}px` }}
+			>
+				<TopBar
+					status={status()}
+					tone={statusTone()}
+					busy={busy()}
+					previews={state().workspace_previews}
+					uiTheme={uiTheme()}
+					colorTheme={colorTheme()}
+					onUiTheme={setUiTheme}
+					onColorTheme={setColorTheme}
+					onRefresh={() => void refreshAll()}
+				/>
 
-				<section class="mt-8 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
-					<h2 class="text-sm font-medium text-zinc-200">Viewport</h2>
-					<p class="mt-2 text-sm text-zinc-400">{viewportStatus()}</p>
-				</section>
-
-				<section class="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
-					<h2 class="text-sm font-medium text-zinc-200">Native core</h2>
-					<Show
-						when={appState()}
-						fallback={<p class="mt-2 text-sm text-zinc-400">{stateError() ?? "loading application state…"}</p>}
-					>
-						{(state) => (
-							<dl class="mt-2 space-y-1 text-sm text-zinc-400">
-								<div class="flex justify-between">
-									<dt>Workspace</dt>
-									<dd class="text-zinc-200">{state().active_workspace}</dd>
-								</div>
-								<div class="flex justify-between">
-									<dt>Prototypes</dt>
-									<dd class="text-zinc-200">{state().prototypes.length}</dd>
-								</div>
-								<div class="flex justify-between">
-									<dt>Plant types</dt>
-									<dd class="text-zinc-200">{state().plant_types.length}</dd>
-								</div>
-							</dl>
-						)}
+				<main class="panel-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-8 pt-5">
+					<Show when={error()}>
+						<div class="mb-5 flex items-start gap-2.5 rounded-lg border border-destructive/40 bg-destructive/10 px-3.5 py-3 text-[13px] leading-relaxed text-foreground">
+							<TriangleAlert class="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+							<span>{error()}</span>
+						</div>
 					</Show>
-				</section>
-			</aside>
 
-			<main class="min-w-0 bg-black p-3">
-				<div class="h-full overflow-hidden rounded-2xl border border-zinc-800 bg-black shadow-2xl shadow-emerald-950/20">
-					<electrobun-wgpu
-						id="native-viewport"
-						class="h-full w-full"
-						ref={(element) => {
-							viewportElement = element as WgpuTagElement;
-						}}
-					/>
-				</div>
-			</main>
+					<div class="space-y-6">
+						{/* SOURCE — what is being grown */}
+						<Section eyebrow="Source">
+							<Field label="Branch module prototype">
+								<Select<PrototypeSummary>
+									options={state().prototypes}
+									value={activePrototype() ?? null}
+									disabled={busy() || state().prototypes.length === 0}
+									optionValue="id"
+									optionTextValue={(option) => option.name}
+									placeholder={state().prototypes.length === 0 ? "No prototypes loaded" : "Select a prototype"}
+									onChange={(prototype) => {
+										if (!prototype || prototype.id === state().active_prototype_id) return;
+										void runCommand(() =>
+											appClient.command("module.set_active_prototype", { prototype_id: prototype.id }),
+										);
+									}}
+									itemComponent={(itemProps) => (
+										<SelectItem item={itemProps.item}>
+											<PrototypeOption prototype={itemProps.item.rawValue} />
+										</SelectItem>
+									)}
+								>
+									<SelectTrigger
+										placeholder={state().prototypes.length === 0 ? "No prototypes loaded" : "Select a prototype"}
+										valueComponent={(option: PrototypeSummary) => <PrototypeOption prototype={option} />}
+									/>
+									<SelectContent />
+								</Select>
+							</Field>
+
+							<Field
+								label="Plant type"
+								action={
+									<button
+										type="button"
+										class="text-[11px] font-medium text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:text-foreground"
+										onClick={() => setShowPlantTypes(true)}
+									>
+										Manage
+									</button>
+								}
+							>
+								<Select<PlantTypeSummary>
+									options={state().plant_types}
+									value={activePlantType() ?? null}
+									disabled={busy() || state().plant_types.length === 0}
+									optionValue="id"
+									optionTextValue={(option) => option.name}
+									placeholder={state().plant_types.length === 0 ? "No plant types" : "Select a plant type"}
+									onChange={(plantType) => {
+										if (!plantType || plantType.id === state().active_plant_type_id) return;
+										void runCommand(() =>
+											appClient.command("module.set_active_plant_type", { plant_type_id: plantType.id }),
+										);
+									}}
+									itemComponent={(itemProps) => (
+										<SelectItem item={itemProps.item}>
+											<PlantTypeOption plantType={itemProps.item.rawValue} />
+										</SelectItem>
+									)}
+								>
+									<SelectTrigger
+										placeholder={state().plant_types.length === 0 ? "No plant types" : "Select a plant type"}
+										valueComponent={(option: PlantTypeSummary) => <PlantTypeOption plantType={option} />}
+									/>
+									<SelectContent />
+								</Select>
+							</Field>
+						</Section>
+
+						{/* DEVELOPMENT — the signature growth axis */}
+						<Section eyebrow="Development">
+							<div class="flex items-end justify-between">
+								<div class="flex items-baseline gap-1.5">
+									<span class="font-mono text-2xl font-medium tabular-nums tracking-tight">
+										{formatNumber(state().module_physiological_age, 2)}
+									</span>
+									<span class="font-mono text-sm text-muted-foreground tabular-nums">
+										/ {formatNumber(state().fully_grown_age, 2)}
+									</span>
+								</div>
+								<Show when={isMature()}>
+									<span class="inline-flex items-center gap-1.5 rounded-full bg-grow/15 px-2.5 py-1 text-[11px] font-semibold text-grow">
+										<span class="h-1.5 w-1.5 rounded-full bg-grow" />
+										Mature
+									</span>
+								</Show>
+							</div>
+
+							<div class="mt-4">
+								<Slider
+									minValue={0}
+									maxValue={1000}
+									step={1}
+									value={sliderValues()}
+									disabled={!ready()}
+									onChange={(value) => queueModuleAgeFromSlider(value[0] ?? 0)}
+									onChangeEnd={(value) =>
+										queueModuleAgeFromSlider(value[0] ?? sliderValue(), { commit: true, immediate: true })
+									}
+								/>
+								<div class="mt-2.5 flex justify-between font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
+									<span>Seed</span>
+									<span>Mature</span>
+								</div>
+							</div>
+
+							<p class="mt-3 font-mono text-[11px] text-muted-foreground">
+								growth rate&nbsp;&nbsp;
+								<span class="text-foreground/80 tabular-nums">{formatNumber(summary().growth_rate, 4)}</span>
+							</p>
+						</Section>
+
+						{/* GROWTH — live snapshot at the current age */}
+						<Section eyebrow="Growth">
+							<Readout
+								items={[
+									{ label: "Visible segments", value: summary().visible_segment_count },
+									{ label: "Growing", value: summary().growing_segment_count },
+									{ label: "Mature", value: summary().mature_segment_count },
+									{ label: "Max diameter", value: formatNumber(summary().max_diameter, 3) },
+								]}
+							/>
+						</Section>
+
+						{/* STRUCTURE — the prototype inspector */}
+						<Section eyebrow="Structure">
+							<div class="rounded-lg border border-border bg-card/40 p-3.5">
+								<PrototypeTreeView tree={tree()} />
+							</div>
+						</Section>
+					</div>
+				</main>
+
+				<PlantTypesDialog
+					open={showPlantTypes()}
+					busy={busy()}
+					plantTypes={state().plant_types}
+					activePlantTypeId={state().active_plant_type_id}
+					parameterDescriptorCount={state().plant_type_parameter_descriptors.length}
+					newPlantTypeName={newPlantTypeName()}
+					newPlantTypePresetKey={newPlantTypePresetKey()}
+					onOpenChange={(open) => setShowPlantTypes(open)}
+					onNewPlantTypeName={setNewPlantTypeName}
+					onNewPlantTypePreset={selectNewPlantTypePreset}
+					onCreatePlantType={() => void createPlantType()}
+				/>
+
+				<ResizeHandle
+					onResize={(width) => setPanelWidth(Math.min(maxPanelWidth, Math.max(minPanelWidth, width)))}
+				/>
+			</div>
+
+			<Viewport />
 		</div>
 	);
-}
-
-function reportUiEvent(type: string, data?: Record<string, unknown>) {
-	void rpc.request.uiEvent({ type, data }).catch(() => {});
-}
-
-function viewportRect(element: HTMLElement): Rect {
-	const rect = element.getBoundingClientRect();
-	return {
-		x: rect.x,
-		y: rect.y,
-		width: rect.width,
-		height: rect.height,
-	};
 }

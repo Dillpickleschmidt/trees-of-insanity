@@ -150,6 +150,7 @@ export type CommandMap = {
 	"module.get_growth_snapshot": { params: NoParams; result: GrowthSnapshot };
 	"module.get_growth_preview_stage": { params: NoParams; result: GrowthPreviewStage };
 	"plant_types.list": { params: NoParams; result: PlantTypeSummary[] };
+	"plant_types.get": { params: { plant_type_id: string }; result: PlantType };
 	"plant_types.create": { params: { name: string; preset_key?: PlantTypePresetKey }; result: PlantType };
 	"plant_types.delete": { params: { plant_type_id: string }; result: NoParams };
 	"plant_types.update": {

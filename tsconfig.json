@@ -12,7 +12,11 @@
 		"jsxImportSource": "solid-js",
 		"noEmit": true,
 		"skipLibCheck": true,
-		"types": ["bun-types"]
+		"types": ["bun-types"],
+		"baseUrl": ".",
+		"paths": {
+			"~/*": ["./src/mainview/*"]
+		}
 	},
 	"include": ["src", "electrobun.config.ts", "vite.config.ts"]
 }
