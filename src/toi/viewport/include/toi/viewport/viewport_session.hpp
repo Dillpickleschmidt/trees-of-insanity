@@ -12,6 +12,14 @@
 #include <thread>
 #include <vector>
 
+#ifdef TOI_ENABLE_OVRTX
+#include "toi/ovrtx/renderer_session.hpp"
+#include "toi/viewport/cuda_vulkan_interop.hpp"
+
+#include <mutex>
+#include <optional>
+#endif
+
 namespace toi::viewport {
 
 struct ViewportInfo {
@@ -21,9 +29,9 @@ struct ViewportInfo {
 };
 
 // Owns a Vulkan presentation loop targeting the shell's native X11 window.
-// For now it presents an animated clear color (a viewport test pattern),
-// proving the surface/swapchain/present path end to end; the ovrtx CUDA frame
-// source replaces the clear step later.
+// Without ovrtx it presents an animated clear color (a viewport test pattern).
+// With ovrtx it presents the growth preview: each frame the ovrtx CUDA color
+// output is copied into a shared Vulkan image and blitted to the swapchain.
 class ViewportSession {
 public:
     [[nodiscard]] static Result<std::unique_ptr<ViewportSession>> attach(unsigned long x_window, int width,
@@ -35,8 +43,18 @@ public:
 
     [[nodiscard]] const ViewportInfo& info() const;
 
+#ifdef TOI_ENABLE_OVRTX
+    // Hand the render thread the latest growth-preview stage (built by the
+    // command thread when a preview-changing command runs).
+    void set_pending_stage(render::GrowthPreviewStageProjection stage);
+#endif
+
 private:
-    static constexpr int kFramesInFlight = 2;
+    // One frame in flight: the top-of-loop fence wait then guarantees the prior
+    // frame's blit finished before the next CUDA copy reuses the single shared
+    // interop image and semaphore. The ovrtx render dominates frame time, so
+    // this costs no real throughput.
+    static constexpr int kFramesInFlight = 1;
 
     ViewportSession() = default;
 
@@ -45,6 +63,7 @@ private:
     void destroy_swapchain_resources();
     [[nodiscard]] Result<void> recreate_swapchain();
     void render_loop();
+    void record_test_pattern(VkCommandBuffer command_buffer, VkImage image, std::uint64_t frame);
 
     X11Connection connection_;
     VulkanContext context_;
@@ -59,6 +78,23 @@ private:
     std::atomic<bool> running_{false};
     std::thread thread_;
     ViewportInfo info_;
+
+#ifdef TOI_ENABLE_OVRTX
+    [[nodiscard]] bool ensure_growth_renderer();
+    // Records the ovrtx growth frame into the swapchain image; returns false to
+    // fall back to the test pattern (renderer not ready or a frame failed).
+    [[nodiscard]] bool record_growth_frame(VkCommandBuffer command_buffer, VkImage swapchain_image);
+
+    std::mutex stage_mutex_;
+    std::optional<render::GrowthPreviewStageProjection> pending_stage_;
+    bool stage_dirty_ = false;
+
+    std::unique_ptr<ovrtx::RendererSession> renderer_;
+    CudaInteropImage interop_;
+    CudaInteropSemaphore cuda_done_;
+    bool growth_ready_ = false;
+    bool growth_failed_ = false;
+#endif
 };
 
 } // namespace toi::viewport

@@ -177,7 +177,8 @@ export function resolveNativeCorePath(): string {
 
 	const fileName = `libtoi_native_core.${suffix}`;
 	const relative = [
-		join("build", "desktop", fileName), // dev/run: native viewport enabled
+		join("build", "ovrtx", fileName), // dev/run: viewport + ovrtx growth preview
+		join("build", "desktop", fileName), // viewport only (test pattern)
 		join("build", "release-desktop", fileName),
 		join("build", "release-core", fileName),
 		join("build", "core", fileName),

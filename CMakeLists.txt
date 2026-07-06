@@ -119,6 +119,14 @@ if(TOI_ENABLE_OVRTX)
         CUDA::cudart
     )
     target_compile_features(toi_ovrtx PUBLIC cxx_std_23)
+
+    # Present the ovrtx CUDA frame through the native viewport: add the
+    # CUDA/Vulkan interop to toi_viewport and switch on its ovrtx path.
+    if(TOI_ENABLE_VIEWPORT)
+        target_sources(toi_viewport PRIVATE src/toi/viewport/src/cuda_vulkan_interop.cpp)
+        target_link_libraries(toi_viewport PUBLIC toi_ovrtx CUDA::cudart)
+        target_compile_definitions(toi_viewport PUBLIC TOI_ENABLE_OVRTX)
+    endif()
 endif()
 
 add_library(toi_native_core SHARED
@@ -134,6 +142,12 @@ set_target_properties(toi_native_core PROPERTIES OUTPUT_NAME toi_native_core)
 if(TOI_ENABLE_VIEWPORT)
     target_link_libraries(toi_native_core PRIVATE toi_viewport)
     target_compile_definitions(toi_native_core PRIVATE TOI_ENABLE_VIEWPORT)
+endif()
+
+if(TOI_ENABLE_OVRTX)
+    # Bake the ovrtx runtime directory into the RPATH so the shell loads it (and
+    # its RTX/USD plugins) without a manual LD_LIBRARY_PATH.
+    set_target_properties(toi_native_core PROPERTIES BUILD_RPATH "${TOI_OVRTX_RUNTIME_DIR}")
 endif()
 
 if(TOI_BUILD_TESTS)
@@ -174,11 +188,8 @@ if(TOI_BUILD_TESTS)
             TOI_TEST_PROTOTYPE_ASSET_PATH="${CMAKE_SOURCE_DIR}/assets/prototypes/TOI_Module_Prototypes.obj"
             TOI_TEST_ASSET_ROOT_PATH="${CMAKE_SOURCE_DIR}/assets"
         )
+        set_target_properties(toi_ovrtx_tests PROPERTIES BUILD_RPATH "${TOI_OVRTX_RUNTIME_DIR}")
         # First ovrtx frame compiles shaders/assets and can take a few minutes.
-        catch_discover_tests(toi_ovrtx_tests
-            PROPERTIES
-                ENVIRONMENT "LD_LIBRARY_PATH=${TOI_OVRTX_RUNTIME_DIR}:$ENV{LD_LIBRARY_PATH}"
-                TIMEOUT 600
-        )
+        catch_discover_tests(toi_ovrtx_tests PROPERTIES TIMEOUT 600)
     endif()
 endif()

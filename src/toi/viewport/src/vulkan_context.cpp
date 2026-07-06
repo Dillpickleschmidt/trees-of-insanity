@@ -51,10 +51,17 @@ namespace {
 [[nodiscard]] Result<VkInstance> create_instance()
 {
     const auto available_extensions = instance_extensions();
-    const std::array required_extensions = {
+    std::vector<const char*> required_extensions = {
         VK_KHR_SURFACE_EXTENSION_NAME,
         VK_KHR_XLIB_SURFACE_EXTENSION_NAME,
     };
+#ifdef TOI_ENABLE_OVRTX
+    // Needed to import Vulkan device memory and semaphores into CUDA for the
+    // growth preview.
+    required_extensions.push_back(VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME);
+    required_extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES_EXTENSION_NAME);
+    required_extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+#endif
     for (const char* extension : required_extensions) {
         if (!has_extension(available_extensions, extension)) {
             return std::unexpected(make_error(std::string("missing Vulkan instance extension ") + extension));
@@ -188,7 +195,15 @@ struct PhysicalDeviceChoice {
     queue_info.queueCount = 1;
     queue_info.pQueuePriorities = &priority;
 
-    const std::array device_extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    std::vector<const char*> device_extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+#ifdef TOI_ENABLE_OVRTX
+    device_extensions.push_back(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
+    device_extensions.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
+    device_extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME);
+    device_extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
+    device_extensions.push_back(VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME);
+    device_extensions.push_back(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);
+#endif
 
     VkPhysicalDeviceFeatures features{};
     VkDeviceCreateInfo create_info{};

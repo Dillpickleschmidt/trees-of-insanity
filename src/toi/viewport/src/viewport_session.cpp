@@ -10,13 +10,7 @@ namespace {
 
 [[nodiscard]] VkImageSubresourceRange whole_color_image()
 {
-    return VkImageSubresourceRange{
-        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .baseMipLevel = 0,
-        .levelCount = 1,
-        .baseArrayLayer = 0,
-        .layerCount = 1,
-    };
+    return VkImageSubresourceRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 }
 
 void transition(VkCommandBuffer command_buffer, VkImage image, VkImageLayout old_layout, VkImageLayout new_layout,
@@ -122,8 +116,6 @@ ViewportSession::~ViewportSession()
             }
         }
     }
-    // swapchain_, context_, connection_ release in reverse declaration order:
-    // swapchain first, then device/surface/instance, then the X connection.
 }
 
 const ViewportInfo& ViewportSession::info() const
@@ -217,6 +209,19 @@ Result<void> ViewportSession::recreate_swapchain()
     return create_swapchain_resources();
 }
 
+void ViewportSession::record_test_pattern(VkCommandBuffer command_buffer, VkImage image, std::uint64_t frame)
+{
+    transition(command_buffer, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+               VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+
+    const VkClearColorValue color = test_pattern_color(frame);
+    const VkImageSubresourceRange range = whole_color_image();
+    vkCmdClearColorImage(command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &range);
+
+    transition(command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+               VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+}
+
 void ViewportSession::render_loop()
 {
     VkDevice device = context_.device();
@@ -251,25 +256,31 @@ void ViewportSession::render_loop()
         begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer(command_buffer, &begin_info);
 
-        transition(command_buffer, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
-                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-
-        const VkClearColorValue color = test_pattern_color(counter);
-        const VkImageSubresourceRange range = whole_color_image();
-        vkCmdClearColorImage(command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &range);
-
-        transition(command_buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                   VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                   VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+#ifdef TOI_ENABLE_OVRTX
+        const bool drew_growth = record_growth_frame(command_buffer, image);
+#else
+        const bool drew_growth = false;
+#endif
+        if (!drew_growth) {
+            record_test_pattern(command_buffer, image, counter);
+        }
 
         vkEndCommandBuffer(command_buffer);
 
-        const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        VkSemaphore wait_semaphores[2] = {image_available_[frame], VK_NULL_HANDLE};
+        VkPipelineStageFlags wait_stages[2] = {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT};
+        std::uint32_t wait_count = 1;
+#ifdef TOI_ENABLE_OVRTX
+        if (drew_growth) {
+            wait_semaphores[1] = cuda_done_.vk_semaphore();
+            wait_count = 2;
+        }
+#endif
         VkSubmitInfo submit{};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit.waitSemaphoreCount = 1;
-        submit.pWaitSemaphores = &image_available_[frame];
-        submit.pWaitDstStageMask = &wait_stage;
+        submit.waitSemaphoreCount = wait_count;
+        submit.pWaitSemaphores = wait_semaphores;
+        submit.pWaitDstStageMask = wait_stages;
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &command_buffer;
         submit.signalSemaphoreCount = 1;
@@ -296,10 +307,151 @@ void ViewportSession::render_loop()
 
         frame = (frame + 1) % kFramesInFlight;
         ++counter;
-        std::this_thread::sleep_for(std::chrono::milliseconds(8));
+        if (!drew_growth) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(8));
+        }
     }
 
+#ifdef TOI_ENABLE_OVRTX
+    // Release CUDA/ovrtx on the thread that created them.
+    cuda_done_.reset();
+    interop_.reset();
+    renderer_.reset();
+#endif
     vkDeviceWaitIdle(device);
 }
+
+#ifdef TOI_ENABLE_OVRTX
+
+void ViewportSession::set_pending_stage(render::GrowthPreviewStageProjection stage)
+{
+    std::lock_guard<std::mutex> lock(stage_mutex_);
+    pending_stage_ = std::move(stage);
+    stage_dirty_ = true;
+}
+
+bool ViewportSession::ensure_growth_renderer()
+{
+    if (growth_ready_) {
+        return true;
+    }
+    if (growth_failed_) {
+        return false;
+    }
+
+    render::GrowthPreviewStageProjection stage;
+    {
+        std::lock_guard<std::mutex> lock(stage_mutex_);
+        if (!pending_stage_) {
+            return false;
+        }
+        stage = *pending_stage_;
+    }
+
+    if (auto selected = select_cuda_device(0); !selected) {
+        growth_failed_ = true;
+        return false;
+    }
+
+    auto renderer = ovrtx::RendererSession::create({.asset_search_path = stage.usd_stage.asset_search_path});
+    if (!renderer) {
+        growth_failed_ = true;
+        return false;
+    }
+    renderer_ = std::make_unique<ovrtx::RendererSession>(std::move(*renderer));
+
+    auto interop = CudaInteropImage::create(context_, stage.usd_stage.width, stage.usd_stage.height);
+    if (!interop) {
+        renderer_.reset();
+        growth_failed_ = true;
+        return false;
+    }
+    interop_ = std::move(*interop);
+
+    auto cuda_done = CudaInteropSemaphore::create(context_);
+    if (!cuda_done) {
+        interop_.reset();
+        renderer_.reset();
+        growth_failed_ = true;
+        return false;
+    }
+    cuda_done_ = std::move(*cuda_done);
+
+    growth_ready_ = true;
+    return true;
+}
+
+bool ViewportSession::record_growth_frame(VkCommandBuffer command_buffer, VkImage swapchain_image)
+{
+    if (!ensure_growth_renderer()) {
+        return false;
+    }
+
+    std::optional<render::GrowthPreviewStageProjection> stage_to_submit;
+    {
+        std::lock_guard<std::mutex> lock(stage_mutex_);
+        if (stage_dirty_ && pending_stage_) {
+            stage_to_submit = *pending_stage_;
+            stage_dirty_ = false;
+        }
+    }
+    if (stage_to_submit) {
+        if (auto submitted = renderer_->submit_growth_preview(*stage_to_submit); !submitted) {
+            return false;
+        }
+    }
+
+    auto rendered = renderer_->render_cuda_frame(ovrtx::RenderFrameOutputs::Color);
+    if (!rendered) {
+        return false;
+    }
+    if (rendered->width != interop_.width() || rendered->height != interop_.height()) {
+        return false;
+    }
+
+    const CudaDeviceFrameView view{
+        .device_data = rendered->tensor->data,
+        .width = rendered->width,
+        .height = rendered->height,
+        .channel_count = rendered->channel_count,
+        .row_stride_bytes = rendered->row_stride_bytes,
+        .byte_offset = rendered->byte_offset,
+        .stream = rendered->sync_stream,
+    };
+    if (auto copied = interop_.copy_from_cuda_frame(view); !copied) {
+        return false;
+    }
+    // CUDA signals when the copy completes; the Vulkan submit waits on this so
+    // the blit reads the finished frame (a CPU sync does not order the engines).
+    if (auto signaled = cuda_done_.signal_from_ovrtx_stream(rendered->sync_stream); !signaled) {
+        return false;
+    }
+
+    // CUDA wrote the shared image; move it to a transfer-read layout for the blit.
+    transition(command_buffer, interop_.image(), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+               VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+               VK_PIPELINE_STAGE_TRANSFER_BIT);
+    transition(command_buffer, swapchain_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+               VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+
+    VkImageBlit blit{};
+    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.srcOffsets[1] = {interop_.width(), interop_.height(), 1};
+    blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.dstOffsets[1] = {static_cast<std::int32_t>(swapchain_.extent().width),
+                          static_cast<std::int32_t>(swapchain_.extent().height), 1};
+    vkCmdBlitImage(command_buffer, interop_.image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchain_image,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+
+    transition(command_buffer, swapchain_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+               VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    // Return the interop image to GENERAL for the next CUDA write.
+    transition(command_buffer, interop_.image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+               VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+               VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    return true;
+}
+
+#endif // TOI_ENABLE_OVRTX
 
 } // namespace toi::viewport

@@ -111,6 +111,22 @@ void set_last_error(const toi::app::ApplicationError& error)
     return json{{"id", nullptr}, {"ok", false}, {"error", std::move(message)}}.dump();
 }
 
+#ifdef TOI_ENABLE_OVRTX
+// Rebuild the growth-preview stage from current state and hand it to the render
+// thread. Runs on the command thread so the render thread never touches the
+// controller.
+void push_growth_stage(ToiNativeCore* core)
+{
+    if (!core->viewport) {
+        return;
+    }
+    auto stage = core->controller.growth_preview_stage_projection();
+    if (stage) {
+        core->viewport->set_pending_stage(std::move(*stage));
+    }
+}
+#endif
+
 } // namespace
 
 extern "C" ToiNativeCore* toi_create(const char* options_json)
@@ -145,7 +161,14 @@ extern "C" char* toi_handle_command(ToiNativeCore* core, const char* request_jso
         }
 
         const json request = json::parse(request_json);
-        return copy_json_string(toi::app::handle_application_command(core->controller, request).dump());
+        auto response = toi::app::handle_application_command(core->controller, request);
+#ifdef TOI_ENABLE_OVRTX
+        if (request.contains("method") && request.at("method").is_string() &&
+            toi::app::application_command_changes_preview(request.at("method").get<std::string>())) {
+            push_growth_stage(core);
+        }
+#endif
+        return copy_json_string(response.dump());
     } catch (const std::exception& error) {
         return copy_json_string(command_error_response(error.what()));
     }
@@ -173,6 +196,9 @@ extern "C" char* toi_attach_x11_viewport(ToiNativeCore* core, unsigned long x_wi
             return copy_json_string(json{{"ok", false}, {"error", session.error().message}}.dump());
         }
         core->viewport = std::move(*session);
+#ifdef TOI_ENABLE_OVRTX
+        push_growth_stage(core);
+#endif
         const auto& info = core->viewport->info();
         return copy_json_string(json{{"ok", true},
                                      {"device", info.device_name},
