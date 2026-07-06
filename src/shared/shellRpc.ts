@@ -1,0 +1,51 @@
+import type { RPCSchema } from "electrobun/bun";
+
+export type Rect = {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+};
+
+export type ViewportReadyParams = {
+	id: number;
+	rect: Rect;
+};
+
+export type ViewportReadyResult = {
+	ok: boolean;
+	id: number;
+	nativeHandle: string | null;
+};
+
+export type UiEventParams = {
+	type: string;
+	data?: Record<string, unknown>;
+};
+
+export type UiEventResult = {
+	ok: true;
+};
+
+type EmptyRequests = Record<never, { params: never; response: never }>;
+type EmptyMessages = Record<never, never>;
+
+export type ShellRpcSchema = {
+	bun: RPCSchema<{
+		requests: {
+			viewportReady: {
+				params: ViewportReadyParams;
+				response: ViewportReadyResult;
+			};
+			uiEvent: {
+				params: UiEventParams;
+				response: UiEventResult;
+			};
+		};
+		messages: EmptyMessages;
+	}>;
+	webview: RPCSchema<{
+		requests: EmptyRequests;
+		messages: EmptyMessages;
+	}>;
+};

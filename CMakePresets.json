@@ -1,0 +1,44 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "core",
+      "displayName": "Native core",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/core",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "TOI_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "release-core",
+      "displayName": "Native core release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release-core",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "TOI_BUILD_TESTS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "core",
+      "configurePreset": "core"
+    },
+    {
+      "name": "release-core",
+      "configurePreset": "release-core"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "core",
+      "configurePreset": "core",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

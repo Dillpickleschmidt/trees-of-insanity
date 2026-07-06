@@ -1,0 +1,95 @@
+import { BrowserView, BrowserWindow, Updater, WGPUView } from "electrobun/bun";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import type { ShellRpcSchema, UiEventParams, UiEventResult, ViewportReadyParams, ViewportReadyResult } from "../shared/shellRpc";
+
+const DEV_SERVER_PORT = 5173;
+const DEV_SERVER_URL = `http://127.0.0.1:${DEV_SERVER_PORT}`;
+const USE_DEV_SERVER = process.env.TOI_USE_VITE_DEV_SERVER === "1";
+
+let mainWindow: BrowserWindow | undefined;
+
+writeAutomationEvent("main-starting");
+
+process.on("uncaughtException", (error) => {
+	writeAutomationEvent("uncaught-exception", { message: error.message, stack: error.stack });
+});
+process.on("unhandledRejection", (error) => {
+	writeAutomationEvent("unhandled-rejection", { message: String(error) });
+});
+
+const rpc = BrowserView.defineRPC<ShellRpcSchema>({
+	maxRequestTime: 10_000,
+	handlers: {
+		requests: {
+			uiEvent: ({ type, data }: UiEventParams): UiEventResult => {
+				writeAutomationEvent(`ui:${type}`, data);
+				return { ok: true };
+			},
+			viewportReady: ({ id, rect }: ViewportReadyParams): ViewportReadyResult => {
+				const view = WGPUView.getById(id) ?? WGPUView.adoptExisting(id, {
+					windowId: mainWindow?.id ?? 0,
+					autoResize: false,
+					frame: rect,
+				});
+				const nativeHandle = view?.getNativeHandle() ?? null;
+				const result = {
+					ok: view !== undefined && nativeHandle !== null,
+					id,
+					nativeHandle: nativeHandle === null ? null : String(nativeHandle),
+				};
+				console.log(
+					`native viewport ready id=${id} handle=${result.nativeHandle ?? "null"} rect=${Math.round(rect.width)}x${Math.round(rect.height)}`,
+				);
+				writeAutomationEvent("viewport-ready", { ...result, rect });
+				return result;
+			},
+		},
+		messages: {},
+	},
+});
+
+const url = await mainViewUrl();
+
+mainWindow = new BrowserWindow({
+	title: "Trees of Insanity",
+	url,
+	renderer: "native",
+	frame: {
+		width: 1280,
+		height: 800,
+		x: 160,
+		y: 100,
+	},
+	rpc,
+});
+
+writeAutomationEvent("window-created", { windowId: mainWindow.id });
+mainWindow.webview.on("dom-ready", () => {
+	writeAutomationEvent("dom-ready", { webviewId: mainWindow?.webviewId });
+});
+
+console.log("Trees of Insanity shell started");
+writeAutomationEvent("main-started");
+
+function writeAutomationEvent(type: string, data: Record<string, unknown> = {}) {
+	const reportPath = process.env.TOI_AUTOMATION_REPORT;
+	if (!reportPath) {
+		return;
+	}
+	mkdirSync(dirname(reportPath), { recursive: true });
+	appendFileSync(reportPath, `${JSON.stringify({ type, time: new Date().toISOString(), ...data })}\n`);
+}
+
+async function mainViewUrl(): Promise<string> {
+	const channel = await Updater.localInfo.channel();
+	if (channel === "dev" && USE_DEV_SERVER) {
+		try {
+			await fetch(DEV_SERVER_URL, { method: "HEAD" });
+			return DEV_SERVER_URL;
+		} catch {
+			console.log("Vite dev server not running; using bundled UI");
+		}
+	}
+	return "views://mainview/index.html";
+}
