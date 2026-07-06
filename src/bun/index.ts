@@ -8,8 +8,6 @@ import type {
 	UiEventResult,
 	ViewportReadyParams,
 	ViewportReadyResult,
-	ViewportResizedParams,
-	ViewportResizedResult,
 } from "../shared/shellRpc";
 import { defaultNativeCoreOptions, NativeCore } from "./nativeCore";
 
@@ -56,10 +54,6 @@ const rpc = BrowserView.defineRPC<ShellRpcSchema>({
 					autoResize: false,
 					frame: rect,
 				});
-				// Size the native child window to the DOM viewport region before
-				// reading its geometry, so the Vulkan surface fills the pane.
-				view?.setFrame(Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height));
-
 				const nativeHandle = view?.getNativeHandle() ?? null;
 				const result = {
 					ok: view !== undefined && nativeHandle !== null,
@@ -81,13 +75,6 @@ const rpc = BrowserView.defineRPC<ShellRpcSchema>({
 					writeAutomationEvent("viewport-attached", attach);
 				}
 				return result;
-			},
-			viewportResized: ({ id, rect }: ViewportResizedParams): ViewportResizedResult => {
-				// Resize the native child window to the DOM pane; the native core's
-				// present loop recreates its swapchain on the resulting resize.
-				const view = WGPUView.getById(id);
-				view?.setFrame(Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height));
-				return { ok: view !== undefined };
 			},
 		},
 		messages: {},

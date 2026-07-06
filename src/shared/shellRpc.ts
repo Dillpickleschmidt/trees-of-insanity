@@ -22,15 +22,6 @@ export type ViewportReadyResult = {
 	nativeHandle: string | null;
 };
 
-export type ViewportResizedParams = {
-	id: number;
-	rect: Rect;
-};
-
-export type ViewportResizedResult = {
-	ok: boolean;
-};
-
 export type UiEventParams = {
 	type: string;
 	data?: Record<string, unknown>;
@@ -49,10 +40,6 @@ export type ShellRpcSchema = {
 			viewportReady: {
 				params: ViewportReadyParams;
 				response: ViewportReadyResult;
-			};
-			viewportResized: {
-				params: ViewportResizedParams;
-				response: ViewportResizedResult;
 			};
 			uiEvent: {
 				params: UiEventParams;

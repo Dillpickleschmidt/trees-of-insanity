@@ -25,7 +25,3 @@ export function reportUiEvent(type: string, data?: Record<string, unknown>) {
 export function notifyViewportReady(id: number, rect: Rect) {
 	return rpc.request.viewportReady({ id, rect });
 }
-
-export function notifyViewportResized(id: number, rect: Rect) {
-	return rpc.request.viewportResized({ id, rect });
-}
