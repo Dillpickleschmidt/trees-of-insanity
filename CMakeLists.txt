@@ -4,6 +4,7 @@ project(trees_of_insanity VERSION 0.1.0 LANGUAGES CXX)
 
 option(TOI_BUILD_TESTS "Build native core tests" ON)
 option(TOI_ENABLE_VIEWPORT "Build the Vulkan/X11 native viewport into the core" OFF)
+option(TOI_ENABLE_OVRTX "Build the ovrtx CUDA growth-preview renderer" OFF)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -92,6 +93,34 @@ if(TOI_ENABLE_VIEWPORT)
     target_compile_definitions(toi_viewport PUBLIC VK_USE_PLATFORM_XLIB_KHR)
 endif()
 
+if(TOI_ENABLE_OVRTX)
+    find_package(ovrtx CONFIG REQUIRED)
+    find_package(CUDAToolkit REQUIRED)
+
+    # ovrtx loads its RTX/USD plugins from the runtime library directory at
+    # renderer-create time; expose it so tests and the app can find them.
+    get_target_property(TOI_OVRTX_SHARED_LIB ovrtx::ovrtx IMPORTED_LOCATION)
+    get_filename_component(TOI_OVRTX_RUNTIME_DIR "${TOI_OVRTX_SHARED_LIB}" DIRECTORY)
+
+    add_library(toi_ovrtx
+        src/toi/ovrtx/src/error.cpp
+        src/toi/ovrtx/src/environment.cpp
+        src/toi/ovrtx/src/handles.cpp
+        src/toi/ovrtx/src/cuda_resources.cpp
+        src/toi/ovrtx/src/output_mapping.cpp
+        src/toi/ovrtx/src/renderer_session.cpp
+    )
+    target_include_directories(toi_ovrtx PUBLIC
+        src/toi/ovrtx/include
+    )
+    target_link_libraries(toi_ovrtx PUBLIC
+        toi_render
+        ovrtx::ovrtx
+        CUDA::cudart
+    )
+    target_compile_features(toi_ovrtx PUBLIC cxx_std_23)
+endif()
+
 add_library(toi_native_core SHARED
     native/src/native_core.cpp
 )
@@ -131,4 +160,25 @@ if(TOI_BUILD_TESTS)
     )
     include(Catch)
     catch_discover_tests(toi_core_tests)
+
+    if(TOI_ENABLE_OVRTX)
+        add_executable(toi_ovrtx_tests
+            tests/ovrtx_smoke_tests.cpp
+        )
+        target_link_libraries(toi_ovrtx_tests PRIVATE
+            toi_app
+            toi_ovrtx
+            Catch2::Catch2WithMain
+        )
+        target_compile_definitions(toi_ovrtx_tests PRIVATE
+            TOI_TEST_PROTOTYPE_ASSET_PATH="${CMAKE_SOURCE_DIR}/assets/prototypes/TOI_Module_Prototypes.obj"
+            TOI_TEST_ASSET_ROOT_PATH="${CMAKE_SOURCE_DIR}/assets"
+        )
+        # First ovrtx frame compiles shaders/assets and can take a few minutes.
+        catch_discover_tests(toi_ovrtx_tests
+            PROPERTIES
+                ENVIRONMENT "LD_LIBRARY_PATH=${TOI_OVRTX_RUNTIME_DIR}:$ENV{LD_LIBRARY_PATH}"
+                TIMEOUT 600
+        )
+    endif()
 endif()

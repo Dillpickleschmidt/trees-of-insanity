@@ -8,3 +8,4 @@ artifacts/
 .env.*
 toi.project.json
 *.toi.project.json
+.cache/

@@ -31,6 +31,19 @@
         "TOI_BUILD_TESTS": "ON",
         "TOI_ENABLE_VIEWPORT": "ON"
       }
+    },
+    {
+      "name": "ovrtx",
+      "displayName": "ovrtx growth preview",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ovrtx",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "TOI_BUILD_TESTS": "ON",
+        "TOI_ENABLE_VIEWPORT": "ON",
+        "TOI_ENABLE_OVRTX": "ON",
+        "CMAKE_PREFIX_PATH": "${sourceDir}/.cache/ovrtx/current"
+      }
     }
   ],
   "buildPresets": [
@@ -45,12 +58,23 @@
     {
       "name": "desktop",
       "configurePreset": "desktop"
+    },
+    {
+      "name": "ovrtx",
+      "configurePreset": "ovrtx"
     }
   ],
   "testPresets": [
     {
       "name": "core",
       "configurePreset": "core",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "ovrtx",
+      "configurePreset": "ovrtx",
       "output": {
         "outputOnFailure": true
       }
