@@ -216,7 +216,18 @@ bool application_command_changes_preview(std::string_view method)
 {
     return method == "module.set_age" || method == "module.set_active_prototype" ||
            method == "module.set_active_plant_type" || method == "plant_types.create" ||
-           method == "plant_types.update" || method == "plant_types.delete";
+           method == "plant_types.update" || method == "plant_types.delete" ||
+           method == "viewport.set_preferences";
+}
+
+[[nodiscard]] static json to_json(const ViewportPreferences& preferences)
+{
+    return json{
+        {"guides_visible", preferences.guides_visible},
+        {"world_origin_axes_visible", preferences.world_origin_axes_visible},
+        {"hdri_backdrop_visible", preferences.hdri_backdrop_visible},
+        {"active_hdri_environment_id", preferences.active_hdri_environment_id},
+    };
 }
 
 [[nodiscard]] static json to_json(const AppStateView& state)
@@ -449,6 +460,34 @@ json handle_application_command(ApplicationController& controller, const json& r
                 apply_parameter_update(updated, params.at("parameters"));
             }
             auto result = controller.update_plant_type(std::move(updated));
+            return result ? response_ok(id, json::object()) : response_error(id, result.error());
+        }
+
+        if (method == "viewport.get_preferences") {
+            json environments = json::array();
+            for (const auto& environment : controller.hdri_environments()) {
+                environments.push_back({
+                    {"id", environment.id},
+                    {"name", environment.name},
+                    {"bundled", environment.bundled},
+                });
+            }
+            return response_ok(id, json{
+                                       {"preferences", to_json(controller.viewport_preferences())},
+                                       {"hdri_environments", environments},
+                                   });
+        }
+        if (method == "viewport.set_preferences") {
+            auto preferences = controller.viewport_preferences();
+            preferences.guides_visible = optional_json_bool(params, "guides_visible", preferences.guides_visible);
+            preferences.world_origin_axes_visible =
+                optional_json_bool(params, "world_origin_axes_visible", preferences.world_origin_axes_visible);
+            preferences.hdri_backdrop_visible =
+                optional_json_bool(params, "hdri_backdrop_visible", preferences.hdri_backdrop_visible);
+            if (params.contains("active_hdri_environment_id")) {
+                preferences.active_hdri_environment_id = json_string(params, "active_hdri_environment_id");
+            }
+            auto result = controller.update_viewport_preferences(std::move(preferences));
             return result ? response_ok(id, json::object()) : response_error(id, result.error());
         }
 

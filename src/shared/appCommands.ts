@@ -130,6 +130,24 @@ export type InspectSnapshot = {
 	preview_stats: PreviewStats;
 };
 
+export type HdriEnvironment = {
+	id: string;
+	name: string;
+	bundled: boolean;
+};
+
+export type ViewportPreferences = {
+	guides_visible: boolean;
+	world_origin_axes_visible: boolean;
+	hdri_backdrop_visible: boolean;
+	active_hdri_environment_id: string;
+};
+
+export type ViewportPreferencesView = {
+	preferences: ViewportPreferences;
+	hdri_environments: HdriEnvironment[];
+};
+
 // preset keys 'a'..'p' map to the built-in plant type presets.
 export type PlantTypePresetKey =
 	| "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h"
@@ -157,6 +175,8 @@ export type CommandMap = {
 		params: { plant_type_id: string; name?: string; parameters?: Partial<PlantTypeParameters> };
 		result: NoParams;
 	};
+	"viewport.get_preferences": { params: NoParams; result: ViewportPreferencesView };
+	"viewport.set_preferences": { params: Partial<ViewportPreferences>; result: NoParams };
 };
 
 export type CommandMethod = keyof CommandMap;

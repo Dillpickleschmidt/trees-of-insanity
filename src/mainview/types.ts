@@ -4,10 +4,13 @@
 export type {
 	AppState,
 	GrowthSnapshotSummary,
+	HdriEnvironment,
 	PlantTypeParameterDescriptor as ParameterDescriptor,
 	PlantTypeSummary,
 	PrototypeSummary,
 	PrototypeTree,
 	PrototypeTreeItem,
+	ViewportPreferences,
+	ViewportPreferencesView,
 	WorkspacePreview,
 } from "../shared/appCommands";

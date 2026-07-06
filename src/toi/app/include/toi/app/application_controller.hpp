@@ -87,6 +87,19 @@ struct GrowthSnapshotSummary {
     float max_diameter = 0.0F;
 };
 
+struct HdriEnvironment {
+    std::string id;
+    std::string name;
+    bool bundled = true;
+};
+
+struct ViewportPreferences {
+    bool guides_visible = true;
+    bool world_origin_axes_visible = true;
+    bool hdri_backdrop_visible = true;
+    std::string active_hdri_environment_id;
+};
+
 class ApplicationController {
 public:
     [[nodiscard]] static Result<ApplicationController> create(ApplicationControllerOptions options = {});
@@ -108,6 +121,10 @@ public:
     [[nodiscard]] Result<void> delete_plant_type(std::string_view plant_type_id);
     [[nodiscard]] Result<void> update_plant_type(project::PlantType plant_type);
 
+    [[nodiscard]] ViewportPreferences viewport_preferences() const;
+    [[nodiscard]] std::vector<HdriEnvironment> hdri_environments() const;
+    [[nodiscard]] Result<void> update_viewport_preferences(ViewportPreferences preferences);
+
 private:
     ApplicationController(ApplicationControllerOptions options, import::BranchModulePrototypeLibrary prototype_library,
                           project::Project project, float module_physiological_age);
@@ -118,6 +135,7 @@ private:
     import::BranchModulePrototypeLibrary prototype_library_;
     project::Project project_;
     float module_physiological_age_ = 0.0F;
+    ViewportPreferences viewport_preferences_;
 };
 
 [[nodiscard]] std::string to_string(PrototypeTreeItem::Kind kind);

@@ -2,12 +2,119 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
+
+#include <nlohmann/json.hpp>
 
 namespace toi::app {
 namespace {
 
 constexpr std::string_view kDefaultPrototypeName = "Cube.008";
+constexpr std::string_view kHdriIdPrefix = "hdri:";
+constexpr std::string_view kDefaultHdriFile = "meadow_2_4k.exr";
+
+[[nodiscard]] bool is_hdri_file(const std::filesystem::path& path)
+{
+    if (!path.has_extension()) {
+        return false;
+    }
+    auto extension = path.extension().string();
+    std::ranges::transform(extension, extension.begin(),
+                           [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+    return extension == ".exr" || extension == ".hdr";
+}
+
+[[nodiscard]] std::string hdri_id_for(const std::string& file_name)
+{
+    return std::string(kHdriIdPrefix) + file_name;
+}
+
+// The HDRI environment library is the set of HDR images bundled under assets.
+[[nodiscard]] std::vector<HdriEnvironment> enumerate_hdri_environments(const std::filesystem::path& asset_root)
+{
+    std::vector<HdriEnvironment> environments;
+    const auto hdri_dir = asset_root / "HDRI";
+    std::error_code error;
+    if (std::filesystem::is_directory(hdri_dir, error)) {
+        for (const auto& entry : std::filesystem::directory_iterator(hdri_dir, error)) {
+            if (!entry.is_regular_file() || !is_hdri_file(entry.path())) {
+                continue;
+            }
+            const auto file_name = entry.path().filename().string();
+            environments.push_back({.id = hdri_id_for(file_name), .name = entry.path().stem().string(), .bundled = true});
+        }
+    }
+    std::ranges::sort(environments, [](const auto& left, const auto& right) { return left.name < right.name; });
+    return environments;
+}
+
+[[nodiscard]] std::string default_hdri_environment_id(const std::vector<HdriEnvironment>& environments)
+{
+    const auto preferred = hdri_id_for(std::string(kDefaultHdriFile));
+    if (std::ranges::any_of(environments, [&](const auto& environment) { return environment.id == preferred; })) {
+        return preferred;
+    }
+    return environments.empty() ? std::string{} : environments.front().id;
+}
+
+// The stage references HDRI files relative to the asset search path.
+[[nodiscard]] std::filesystem::path hdri_relative_path(std::string_view environment_id)
+{
+    if (!environment_id.starts_with(kHdriIdPrefix)) {
+        return std::filesystem::path("HDRI") / kDefaultHdriFile;
+    }
+    return std::filesystem::path("HDRI") / environment_id.substr(kHdriIdPrefix.size());
+}
+
+[[nodiscard]] std::filesystem::path viewport_preferences_path(const std::filesystem::path& project_path)
+{
+    auto parent = project_path.parent_path();
+    return (parent.empty() ? std::filesystem::path(".") : parent) / "viewport-preferences.json";
+}
+
+[[nodiscard]] ViewportPreferences load_viewport_preferences(const std::filesystem::path& project_path,
+                                                            const std::vector<HdriEnvironment>& environments)
+{
+    ViewportPreferences preferences;
+    preferences.active_hdri_environment_id = default_hdri_environment_id(environments);
+
+    const auto path = viewport_preferences_path(project_path);
+    std::ifstream input(path);
+    if (input) {
+        try {
+            const auto document = nlohmann::json::parse(input);
+            preferences.guides_visible = document.value("guides_visible", preferences.guides_visible);
+            preferences.world_origin_axes_visible =
+                document.value("world_origin_axes_visible", preferences.world_origin_axes_visible);
+            preferences.hdri_backdrop_visible =
+                document.value("hdri_backdrop_visible", preferences.hdri_backdrop_visible);
+            const auto active = document.value("active_hdri_environment_id", preferences.active_hdri_environment_id);
+            if (std::ranges::any_of(environments, [&](const auto& env) { return env.id == active; })) {
+                preferences.active_hdri_environment_id = active;
+            }
+        } catch (const std::exception&) {
+            // Ignore malformed preferences and keep defaults.
+        }
+    }
+    return preferences;
+}
+
+void save_viewport_preferences(const std::filesystem::path& project_path, const ViewportPreferences& preferences)
+{
+    const nlohmann::json document{
+        {"guides_visible", preferences.guides_visible},
+        {"world_origin_axes_visible", preferences.world_origin_axes_visible},
+        {"hdri_backdrop_visible", preferences.hdri_backdrop_visible},
+        {"active_hdri_environment_id", preferences.active_hdri_environment_id},
+    };
+    std::ofstream output(viewport_preferences_path(project_path));
+    output << document.dump(2) << '\n';
+}
 
 [[nodiscard]] ApplicationError make_error(ApplicationError::Code code, std::string message)
 {
@@ -153,6 +260,8 @@ Result<ApplicationController> ApplicationController::create(ApplicationControlle
         return std::unexpected(facts.error());
     }
     controller.module_physiological_age_ = facts->fully_grown_age;
+    controller.viewport_preferences_ =
+        load_viewport_preferences(controller.options_.project_path, controller.hdri_environments());
     return controller;
 }
 
@@ -266,6 +375,8 @@ ApplicationController::growth_preview_stage_projection(render::GrowthPreviewStag
         return std::unexpected(from_growth_error(camera_snapshot.error()));
     }
     options.asset_search_path = options_.asset_root_path;
+    options.hdri_visible = viewport_preferences_.hdri_backdrop_visible;
+    options.hdri_texture_path = hdri_relative_path(viewport_preferences_.active_hdri_environment_id);
     return render::make_growth_preview_stage_projection(*snapshot, *camera_snapshot, facts->prepared_prototype,
                                                         options);
 }
@@ -365,6 +476,28 @@ Result<void> ApplicationController::update_plant_type(project::PlantType plant_t
         return std::unexpected(clamped.error());
     }
     return save_project();
+}
+
+ViewportPreferences ApplicationController::viewport_preferences() const
+{
+    return viewport_preferences_;
+}
+
+std::vector<HdriEnvironment> ApplicationController::hdri_environments() const
+{
+    return enumerate_hdri_environments(options_.asset_root_path);
+}
+
+Result<void> ApplicationController::update_viewport_preferences(ViewportPreferences preferences)
+{
+    const auto environments = hdri_environments();
+    if (!std::ranges::any_of(environments,
+                             [&](const auto& environment) { return environment.id == preferences.active_hdri_environment_id; })) {
+        return std::unexpected(make_error(ApplicationError::Code::NotFound, "unknown HDRI environment"));
+    }
+    viewport_preferences_ = std::move(preferences);
+    save_viewport_preferences(options_.project_path, viewport_preferences_);
+    return {};
 }
 
 Result<void> ApplicationController::clamp_module_age_to_active_range()

@@ -6,11 +6,20 @@ import { Field, PlantTypeOption, PrototypeOption, Readout, Section } from "~/com
 import { PrototypeTreeView } from "~/components/PrototypeTree";
 import { ResizeHandle } from "~/components/ResizeHandle";
 import { TopBar } from "~/components/TopBar";
+import { ViewportControls } from "~/components/ViewportControls";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "~/components/ui/select";
 import { Slider } from "~/components/ui/slider";
 import { Viewport } from "~/components/Viewport";
 import { appClient, reportUiEvent } from "~/shell";
-import type { AppState, GrowthSnapshotSummary, PlantTypeSummary, PrototypeSummary, PrototypeTree } from "~/types";
+import type {
+	AppState,
+	GrowthSnapshotSummary,
+	PlantTypeSummary,
+	PrototypeSummary,
+	PrototypeTree,
+	ViewportPreferences,
+	ViewportPreferencesView,
+} from "~/types";
 import {
 	type ColorTheme,
 	colorThemes,
@@ -59,6 +68,7 @@ export function App() {
 	const [state, setState] = createSignal(initialState);
 	const [tree, setTree] = createSignal<PrototypeTree | null>(null);
 	const [summary, setSummary] = createSignal(initialSummary);
+	const [viewport, setViewport] = createSignal<ViewportPreferencesView>();
 	const [status, setStatus] = createSignal("Starting");
 	const [error, setError] = createSignal<string | null>(null);
 	const [busy, setBusy] = createSignal(false);
@@ -102,14 +112,16 @@ export function App() {
 		setBusy(true);
 		setError(null);
 		try {
-			const [nextState, nextTree, nextSummary] = await Promise.all([
+			const [nextState, nextTree, nextSummary, nextViewport] = await Promise.all([
 				appClient.command("app.get_state"),
 				appClient.command("module.get_prototype_tree"),
 				appClient.command("module.get_growth_snapshot_summary"),
+				appClient.command("viewport.get_preferences"),
 			]);
 			setState(nextState);
 			setTree(nextTree);
 			setSummary(nextSummary);
+			setViewport(nextViewport);
 			setStatus("Connected");
 			reportUiEvent("app-state-loaded", {
 				active_workspace: nextState.active_workspace,
@@ -137,6 +149,10 @@ export function App() {
 		} finally {
 			setBusy(false);
 		}
+	}
+
+	function setViewportPreference(patch: Partial<ViewportPreferences>) {
+		void runCommand(() => appClient.command("viewport.set_preferences", patch));
 	}
 
 	async function createPlantType() {
@@ -392,6 +408,13 @@ export function App() {
 								]}
 							/>
 						</Section>
+
+						{/* VIEWPORT — how the growth preview is drawn */}
+						<Show when={viewport()}>
+							{(view) => (
+								<ViewportControls view={view()} busy={busy()} onChange={setViewportPreference} />
+							)}
+						</Show>
 
 						{/* STRUCTURE — the prototype inspector */}
 						<Section eyebrow="Structure">
