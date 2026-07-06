@@ -14,6 +14,7 @@
 
 #ifdef TOI_ENABLE_OVRTX
 #include "toi/ovrtx/renderer_session.hpp"
+#include "toi/render/orbit_view.hpp"
 #include "toi/viewport/cuda_vulkan_interop.hpp"
 #include "toi/viewport/viewport_overlay.hpp"
 
@@ -49,6 +50,11 @@ public:
     // command thread when a preview-changing command runs).
     void set_pending_stage(render::GrowthPreviewStageProjection stage);
     void set_guide_options(bool guides_visible, bool world_origin_axes_visible);
+
+    // Camera interaction (also driven by pointer polling on the render thread).
+    void orbit_camera(float azimuth_delta_radians, float elevation_delta_radians);
+    void dolly_camera(float radius_multiplier);
+    void reset_camera();
 #endif
 
 private:
@@ -99,6 +105,18 @@ private:
     bool growth_failed_ = false;
     std::atomic<bool> guides_visible_{true};
     std::atomic<bool> world_origin_axes_visible_{true};
+
+    void poll_pointer();
+
+    std::mutex camera_mutex_;
+    render::OrbitView orbit_;
+    render::GrowthPreviewCamera base_camera_;
+    bool orbit_initialized_ = false;
+    bool orbit_dirty_ = false;
+    bool has_base_camera_ = false;
+    int last_pointer_x_ = 0;
+    int last_pointer_y_ = 0;
+    bool last_dragging_ = false;
 #endif
 };
 

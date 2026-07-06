@@ -8,6 +8,8 @@
 #ifdef TOI_ENABLE_OVRTX
 #include "toi/render/viewport_guides.hpp"
 
+#include <X11/Xlib.h>
+
 #include <vector>
 #endif
 
@@ -279,6 +281,9 @@ void ViewportSession::render_loop()
     std::uint64_t counter = 0;
 
     while (running_) {
+#ifdef TOI_ENABLE_OVRTX
+        poll_pointer();
+#endif
         vkWaitForFences(device, 1, &in_flight_[frame], VK_TRUE, UINT64_MAX);
 
         std::uint32_t image_index = 0;
@@ -386,6 +391,78 @@ void ViewportSession::set_guide_options(bool guides_visible, bool world_origin_a
     world_origin_axes_visible_ = world_origin_axes_visible;
 }
 
+void ViewportSession::orbit_camera(float azimuth_delta_radians, float elevation_delta_radians)
+{
+    std::lock_guard<std::mutex> lock(camera_mutex_);
+    if (!orbit_initialized_) {
+        if (!has_base_camera_) {
+            return;
+        }
+        orbit_ = render::orbit_view_from_camera(base_camera_);
+        orbit_initialized_ = true;
+    }
+    orbit_ = render::rotate_orbit_view(orbit_, azimuth_delta_radians, elevation_delta_radians);
+    orbit_dirty_ = true;
+}
+
+void ViewportSession::dolly_camera(float radius_multiplier)
+{
+    std::lock_guard<std::mutex> lock(camera_mutex_);
+    if (!orbit_initialized_) {
+        if (!has_base_camera_) {
+            return;
+        }
+        orbit_ = render::orbit_view_from_camera(base_camera_);
+        orbit_initialized_ = true;
+    }
+    orbit_ = render::dolly_orbit_view(orbit_, radius_multiplier);
+    orbit_dirty_ = true;
+}
+
+void ViewportSession::reset_camera()
+{
+    std::lock_guard<std::mutex> lock(camera_mutex_);
+    orbit_initialized_ = false;
+    orbit_dirty_ = true;
+}
+
+// Poll the pointer against the viewport window: left drag orbits, right drag
+// dollies. Polling (not events) sidesteps the shell's input routing.
+void ViewportSession::poll_pointer()
+{
+    auto* display = static_cast<Display*>(connection_.display());
+    if (display == nullptr) {
+        return;
+    }
+    Window root = 0;
+    Window child = 0;
+    int root_x = 0;
+    int root_y = 0;
+    int win_x = 0;
+    int win_y = 0;
+    unsigned int mask = 0;
+    if (XQueryPointer(display, static_cast<Window>(x_window_), &root, &child, &root_x, &root_y, &win_x, &win_y,
+                      &mask) == 0) {
+        last_dragging_ = false;
+        return;
+    }
+
+    const bool left = (mask & Button1Mask) != 0;
+    const bool right = (mask & Button3Mask) != 0;
+    if ((left || right) && last_dragging_) {
+        const int dx = win_x - last_pointer_x_;
+        const int dy = win_y - last_pointer_y_;
+        if (left) {
+            orbit_camera(static_cast<float>(-dx) * 0.006F, static_cast<float>(dy) * 0.006F);
+        } else {
+            dolly_camera(1.0F + static_cast<float>(dy) * 0.004F);
+        }
+    }
+    last_dragging_ = left || right;
+    last_pointer_x_ = win_x;
+    last_pointer_y_ = win_y;
+}
+
 bool ViewportSession::ensure_growth_renderer()
 {
     if (growth_ready_) {
@@ -461,8 +538,40 @@ bool ViewportSession::record_growth_frame(VkCommandBuffer command_buffer, std::u
             stage_dirty_ = false;
         }
     }
+    bool submitted_new = false;
     if (stage_to_submit) {
         if (auto submitted = renderer_->submit_growth_preview(*stage_to_submit); !submitted) {
+            return false;
+        }
+        submitted_new = true;
+    }
+
+    // Apply the interactive orbit camera on top of the stage's default framing.
+    bool apply_camera = submitted_new;
+    render::GrowthPreviewCamera oriented_camera;
+    {
+        std::lock_guard<std::mutex> lock(camera_mutex_);
+        if (submitted_new && stage_to_submit) {
+            base_camera_ = stage_to_submit->camera;
+            has_base_camera_ = true;
+        }
+        if (has_base_camera_) {
+            if (!orbit_initialized_) {
+                orbit_ = render::orbit_view_from_camera(base_camera_);
+                orbit_initialized_ = true;
+                apply_camera = true;
+            }
+            if (orbit_dirty_) {
+                orbit_dirty_ = false;
+                apply_camera = true;
+            }
+            if (apply_camera) {
+                oriented_camera = render::apply_orbit_view(base_camera_, orbit_);
+            }
+        }
+    }
+    if (apply_camera && has_base_camera_) {
+        if (auto set = renderer_->set_growth_preview_camera(oriented_camera); !set) {
             return false;
         }
     }

@@ -8,6 +8,7 @@
 #include <exception>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -127,6 +128,42 @@ void push_growth_stage(ToiNativeCore* core)
     const auto preferences = core->controller.viewport_preferences();
     core->viewport->set_guide_options(preferences.guides_visible, preferences.world_origin_axes_visible);
 }
+
+// Camera commands act on the live render-thread camera, not the controller, so
+// they are routed here rather than through the application-command seam.
+[[nodiscard]] std::optional<json> handle_camera_command(ToiNativeCore* core, const json& request)
+{
+    if (!request.contains("method") || !request.at("method").is_string()) {
+        return std::nullopt;
+    }
+    const std::string method = request.at("method").get<std::string>();
+    json id = request.contains("id") ? request.at("id") : nullptr;
+    const json params =
+        request.contains("params") && request.at("params").is_object() ? request.at("params") : json::object();
+
+    auto ok = [&id]() { return json{{"id", id}, {"ok", true}, {"result", json::object()}}; };
+
+    if (method == "viewport.orbit_camera") {
+        if (core->viewport) {
+            core->viewport->orbit_camera(params.value("azimuth_delta_radians", 0.0F),
+                                         params.value("elevation_delta_radians", 0.0F));
+        }
+        return ok();
+    }
+    if (method == "viewport.dolly_camera") {
+        if (core->viewport) {
+            core->viewport->dolly_camera(params.value("radius_multiplier", 1.0F));
+        }
+        return ok();
+    }
+    if (method == "viewport.reset_camera") {
+        if (core->viewport) {
+            core->viewport->reset_camera();
+        }
+        return ok();
+    }
+    return std::nullopt;
+}
 #endif
 
 } // namespace
@@ -163,6 +200,11 @@ extern "C" char* toi_handle_command(ToiNativeCore* core, const char* request_jso
         }
 
         const json request = json::parse(request_json);
+#ifdef TOI_ENABLE_OVRTX
+        if (auto camera_response = handle_camera_command(core, request); camera_response) {
+            return copy_json_string(camera_response->dump());
+        }
+#endif
         auto response = toi::app::handle_application_command(core->controller, request);
 #ifdef TOI_ENABLE_OVRTX
         if (request.contains("method") && request.at("method").is_string() &&
