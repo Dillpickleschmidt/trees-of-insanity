@@ -5,6 +5,12 @@
 #include <cstdint>
 #include <utility>
 
+#ifdef TOI_ENABLE_OVRTX
+#include "toi/render/viewport_guides.hpp"
+
+#include <vector>
+#endif
+
 namespace toi::viewport {
 namespace {
 
@@ -43,6 +49,39 @@ void transition(VkCommandBuffer command_buffer, VkImage image, VkImageLayout old
             1.0F,
         }};
 }
+
+#ifdef TOI_ENABLE_OVRTX
+[[nodiscard]] OverlayCamera to_overlay_camera(const render::GrowthPreviewCamera& camera)
+{
+    return OverlayCamera{
+        .eye = {camera.eye.x, camera.eye.y, camera.eye.z},
+        .right = {camera.right.x, camera.right.y, camera.right.z},
+        .up = {camera.up.x, camera.up.y, camera.up.z},
+        .negative_forward = {camera.negative_forward.x, camera.negative_forward.y, camera.negative_forward.z},
+        .focal_length = static_cast<float>(camera.focal_length),
+        .horizontal_aperture = static_cast<float>(camera.horizontal_aperture),
+        .vertical_aperture = static_cast<float>(camera.vertical_aperture),
+        .near_clip = camera.near_clip,
+        .far_clip = camera.far_clip,
+    };
+}
+
+[[nodiscard]] std::vector<OverlayLine> build_overlay_lines(const render::GrowthPreviewCamera& camera)
+{
+    const auto overlay = render::make_growth_preview_guides(camera);
+    std::vector<OverlayLine> lines;
+    lines.reserve(overlay.lines.size());
+    for (const auto& line : overlay.lines) {
+        lines.push_back(OverlayLine{
+            .start = {line.start.x, line.start.y, line.start.z},
+            .end = {line.end.x, line.end.y, line.end.z},
+            .color = {line.color.x, line.color.y, line.color.z},
+            .alpha = line.alpha,
+        });
+    }
+    return lines;
+}
+#endif
 
 } // namespace
 
@@ -206,7 +245,17 @@ Result<void> ViewportSession::recreate_swapchain()
 
     info_.width = static_cast<int>(swapchain_.extent().width);
     info_.height = static_cast<int>(swapchain_.extent().height);
-    return create_swapchain_resources();
+    if (auto resources = create_swapchain_resources(); !resources) {
+        return std::unexpected(resources.error());
+    }
+#ifdef TOI_ENABLE_OVRTX
+    if (growth_ready_) {
+        if (auto targets = overlay_.set_swapchain(context_, swapchain_); !targets) {
+            return std::unexpected(targets.error());
+        }
+    }
+#endif
+    return {};
 }
 
 void ViewportSession::record_test_pattern(VkCommandBuffer command_buffer, VkImage image, std::uint64_t frame)
@@ -257,7 +306,7 @@ void ViewportSession::render_loop()
         vkBeginCommandBuffer(command_buffer, &begin_info);
 
 #ifdef TOI_ENABLE_OVRTX
-        const bool drew_growth = record_growth_frame(command_buffer, image);
+        const bool drew_growth = record_growth_frame(command_buffer, image_index);
 #else
         const bool drew_growth = false;
 #endif
@@ -314,6 +363,7 @@ void ViewportSession::render_loop()
 
 #ifdef TOI_ENABLE_OVRTX
     // Release CUDA/ovrtx on the thread that created them.
+    overlay_.reset();
     cuda_done_.reset();
     interop_.reset();
     renderer_.reset();
@@ -328,6 +378,12 @@ void ViewportSession::set_pending_stage(render::GrowthPreviewStageProjection sta
     std::lock_guard<std::mutex> lock(stage_mutex_);
     pending_stage_ = std::move(stage);
     stage_dirty_ = true;
+}
+
+void ViewportSession::set_guide_options(bool guides_visible, bool world_origin_axes_visible)
+{
+    guides_visible_ = guides_visible;
+    world_origin_axes_visible_ = world_origin_axes_visible;
 }
 
 bool ViewportSession::ensure_growth_renderer()
@@ -377,15 +433,25 @@ bool ViewportSession::ensure_growth_renderer()
     }
     cuda_done_ = std::move(*cuda_done);
 
+    // Guide overlay (world-origin axes) drawn over the presented frame.
+    auto overlay = ViewportOverlay::create(context_, swapchain_.format());
+    if (overlay) {
+        overlay_ = std::move(*overlay);
+        if (auto targets = overlay_.set_swapchain(context_, swapchain_); !targets) {
+            overlay_.reset();
+        }
+    }
+
     growth_ready_ = true;
     return true;
 }
 
-bool ViewportSession::record_growth_frame(VkCommandBuffer command_buffer, VkImage swapchain_image)
+bool ViewportSession::record_growth_frame(VkCommandBuffer command_buffer, std::uint32_t image_index)
 {
     if (!ensure_growth_renderer()) {
         return false;
     }
+    VkImage swapchain_image = swapchain_.images()[image_index];
 
     std::optional<render::GrowthPreviewStageProjection> stage_to_submit;
     {
@@ -443,12 +509,22 @@ bool ViewportSession::record_growth_frame(VkCommandBuffer command_buffer, VkImag
     vkCmdBlitImage(command_buffer, interop_.image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchain_image,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
 
-    transition(command_buffer, swapchain_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-               VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
     // Return the interop image to GENERAL for the next CUDA write.
     transition(command_buffer, interop_.image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
                VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+
+    // Draw guide lines over the frame; the overlay render pass also moves the
+    // swapchain image to PRESENT_SRC. Otherwise transition it directly.
+    if (guides_visible_ && world_origin_axes_visible_) {
+        const auto lines = build_overlay_lines(rendered->camera);
+        const auto overlay_camera = to_overlay_camera(rendered->camera);
+        if (overlay_.record(command_buffer, image_index, swapchain_.extent(), overlay_camera, lines)) {
+            return true;
+        }
+    }
+    transition(command_buffer, swapchain_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+               VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
     return true;
 }
 

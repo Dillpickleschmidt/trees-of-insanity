@@ -124,6 +124,8 @@ void push_growth_stage(ToiNativeCore* core)
     if (stage) {
         core->viewport->set_pending_stage(std::move(*stage));
     }
+    const auto preferences = core->controller.viewport_preferences();
+    core->viewport->set_guide_options(preferences.guides_visible, preferences.world_origin_axes_visible);
 }
 #endif
 

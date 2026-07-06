@@ -15,6 +15,7 @@
 #ifdef TOI_ENABLE_OVRTX
 #include "toi/ovrtx/renderer_session.hpp"
 #include "toi/viewport/cuda_vulkan_interop.hpp"
+#include "toi/viewport/viewport_overlay.hpp"
 
 #include <mutex>
 #include <optional>
@@ -47,6 +48,7 @@ public:
     // Hand the render thread the latest growth-preview stage (built by the
     // command thread when a preview-changing command runs).
     void set_pending_stage(render::GrowthPreviewStageProjection stage);
+    void set_guide_options(bool guides_visible, bool world_origin_axes_visible);
 #endif
 
 private:
@@ -83,7 +85,7 @@ private:
     [[nodiscard]] bool ensure_growth_renderer();
     // Records the ovrtx growth frame into the swapchain image; returns false to
     // fall back to the test pattern (renderer not ready or a frame failed).
-    [[nodiscard]] bool record_growth_frame(VkCommandBuffer command_buffer, VkImage swapchain_image);
+    [[nodiscard]] bool record_growth_frame(VkCommandBuffer command_buffer, std::uint32_t image_index);
 
     std::mutex stage_mutex_;
     std::optional<render::GrowthPreviewStageProjection> pending_stage_;
@@ -92,8 +94,11 @@ private:
     std::unique_ptr<ovrtx::RendererSession> renderer_;
     CudaInteropImage interop_;
     CudaInteropSemaphore cuda_done_;
+    ViewportOverlay overlay_;
     bool growth_ready_ = false;
     bool growth_failed_ = false;
+    std::atomic<bool> guides_visible_{true};
+    std::atomic<bool> world_origin_axes_visible_{true};
 #endif
 };
 

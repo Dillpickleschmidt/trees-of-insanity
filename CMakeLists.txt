@@ -77,18 +77,42 @@ target_compile_definitions(toi_app PUBLIC
 if(TOI_ENABLE_VIEWPORT)
     find_package(Vulkan REQUIRED)
     find_package(X11 REQUIRED)
+    find_program(GLSLC_EXECUTABLE glslc REQUIRED)
+    find_program(XXD_EXECUTABLE xxd REQUIRED)
+
+    set(TOI_SHADER_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/toi/viewport/shaders)
+    file(MAKE_DIRECTORY ${TOI_SHADER_GEN_DIR})
+    function(toi_compile_shader out_var source symbol)
+        get_filename_component(name ${source} NAME)
+        set(spv ${TOI_SHADER_GEN_DIR}/${name}.spv)
+        set(cpp ${TOI_SHADER_GEN_DIR}/${name}.spv.cpp)
+        add_custom_command(
+            OUTPUT ${cpp}
+            COMMAND ${GLSLC_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/${source} -o ${spv}
+            COMMAND ${XXD_EXECUTABLE} -i -n ${symbol} ${spv} ${cpp}
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${source}
+            VERBATIM
+        )
+        set_source_files_properties(${cpp} PROPERTIES GENERATED TRUE)
+        set(${out_var} ${cpp} PARENT_SCOPE)
+    endfunction()
+    toi_compile_shader(TOI_OVERLAY_VERT_SPV_CPP src/toi/viewport/shaders/overlay_lines.vert overlay_lines_vert_spv)
+    toi_compile_shader(TOI_OVERLAY_FRAG_SPV_CPP src/toi/viewport/shaders/overlay_lines.frag overlay_lines_frag_spv)
 
     add_library(toi_viewport
         src/toi/viewport/src/error.cpp
         src/toi/viewport/src/x11_vulkan_surface.cpp
         src/toi/viewport/src/vulkan_context.cpp
         src/toi/viewport/src/vulkan_swapchain.cpp
+        src/toi/viewport/src/viewport_overlay.cpp
         src/toi/viewport/src/viewport_session.cpp
+        ${TOI_OVERLAY_VERT_SPV_CPP}
+        ${TOI_OVERLAY_FRAG_SPV_CPP}
     )
     target_include_directories(toi_viewport PUBLIC
         src/toi/viewport/include
     )
-    target_link_libraries(toi_viewport PUBLIC Vulkan::Vulkan X11::X11)
+    target_link_libraries(toi_viewport PUBLIC Vulkan::Vulkan X11::X11 toi_render)
     target_compile_features(toi_viewport PUBLIC cxx_std_23)
     target_compile_definitions(toi_viewport PUBLIC VK_USE_PLATFORM_XLIB_KHR)
 endif()
