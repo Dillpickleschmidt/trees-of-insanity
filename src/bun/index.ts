@@ -104,11 +104,47 @@ mainWindow.webview.on("dom-ready", () => {
 console.log("Trees of Insanity shell started");
 writeAutomationEvent("main-started");
 
+startControlServer();
+
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
 	process.on(signal, () => {
 		core?.close();
 		process.exit(0);
 	});
+}
+
+// Local control channel (the app.command half of the agent-control seam):
+// POST /command {method, params} -> native command seam. Enables driving and
+// verifying the app without simulating OS input. Enabled via TOI_CONTROL_PORT.
+function startControlServer() {
+	const port = Number(process.env.TOI_CONTROL_PORT);
+	if (!Number.isInteger(port) || port <= 0) {
+		return;
+	}
+	try {
+		Bun.serve({
+			port,
+			hostname: "127.0.0.1",
+			async fetch(request) {
+				if (request.method !== "POST" || new URL(request.url).pathname !== "/command") {
+					return new Response("not found", { status: 404 });
+				}
+				if (core === undefined) {
+					return Response.json({ ok: false, error: "native core unavailable" }, { status: 503 });
+				}
+				try {
+					return Response.json(core.request((await request.json()) as AppCommandParams));
+				} catch (error) {
+					return Response.json({ ok: false, error: String(error) }, { status: 400 });
+				}
+			},
+		});
+		console.log(`control server on 127.0.0.1:${port}`);
+		writeAutomationEvent("control-server", { port });
+	} catch (error) {
+		console.error("control server failed to start:", error);
+		writeAutomationEvent("control-server-failed", { port, message: String(error) });
+	}
 }
 
 function openNativeCore(): NativeCore | undefined {
