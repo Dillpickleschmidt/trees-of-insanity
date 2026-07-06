@@ -10,6 +10,7 @@ check:
 	cmake --preset core
 	cmake --build --preset core
 	ctest --preset core
+	bun run test:ffi
 
 core-config:
 	cmake --preset core

@@ -4,12 +4,14 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"dev": "bun run build:ui && electrobun dev",
+		"dev": "bun run build:native && bun run build:ui && electrobun dev",
 		"dev:watch": "concurrently \"bun run ui:watch\" \"TOI_USE_VITE_DEV_SERVER=1 electrobun dev --watch\"",
 		"ui:watch": "vite --host 127.0.0.1 --port 5173",
 		"build:ui": "vite build",
-		"build": "bun run build:ui && electrobun build --env=canary",
+		"build:native": "cmake --preset core && cmake --build --preset core",
+		"build": "bun run build:native && bun run build:ui && electrobun build --env=canary",
 		"typecheck": "tsc --noEmit",
+		"test:ffi": "bun test tests/nativeCore.test.ts",
 		"verify:shell": "bun scripts/verify-shell.ts"
 	},
 	"dependencies": {
