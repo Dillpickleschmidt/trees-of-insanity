@@ -67,6 +67,34 @@ TEST_CASE("application controller opens default module workspace")
     CHECK(state->module_physiological_age == state->fully_grown_age);
 }
 
+TEST_CASE("age scrubbing keeps the growth-preview stage topology stable")
+{
+    auto controller = toi::app::ApplicationController::create({
+        .project_path = fresh_project_path("age-scrub-stage-stability"),
+        .asset_root_path = prototype_path().parent_path().parent_path(),
+        .prototype_asset_path = prototype_path(),
+    });
+    REQUIRE(controller.has_value());
+
+    auto state = controller->state();
+    REQUIRE(state.has_value());
+
+    REQUIRE(controller->set_module_physiological_age(0.0F).has_value());
+    auto young = controller->growth_preview_stage_projection();
+    REQUIRE(young.has_value());
+
+    REQUIRE(controller->set_module_physiological_age(state->fully_grown_age).has_value());
+    auto mature = controller->growth_preview_stage_projection();
+    REQUIRE(mature.has_value());
+
+    // The USD stage text (topology, lights, camera product) is identical across
+    // ages; only the mesh point attributes change. That lets the renderer skip a
+    // stage reload on age scrub — the "no blink" property.
+    CHECK(young->usd_stage.text == mature->usd_stage.text);
+    // The visible geometry still changes with age.
+    CHECK(young->mesh.vertex_count != mature->mesh.vertex_count);
+}
+
 TEST_CASE("C ABI creates core and handles app.get_state")
 {
     const auto project_path = fresh_project_path("c-abi-app-state");
