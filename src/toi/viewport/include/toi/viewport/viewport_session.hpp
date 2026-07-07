@@ -53,10 +53,10 @@ public:
 #endif
 
 private:
-    // One frame in flight: the top-of-loop fence wait then guarantees the prior
-    // frame's blit finished before the next CUDA copy reuses the single shared
-    // interop image and semaphore. The ovrtx render dominates frame time, so
-    // this costs no real throughput.
+    // One Vulkan frame in flight: the fence wait before a produce kick then
+    // guarantees no in-flight Vulkan work still reads the slot CUDA is about to
+    // overwrite. Frame throughput comes from the CUDA/Vulkan double buffering,
+    // not Vulkan pipelining — the ovrtx render dominates frame time.
     static constexpr int kFramesInFlight = 1;
 
     ViewportSession() = default;
@@ -83,31 +83,48 @@ private:
     ViewportInfo info_;
 
 #ifdef TOI_ENABLE_OVRTX
+    // One double-buffered CUDA→Vulkan frame: CUDA renders + copies into the
+    // produce slot while Vulkan blits/samples the present slot, so continuous
+    // growth playback overlaps the two engines with no device-wide sync. The
+    // camera is stored per slot so the guide overlay always matches the frame
+    // actually on screen.
+    struct GrowthSlot {
+        CudaInteropImage color;
+        // Shared scene-distance image (ovrtx DistanceToCameraSD), sampled by the
+        // overlay so guide lines are occluded by the plant/ground geometry.
+        CudaInteropFloatImage distance;
+        render::GrowthPreviewCamera camera{};
+        std::uint64_t timeline_value = 0;
+        bool has_distance = false;
+    };
+
     [[nodiscard]] bool ensure_growth_renderer();
-    // Records the ovrtx growth frame into the swapchain image; returns false to
-    // fall back to the test pattern (renderer not ready or a frame failed).
-    [[nodiscard]] bool record_growth_frame(VkCommandBuffer command_buffer, std::uint32_t image_index);
+    // Kicks an ovrtx render + async copies into the produce slot when something
+    // changed (new stage, camera move, guide toggle). Returns whether it kicked.
+    [[nodiscard]] bool produce_growth_frame();
+    // Polls the produce slot's copy-completion event; on completion swaps the
+    // slots so the new frame is presented.
+    void complete_pending_produce();
+    // Records the present slot's frame into the swapchain image; returns false
+    // to fall back to the test pattern (no completed frame yet).
+    [[nodiscard]] bool record_growth_present(VkCommandBuffer command_buffer, std::uint32_t image_index);
 
     std::mutex stage_mutex_;
     std::optional<render::GrowthPreviewStageProjection> pending_stage_;
     bool stage_dirty_ = false;
 
     std::unique_ptr<ovrtx::RendererSession> renderer_;
-    CudaInteropImage interop_;
-    // Shared scene-distance image (ovrtx DistanceToCameraSD), sampled by the
-    // overlay so guide lines are occluded by the plant/ground geometry.
-    CudaInteropFloatImage scene_distance_;
-    CudaInteropSemaphore cuda_done_;
+    GrowthSlot slots_[2];
+    int present_slot_ = 0;
+    int produce_slot_ = 1;
+    CudaInteropTimelineSemaphore frames_ready_;
+    std::uint64_t timeline_value_ = 0;
+    cudaEvent_t copy_done_ = nullptr;
+    bool produce_pending_ = false;
     ViewportOverlay overlay_;
     bool growth_ready_ = false;
     bool growth_failed_ = false;
-    // ovrtx is re-rendered only on change (new stage, camera move, guide toggle);
-    // idle frames re-blit the cached interop image. Continuously stepping the
-    // path tracer on a static scene makes it flicker and wastes the GPU.
-    bool rendered_once_ = false;
     bool last_draw_guides_ = false;
-    bool cuda_signaled_this_frame_ = false;
-    render::GrowthPreviewCamera last_camera_{};
     // Set whenever the presented image should change (new stage, camera move,
     // guide toggle). The render loop keeps polling input every tick for
     // responsiveness but only runs the GPU present when this is set, so a static

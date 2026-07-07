@@ -20,6 +20,20 @@ constexpr int kWarmupFramesAfterStageOpen = 1;
 
 static_assert(sizeof(growth::Vec3) == sizeof(float) * 3);
 
+// ovrtx renders asynchronously; a mapped output carries a CUDA event that is
+// signaled when the render actually completes on the GPU. Wait it on
+// sync_stream so work the caller enqueues there reads a finished frame.
+[[nodiscard]] Result<void> wait_render_complete_event(const ovrtx_render_var_output_t& mapped,
+                                                      std::uintptr_t sync_stream)
+{
+    if (mapped.cuda_sync.wait_event == 0) {
+        return {};
+    }
+    return require_cuda_success(cudaStreamWaitEvent(reinterpret_cast<cudaStream_t>(sync_stream),
+                                                    reinterpret_cast<cudaEvent_t>(mapped.cuda_sync.wait_event), 0),
+                                "cudaStreamWaitEvent");
+}
+
 [[nodiscard]] Result<void> write_mesh_points(ovrtx_renderer_t* renderer,
                                              const std::vector<render::GrowthPreviewMeshAttributes>& meshes)
 {
@@ -187,11 +201,12 @@ Result<MappedCudaFrame> RendererSession::render_cuda_frame_once(RenderFrameOutpu
     if (ldr_handle == OVRTX_INVALID_HANDLE) {
         return std::unexpected(make_error("LdrColor output was not produced"));
     }
+    // Map outputs as CUDA arrays (no extra linear-tensor conversion) and rely on
+    // the returned render-completion event, matching NVIDIA's vulkan-interop
+    // example. Waiting that event on sync_stream orders any work the caller
+    // enqueues there after the finished render — no device-wide sync needed.
     ovrtx_map_output_description_t map_desc = {};
-    map_desc.device_type = OVRTX_MAP_DEVICE_TYPE_CUDA;
-    // We do not rely on the map's stream-sync contract (the cudaDeviceSynchronize
-    // below covers render completion), so pass 0 rather than asking ovrtx to sync
-    // to our stream — matching NVIDIA's vulkan-interop example.
+    map_desc.device_type = OVRTX_MAP_DEVICE_TYPE_CUDA_ARRAY;
     map_desc.sync_stream = 0;
 
     ovrtx_render_var_output_t mapped = {};
@@ -203,12 +218,12 @@ Result<MappedCudaFrame> RendererSession::render_cuda_frame_once(RenderFrameOutpu
 
     MappedOutputHandle output(renderer_.get(), mapped.map_handle);
     output.set_before_destroy_stream(sync_stream);
-    auto tensor = require_ldr_tensor_view(mapped);
-    if (!tensor) {
-        return std::unexpected(tensor.error());
+    if (auto waited = wait_render_complete_event(mapped, sync_stream); !waited) {
+        return std::unexpected(waited.error());
     }
-    if (tensor->tensor->device.device_type != kDLCUDA) {
-        return std::unexpected(make_error("LdrColor CUDA map did not return a CUDA tensor"));
+    auto color = require_rgba8_cuda_array_tensor_view(mapped, "LdrColor");
+    if (!color) {
+        return std::unexpected(color.error());
     }
 
     MappedOutputHandle distance_output;
@@ -231,40 +246,28 @@ Result<MappedCudaFrame> RendererSession::render_cuda_frame_once(RenderFrameOutpu
 
         distance_output = MappedOutputHandle(renderer_.get(), mapped_distance.map_handle);
         distance_output.set_before_destroy_stream(sync_stream);
+        if (auto waited = wait_render_complete_event(mapped_distance, sync_stream); !waited) {
+            return std::unexpected(waited.error());
+        }
         auto distance_tensor = require_float_cuda_array_tensor_view(mapped_distance, "DistanceToCameraSD");
         if (!distance_tensor) {
             return std::unexpected(distance_tensor.error());
         }
-        if (distance_tensor->width != tensor->width || distance_tensor->height != tensor->height) {
+        if (distance_tensor->width != color->width || distance_tensor->height != color->height) {
             return std::unexpected(make_error("DistanceToCameraSD dimensions do not match LdrColor"));
         }
 
         scene_distance_cuda_array = distance_tensor->cuda_array;
     }
 
-    // ovrtx renders asynchronously on its own CUDA stream, and ovrtx_step /
-    // ovrtx_fetch_results do not guarantee that render has finished on the GPU
-    // when they return. The output map targets sync_stream, but that does not
-    // cover ovrtx's render stream, so a caller that immediately reads the mapped
-    // LdrColor/distance on sync_stream can race the render and get a partly- or
-    // un-rendered (black) frame. Wait for the device so the returned frame's
-    // pixels are complete. (Paced callers only hid this by giving the render
-    // incidental time to land.)
-    if (auto synced = require_cuda_success(cudaDeviceSynchronize(), "cudaDeviceSynchronize after ovrtx render");
-        !synced) {
-        return std::unexpected(synced.error());
-    }
-
     return MappedCudaFrame{
         .results = std::move(results),
         .output = std::move(output),
         .distance_output = std::move(distance_output),
-        .tensor = tensor->tensor,
-        .width = tensor->width,
-        .height = tensor->height,
-        .channel_count = tensor->channel_count,
-        .row_stride_bytes = tensor->row_stride_bytes,
-        .byte_offset = tensor->byte_offset,
+        .color_cuda_array = color->cuda_array,
+        .width = color->width,
+        .height = color->height,
+        .channel_count = color->channel_count,
         .sync_stream = sync_stream,
         .camera = camera_,
         .scene_distance_cuda_array = scene_distance_cuda_array,

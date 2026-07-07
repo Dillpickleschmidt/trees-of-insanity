@@ -138,10 +138,10 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
         return std::unexpected(result.error());
     }
 
-    VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+    VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kDistanceSlotCount};
     VkDescriptorPoolCreateInfo pool_info{};
     pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pool_info.maxSets = 1;
+    pool_info.maxSets = kDistanceSlotCount;
     pool_info.poolSizeCount = 1;
     pool_info.pPoolSizes = &pool_size;
     if (auto result = require_vk(vkCreateDescriptorPool(overlay.device_, &pool_info, nullptr, &overlay.descriptor_pool_),
@@ -151,12 +151,14 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
         return std::unexpected(result.error());
     }
 
+    std::array<VkDescriptorSetLayout, kDistanceSlotCount> set_layouts{};
+    set_layouts.fill(overlay.descriptor_set_layout_);
     VkDescriptorSetAllocateInfo set_alloc{};
     set_alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     set_alloc.descriptorPool = overlay.descriptor_pool_;
-    set_alloc.descriptorSetCount = 1;
-    set_alloc.pSetLayouts = &overlay.descriptor_set_layout_;
-    if (auto result = require_vk(vkAllocateDescriptorSets(overlay.device_, &set_alloc, &overlay.descriptor_set_),
+    set_alloc.descriptorSetCount = kDistanceSlotCount;
+    set_alloc.pSetLayouts = set_layouts.data();
+    if (auto result = require_vk(vkAllocateDescriptorSets(overlay.device_, &set_alloc, overlay.descriptor_sets_),
                                  "vkAllocateDescriptorSets");
         !result) {
         overlay.reset();
@@ -379,15 +381,18 @@ Result<void> ViewportOverlay::set_swapchain(VulkanContext& context, const Vulkan
     return {};
 }
 
-Result<void> ViewportOverlay::set_scene_distance(VkImageView distance_view)
+Result<void> ViewportOverlay::set_scene_distance(std::uint32_t distance_slot, VkImageView distance_view)
 {
+    if (distance_slot >= kDistanceSlotCount) {
+        return std::unexpected(make_error("overlay distance slot out of range"));
+    }
     VkDescriptorImageInfo image_info{};
     image_info.sampler = sampler_;
     image_info.imageView = distance_view;
     image_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     VkWriteDescriptorSet write{};
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = descriptor_set_;
+    write.dstSet = descriptor_sets_[distance_slot];
     write.dstBinding = 0;
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -397,8 +402,12 @@ Result<void> ViewportOverlay::set_scene_distance(VkImageView distance_view)
 }
 
 Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, std::uint32_t image_index, VkExtent2D extent,
-                                     const OverlayCamera& camera, std::span<const OverlayLine> lines, float depth_bias)
+                                     const OverlayCamera& camera, std::span<const OverlayLine> lines, float depth_bias,
+                                     std::uint32_t distance_slot)
 {
+    if (distance_slot >= kDistanceSlotCount) {
+        return std::unexpected(make_error("overlay distance slot out of range"));
+    }
     if (image_index >= framebuffers_.size()) {
         return std::unexpected(make_error("overlay framebuffer index out of range"));
     }
@@ -431,7 +440,7 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, std::uint32
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1,
-                                &descriptor_set_, 0, nullptr);
+                                &descriptor_sets_[distance_slot], 0, nullptr);
 
         OverlayPushConstants push{};
         std::memcpy(push.eye, camera.eye, sizeof(camera.eye));
@@ -510,7 +519,9 @@ void ViewportOverlay::reset()
     if (descriptor_pool_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(device_, descriptor_pool_, nullptr);
         descriptor_pool_ = VK_NULL_HANDLE;
-        descriptor_set_ = VK_NULL_HANDLE;
+        for (auto& descriptor_set : descriptor_sets_) {
+            descriptor_set = VK_NULL_HANDLE;
+        }
     }
     if (descriptor_set_layout_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(device_, descriptor_set_layout_, nullptr);
@@ -529,7 +540,9 @@ void ViewportOverlay::move_from(ViewportOverlay& other) noexcept
     render_pass_ = std::exchange(other.render_pass_, VK_NULL_HANDLE);
     descriptor_set_layout_ = std::exchange(other.descriptor_set_layout_, VK_NULL_HANDLE);
     descriptor_pool_ = std::exchange(other.descriptor_pool_, VK_NULL_HANDLE);
-    descriptor_set_ = std::exchange(other.descriptor_set_, VK_NULL_HANDLE);
+    for (std::uint32_t slot = 0; slot < kDistanceSlotCount; ++slot) {
+        descriptor_sets_[slot] = std::exchange(other.descriptor_sets_[slot], VK_NULL_HANDLE);
+    }
     sampler_ = std::exchange(other.sampler_, VK_NULL_HANDLE);
     pipeline_layout_ = std::exchange(other.pipeline_layout_, VK_NULL_HANDLE);
     pipeline_ = std::exchange(other.pipeline_, VK_NULL_HANDLE);

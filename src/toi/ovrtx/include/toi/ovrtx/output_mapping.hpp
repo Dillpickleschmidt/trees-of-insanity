@@ -10,13 +10,11 @@
 
 namespace toi::ovrtx {
 
-struct LdrTensorView {
-    const DLTensor* tensor = nullptr;
+struct Rgba8CudaArrayTensorView {
+    const void* cuda_array = nullptr;
     int width = 0;
     int height = 0;
     int channel_count = 0;
-    std::size_t row_stride_bytes = 0;
-    std::size_t byte_offset = 0;
 };
 
 struct FloatCudaArrayTensorView {
@@ -28,7 +26,8 @@ struct FloatCudaArrayTensorView {
 
 [[nodiscard]] ovrtx_render_var_output_handle_t find_render_var_output(const ovrtx_render_product_set_outputs_t& outputs,
                                                                       std::string_view render_var_name);
-[[nodiscard]] Result<LdrTensorView> require_ldr_tensor_view(const ovrtx_render_var_output_t& mapped);
+[[nodiscard]] Result<Rgba8CudaArrayTensorView>
+require_rgba8_cuda_array_tensor_view(const ovrtx_render_var_output_t& mapped, std::string_view render_var_name);
 [[nodiscard]] Result<FloatCudaArrayTensorView>
 require_float_cuda_array_tensor_view(const ovrtx_render_var_output_t& mapped, std::string_view render_var_name);
 

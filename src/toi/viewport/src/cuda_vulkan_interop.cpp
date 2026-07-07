@@ -125,14 +125,14 @@ Result<void> select_cuda_device(int cuda_device)
     return require_cuda_success(cudaSetDevice(cuda_device), "cudaSetDevice");
 }
 
-CudaInteropSemaphore::CudaInteropSemaphore(CudaInteropSemaphore&& other) noexcept
+CudaInteropTimelineSemaphore::CudaInteropTimelineSemaphore(CudaInteropTimelineSemaphore&& other) noexcept
     : device_(std::exchange(other.device_, VK_NULL_HANDLE))
     , vk_semaphore_(std::exchange(other.vk_semaphore_, VK_NULL_HANDLE))
     , cuda_semaphore_(std::exchange(other.cuda_semaphore_, nullptr))
 {
 }
 
-CudaInteropSemaphore& CudaInteropSemaphore::operator=(CudaInteropSemaphore&& other) noexcept
+CudaInteropTimelineSemaphore& CudaInteropTimelineSemaphore::operator=(CudaInteropTimelineSemaphore&& other) noexcept
 {
     if (this != &other) {
         reset();
@@ -143,15 +143,21 @@ CudaInteropSemaphore& CudaInteropSemaphore::operator=(CudaInteropSemaphore&& oth
     return *this;
 }
 
-CudaInteropSemaphore::~CudaInteropSemaphore()
+CudaInteropTimelineSemaphore::~CudaInteropTimelineSemaphore()
 {
     reset();
 }
 
-Result<CudaInteropSemaphore> CudaInteropSemaphore::create(VulkanContext& context)
+Result<CudaInteropTimelineSemaphore> CudaInteropTimelineSemaphore::create(VulkanContext& context)
 {
+    VkSemaphoreTypeCreateInfo type_info{};
+    type_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+    type_info.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+    type_info.initialValue = 0;
+
     VkExportSemaphoreCreateInfo export_info{};
     export_info.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
+    export_info.pNext = &type_info;
     export_info.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
 
     VkSemaphoreCreateInfo create_info{};
@@ -184,7 +190,7 @@ Result<CudaInteropSemaphore> CudaInteropSemaphore::create(VulkanContext& context
     }
 
     cudaExternalSemaphoreHandleDesc desc{};
-    desc.type = cudaExternalSemaphoreHandleTypeOpaqueFd;
+    desc.type = cudaExternalSemaphoreHandleTypeTimelineSemaphoreFd;
     desc.handle.fd = fd;
 
     cudaExternalSemaphore_t cuda_semaphore = nullptr;
@@ -194,27 +200,28 @@ Result<CudaInteropSemaphore> CudaInteropSemaphore::create(VulkanContext& context
         return std::unexpected(make_error(cuda_error("cudaImportExternalSemaphore", import_result)));
     }
 
-    CudaInteropSemaphore out;
+    CudaInteropTimelineSemaphore out;
     out.device_ = context.device();
     out.vk_semaphore_ = semaphore;
     out.cuda_semaphore_ = cuda_semaphore;
     return out;
 }
 
-Result<void> CudaInteropSemaphore::signal_from_ovrtx_stream(std::uintptr_t stream)
+Result<void> CudaInteropTimelineSemaphore::signal_from_ovrtx_stream(std::uint64_t value, std::uintptr_t stream)
 {
     cudaExternalSemaphoreSignalParams params{};
+    params.params.fence.value = value;
     return require_cuda_success(
         cudaSignalExternalSemaphoresAsync(&cuda_semaphore_, &params, 1, cuda_stream_from_ovrtx(stream)),
         "cudaSignalExternalSemaphoresAsync");
 }
 
-VkSemaphore CudaInteropSemaphore::vk_semaphore() const
+VkSemaphore CudaInteropTimelineSemaphore::vk_semaphore() const
 {
     return vk_semaphore_;
 }
 
-void CudaInteropSemaphore::reset()
+void CudaInteropTimelineSemaphore::reset()
 {
     if (cuda_semaphore_ != nullptr) {
         cudaDestroyExternalSemaphore(cuda_semaphore_);
@@ -404,17 +411,23 @@ Result<CudaInteropImage> CudaInteropImage::create(VulkanContext& context, int wi
     return out;
 }
 
-Result<void> CudaInteropImage::copy_from_cuda_frame(const CudaDeviceFrameView& frame)
+Result<void> CudaInteropImage::copy_from_cuda_array(const void* source_cuda_array, int width, int height,
+                                                    std::uintptr_t stream)
 {
-    if (frame.device_data == nullptr || frame.width != width_ || frame.height != height_ || frame.channel_count < 4) {
-        return std::unexpected(make_error("CUDA frame does not match Vulkan interop image"));
+    if (source_cuda_array == nullptr || cuda_array_ == nullptr || width != width_ || height != height_) {
+        return std::unexpected(make_error("CUDA array does not match Vulkan interop image"));
     }
-    const auto* source = static_cast<const std::byte*>(frame.device_data) + frame.byte_offset;
-    return require_cuda_success(cudaMemcpy2DToArrayAsync(cuda_array_, 0, 0, source, frame.row_stride_bytes,
-                                                         static_cast<std::size_t>(width_) * 4,
-                                                         static_cast<std::size_t>(height_), cudaMemcpyDeviceToDevice,
-                                                         cuda_stream_from_ovrtx(frame.stream)),
-                                "cudaMemcpy2DToArrayAsync");
+
+    cudaMemcpy3DParms copy{};
+    copy.srcArray = reinterpret_cast<cudaArray_t>(const_cast<void*>(source_cuda_array));
+    copy.dstArray = cuda_array_;
+    copy.extent = cudaExtent{
+        .width = static_cast<std::size_t>(width_),
+        .height = static_cast<std::size_t>(height_),
+        .depth = 1,
+    };
+    copy.kind = cudaMemcpyDeviceToDevice;
+    return require_cuda_success(cudaMemcpy3DAsync(&copy, cuda_stream_from_ovrtx(stream)), "cudaMemcpy3DAsync");
 }
 
 VkImage CudaInteropImage::image() const

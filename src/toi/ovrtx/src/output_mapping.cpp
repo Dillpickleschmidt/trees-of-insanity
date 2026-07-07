@@ -35,40 +35,38 @@ ovrtx_render_var_output_handle_t find_render_var_output(const ovrtx_render_produ
     return OVRTX_INVALID_HANDLE;
 }
 
-Result<LdrTensorView> require_ldr_tensor_view(const ovrtx_render_var_output_t& mapped)
+Result<Rgba8CudaArrayTensorView> require_rgba8_cuda_array_tensor_view(const ovrtx_render_var_output_t& mapped,
+                                                                      std::string_view render_var_name)
 {
     if (mapped.status != OVRTX_EVENT_COMPLETED) {
         const auto message = from_ovx_string(mapped.error_message);
-        return std::unexpected(make_error(message.empty() ? "LdrColor map was not completed" : message));
+        return std::unexpected(
+            make_error(message.empty() ? std::string(render_var_name) + " map was not completed" : message));
     }
     if (mapped.num_tensors != 1 || mapped.tensors == nullptr || mapped.tensors[0].dl == nullptr) {
-        return std::unexpected(make_error("LdrColor did not map to a single DLPack tensor"));
+        return std::unexpected(make_error(std::string(render_var_name) + " did not map to a single DLPack tensor"));
     }
 
     const DLTensor& tensor = *mapped.tensors[0].dl;
     if (tensor.ndim != 3 || tensor.shape == nullptr || tensor.shape[2] < 4 || tensor.dtype.lanes != 1 ||
-        tensor.dtype.code != kDLUInt || tensor.dtype.bits != 8 || tensor.data == nullptr) {
-        return std::unexpected(make_error("LdrColor tensor layout is not RGBA8 [height, width, channels]"));
+        tensor.dtype.code != kDLOpaqueHandle || tensor.dtype.bits != 8 || tensor.data == nullptr ||
+        tensor.device.device_type != kDLCUDA || tensor.byte_offset != 0) {
+        return std::unexpected(
+            make_error(std::string(render_var_name) + " tensor layout is not an RGBA8 CUDA array"));
     }
 
     const auto width = static_cast<int>(tensor.shape[1]);
     const auto height = static_cast<int>(tensor.shape[0]);
     const auto channel_count = static_cast<int>(tensor.shape[2]);
-    if (width <= 0 || height <= 0 || channel_count < 4) {
-        return std::unexpected(make_error("LdrColor tensor dimensions are invalid"));
+    if (width <= 0 || height <= 0) {
+        return std::unexpected(make_error(std::string(render_var_name) + " tensor dimensions are invalid"));
     }
 
-    const auto row_stride = tensor.strides == nullptr
-                                ? static_cast<std::size_t>(width) * static_cast<std::size_t>(channel_count)
-                                : static_cast<std::size_t>(tensor.strides[0]);
-
-    return LdrTensorView{
-        .tensor = &tensor,
+    return Rgba8CudaArrayTensorView{
+        .cuda_array = tensor.data,
         .width = width,
         .height = height,
         .channel_count = channel_count,
-        .row_stride_bytes = row_stride,
-        .byte_offset = tensor.byte_offset,
     };
 }
 

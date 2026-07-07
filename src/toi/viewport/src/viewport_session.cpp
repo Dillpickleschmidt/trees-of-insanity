@@ -300,19 +300,33 @@ void ViewportSession::render_loop()
     while (running_) {
 #ifdef TOI_ENABLE_OVRTX
         poll_pointer();
+        // Swap the double-buffered slots as soon as a kicked frame's copies land.
+        complete_pending_produce();
         // A settled preview does not need to re-present the same frame: keep
         // polling input every tick for responsiveness, but skip the whole GPU
         // present until something changes (new stage, camera move, guide toggle,
-        // resize). This takes idle GPU/compositor load to near zero. Startup and
-        // the animated test pattern (before the first growth frame) always present.
-        if (growth_ready_ && rendered_once_ && !needs_present_.exchange(false) &&
+        // resize) or a produced frame completes. This takes idle GPU/compositor
+        // load to near zero. Startup and the animated test pattern (before the
+        // first growth frame) always present.
+        if (growth_ready_ && slots_[present_slot_].timeline_value != 0 && !needs_present_.exchange(false) &&
             ++idle_skip_ticks < kIdleKeepaliveTicks) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(8));
+            // Poll faster while a produce is in flight so its completion is
+            // presented promptly; back off when fully idle.
+            std::this_thread::sleep_for(std::chrono::milliseconds(produce_pending_ ? 2 : 8));
             continue;
         }
         idle_skip_ticks = 0;
 #endif
         vkWaitForFences(device, 1, &in_flight_[frame], VK_TRUE, UINT64_MAX);
+
+#ifdef TOI_ENABLE_OVRTX
+        // Kick the next ovrtx render + copies after the fence wait: with one
+        // Vulkan frame in flight no submit still reads the produce slot, so CUDA
+        // may overwrite it while this iteration presents the other slot.
+        if (ensure_growth_renderer()) {
+            (void)produce_growth_frame();
+        }
+#endif
 
         std::uint32_t image_index = 0;
         VkResult acquired = vkAcquireNextImageKHR(device, swapchain_.get(), UINT64_MAX, image_available_[frame],
@@ -339,7 +353,7 @@ void ViewportSession::render_loop()
         vkBeginCommandBuffer(command_buffer, &begin_info);
 
 #ifdef TOI_ENABLE_OVRTX
-        const bool drew_growth = record_growth_frame(command_buffer, image_index);
+        const bool drew_growth = record_growth_present(command_buffer, image_index);
 #else
         const bool drew_growth = false;
 #endif
@@ -363,15 +377,25 @@ void ViewportSession::render_loop()
             VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT};
         std::uint32_t wait_count = 1;
 #ifdef TOI_ENABLE_OVRTX
-        // Only wait on the CUDA semaphore when this frame actually re-rendered;
-        // idle frames re-blit an interop image CUDA finished writing earlier.
-        if (drew_growth && cuda_signaled_this_frame_) {
-            wait_semaphores[1] = cuda_done_.vk_semaphore();
+        // Reading the present slot waits for its CUDA copies via the timeline
+        // value; timeline waits are non-consuming, so re-presenting the same slot
+        // re-waits the same (already signaled) value.
+        std::uint64_t wait_values[2] = {0, 0};
+        if (drew_growth) {
+            wait_semaphores[1] = frames_ready_.vk_semaphore();
+            wait_values[1] = slots_[present_slot_].timeline_value;
             wait_count = 2;
         }
+        VkTimelineSemaphoreSubmitInfo timeline_info{};
+        timeline_info.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+        timeline_info.waitSemaphoreValueCount = wait_count;
+        timeline_info.pWaitSemaphoreValues = wait_values;
 #endif
         VkSubmitInfo submit{};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+#ifdef TOI_ENABLE_OVRTX
+        submit.pNext = &timeline_info;
+#endif
         submit.waitSemaphoreCount = wait_count;
         submit.pWaitSemaphores = wait_semaphores;
         submit.pWaitDstStageMask = wait_stages;
@@ -401,27 +425,40 @@ void ViewportSession::render_loop()
 
         frame = (frame + 1) % kFramesInFlight;
         ++counter;
-        // Cap the idle rate: the test pattern and idle re-presents of the cached
-        // growth frame don't need to run flat out; an active re-render does.
 #ifdef TOI_ENABLE_OVRTX
-        const bool cap_idle_rate = !drew_growth || !cuda_signaled_this_frame_;
-#else
-        const bool cap_idle_rate = true; // no growth path: always the animated test pattern
-#endif
-        if (cap_idle_rate) {
+        // Pace the loop: the test pattern runs at ~125Hz, and while a produce is
+        // cooking, re-presents (drag feedback) and completion polls run at ~500Hz.
+        // A completed swap loops straight through to kick the next render.
+        if (!drew_growth) {
             std::this_thread::sleep_for(std::chrono::milliseconds(8));
+        } else if (produce_pending_) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
+#else
+        std::this_thread::sleep_for(std::chrono::milliseconds(8));
+#endif
     }
 
+    vkDeviceWaitIdle(device);
 #ifdef TOI_ENABLE_OVRTX
-    // Release CUDA/ovrtx on the thread that created them.
+    // Release CUDA/ovrtx on the thread that created them, after the device is
+    // idle and any in-flight copies into the shared images have drained.
+    if (produce_pending_ && copy_done_ != nullptr) {
+        cudaEventSynchronize(copy_done_);
+        produce_pending_ = false;
+    }
     overlay_.reset();
-    scene_distance_.reset();
-    cuda_done_.reset();
-    interop_.reset();
+    for (auto& slot : slots_) {
+        slot.distance.reset();
+        slot.color.reset();
+    }
+    frames_ready_.reset();
+    if (copy_done_ != nullptr) {
+        cudaEventDestroy(copy_done_);
+        copy_done_ = nullptr;
+    }
     renderer_.reset();
 #endif
-    vkDeviceWaitIdle(device);
 }
 
 #ifdef TOI_ENABLE_OVRTX
@@ -534,37 +571,52 @@ bool ViewportSession::ensure_growth_renderer()
     }
     renderer_ = std::make_unique<ovrtx::RendererSession>(std::move(*renderer));
 
-    auto interop = CudaInteropImage::create(context_, stage.usd_stage.width, stage.usd_stage.height);
-    if (!interop) {
+    auto fail = [this] {
+        for (auto& slot : slots_) {
+            slot.color.reset();
+        }
+        frames_ready_.reset();
         renderer_.reset();
         growth_failed_ = true;
         return false;
-    }
-    interop_ = std::move(*interop);
+    };
 
-    auto cuda_done = CudaInteropSemaphore::create(context_);
-    if (!cuda_done) {
-        interop_.reset();
-        renderer_.reset();
-        growth_failed_ = true;
-        return false;
+    for (auto& slot : slots_) {
+        auto color = CudaInteropImage::create(context_, stage.usd_stage.width, stage.usd_stage.height);
+        if (!color) {
+            return fail();
+        }
+        slot.color = std::move(*color);
     }
-    cuda_done_ = std::move(*cuda_done);
+
+    auto frames_ready = CudaInteropTimelineSemaphore::create(context_);
+    if (!frames_ready) {
+        return fail();
+    }
+    frames_ready_ = std::move(*frames_ready);
+
+    if (cudaEventCreateWithFlags(&copy_done_, cudaEventDisableTiming) != cudaSuccess) {
+        copy_done_ = nullptr;
+        return fail();
+    }
 
     // Guide overlay (world-origin axes) drawn over the presented frame, with a
-    // shared scene-distance image (ovrtx DistanceToCameraSD) so the axes are
-    // occluded by the plant/ground geometry.
-    auto scene_distance = CudaInteropFloatImage::create(context_, stage.usd_stage.width, stage.usd_stage.height);
+    // shared scene-distance image (ovrtx DistanceToCameraSD) per slot so the
+    // axes are occluded by the plant/ground geometry of the frame on screen.
+    auto distance_a = CudaInteropFloatImage::create(context_, stage.usd_stage.width, stage.usd_stage.height);
+    auto distance_b = CudaInteropFloatImage::create(context_, stage.usd_stage.width, stage.usd_stage.height);
     auto overlay = ViewportOverlay::create(context_, swapchain_.format());
-    if (scene_distance && overlay) {
-        scene_distance_ = std::move(*scene_distance);
+    if (distance_a && distance_b && overlay) {
+        slots_[0].distance = std::move(*distance_a);
+        slots_[1].distance = std::move(*distance_b);
         overlay_ = std::move(*overlay);
-        if (auto targets = overlay_.set_swapchain(context_, swapchain_); !targets) {
+        const bool wired = overlay_.set_swapchain(context_, swapchain_).has_value() &&
+                           overlay_.set_scene_distance(0, slots_[0].distance.view()).has_value() &&
+                           overlay_.set_scene_distance(1, slots_[1].distance.view()).has_value();
+        if (!wired) {
             overlay_.reset();
-            scene_distance_.reset();
-        } else if (auto bound = overlay_.set_scene_distance(scene_distance_.view()); !bound) {
-            overlay_.reset();
-            scene_distance_.reset();
+            slots_[0].distance.reset();
+            slots_[1].distance.reset();
         }
     }
 
@@ -572,13 +624,11 @@ bool ViewportSession::ensure_growth_renderer()
     return true;
 }
 
-bool ViewportSession::record_growth_frame(VkCommandBuffer command_buffer, std::uint32_t image_index)
+bool ViewportSession::produce_growth_frame()
 {
-    cuda_signaled_this_frame_ = false;
-    if (!ensure_growth_renderer()) {
+    if (produce_pending_) {
         return false;
     }
-    VkImage swapchain_image = swapchain_.images()[image_index];
 
     std::optional<render::GrowthPreviewStageProjection> stage_to_submit;
     {
@@ -588,20 +638,14 @@ bool ViewportSession::record_growth_frame(VkCommandBuffer command_buffer, std::u
             stage_dirty_ = false;
         }
     }
-    bool submitted_new = false;
-    if (stage_to_submit) {
-        if (auto submitted = renderer_->submit_growth_preview(*stage_to_submit); !submitted) {
-            return false;
-        }
-        submitted_new = true;
-    }
+    const bool submitted_new = stage_to_submit.has_value();
 
     // Apply the interactive orbit camera on top of the stage's default framing.
     bool apply_camera = submitted_new;
     render::GrowthPreviewCamera oriented_camera;
     {
         std::lock_guard<std::mutex> lock(camera_mutex_);
-        if (submitted_new && stage_to_submit) {
+        if (submitted_new) {
             base_camera_ = stage_to_submit->camera;
             has_base_camera_ = true;
         }
@@ -620,65 +664,101 @@ bool ViewportSession::record_growth_frame(VkCommandBuffer command_buffer, std::u
             }
         }
     }
+
+    GrowthSlot& slot = slots_[produce_slot_];
+    // Sample the scene distance for depth-aware guide occlusion only when the
+    // guides are actually drawn; a color-only frame skips the extra output.
+    const bool want_distance =
+        guides_visible_ && world_origin_axes_visible_ && slot.distance.view() != VK_NULL_HANDLE;
+
+    // Re-render ovrtx only when something changed; idle frames re-present the
+    // present slot. The path tracer flickers (and pegs the GPU) if it is stepped
+    // continuously on an unchanging scene.
+    const bool rendered_once = slots_[present_slot_].timeline_value != 0 || slot.timeline_value != 0;
+    if (!submitted_new && !apply_camera && rendered_once && want_distance == last_draw_guides_) {
+        return false;
+    }
+
+    if (stage_to_submit) {
+        if (auto submitted = renderer_->submit_growth_preview(*stage_to_submit); !submitted) {
+            return false;
+        }
+    }
     if (apply_camera && has_base_camera_) {
         if (auto set = renderer_->set_growth_preview_camera(oriented_camera); !set) {
             return false;
         }
     }
 
-    // Sample the scene distance for depth-aware guide occlusion only when the
-    // guides are actually drawn; a color-only frame skips the extra output.
-    const bool draw_guides =
-        guides_visible_ && world_origin_axes_visible_ && scene_distance_.view() != VK_NULL_HANDLE;
-
-    // Re-render ovrtx only when something changed; idle frames re-present the
-    // cached interop image. The path tracer flickers (and pegs the GPU) if it is
-    // stepped continuously on an unchanging scene.
-    const bool needs_render = submitted_new || apply_camera || !rendered_once_ || draw_guides != last_draw_guides_;
-    if (needs_render) {
-        auto rendered = renderer_->render_cuda_frame(draw_guides ? ovrtx::RenderFrameOutputs::ColorAndDistance
-                                                                 : ovrtx::RenderFrameOutputs::Color);
-        if (!rendered) {
-            return false;
-        }
-        if (rendered->width != interop_.width() || rendered->height != interop_.height()) {
-            return false;
-        }
-
-        const CudaDeviceFrameView view{
-            .device_data = rendered->tensor->data,
-            .width = rendered->width,
-            .height = rendered->height,
-            .channel_count = rendered->channel_count,
-            .row_stride_bytes = rendered->row_stride_bytes,
-            .byte_offset = rendered->byte_offset,
-            .stream = rendered->sync_stream,
-        };
-        if (auto copied = interop_.copy_from_cuda_frame(view); !copied) {
-            return false;
-        }
-        if (draw_guides && rendered->scene_distance_cuda_array != nullptr) {
-            if (auto copied = scene_distance_.copy_from_cuda_array(rendered->scene_distance_cuda_array, rendered->width,
-                                                                  rendered->height, rendered->sync_stream);
-                !copied) {
-                return false;
-            }
-        }
-        // CUDA signals when the copies complete; the Vulkan submit waits on this
-        // so the blit and the overlay's distance sampling read finished data (a
-        // CPU sync does not order the two GPU engines).
-        if (auto signaled = cuda_done_.signal_from_ovrtx_stream(rendered->sync_stream); !signaled) {
-            return false;
-        }
-        cuda_signaled_this_frame_ = true;
-        last_camera_ = rendered->camera;
-        last_draw_guides_ = draw_guides;
-        rendered_once_ = true;
+    auto rendered = renderer_->render_cuda_frame(want_distance ? ovrtx::RenderFrameOutputs::ColorAndDistance
+                                                               : ovrtx::RenderFrameOutputs::Color);
+    if (!rendered) {
+        return false;
+    }
+    if (rendered->width != slot.color.width() || rendered->height != slot.color.height()) {
+        return false;
     }
 
-    // Move the (freshly written or cached) interop image to a transfer-read
-    // layout for the blit.
-    transition(command_buffer, interop_.image(), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    // The copies are stream-ordered after ovrtx's render completion. copy_done_
+    // lets the CPU detect completion (to swap the slots); the timeline value
+    // lets the Vulkan submit order its blit/sampling after the copies.
+    if (auto copied = slot.color.copy_from_cuda_array(rendered->color_cuda_array, rendered->width, rendered->height,
+                                                      rendered->sync_stream);
+        !copied) {
+        return false;
+    }
+    slot.has_distance = false;
+    if (want_distance && rendered->scene_distance_cuda_array != nullptr) {
+        if (auto copied = slot.distance.copy_from_cuda_array(rendered->scene_distance_cuda_array, rendered->width,
+                                                             rendered->height, rendered->sync_stream);
+            !copied) {
+            return false;
+        }
+        slot.has_distance = true;
+    }
+    slot.camera = rendered->camera;
+
+    if (cudaEventRecord(copy_done_, reinterpret_cast<cudaStream_t>(rendered->sync_stream)) != cudaSuccess) {
+        return false;
+    }
+    if (auto signaled = frames_ready_.signal_from_ovrtx_stream(timeline_value_ + 1, rendered->sync_stream);
+        !signaled) {
+        return false;
+    }
+    ++timeline_value_;
+    slot.timeline_value = timeline_value_;
+    last_draw_guides_ = want_distance;
+    produce_pending_ = true;
+    return true;
+}
+
+void ViewportSession::complete_pending_produce()
+{
+    if (!produce_pending_) {
+        return;
+    }
+    const auto query = cudaEventQuery(copy_done_);
+    if (query == cudaErrorNotReady) {
+        return;
+    }
+    produce_pending_ = false;
+    if (query != cudaSuccess) {
+        return; // Keep presenting the old slot; the next change retries.
+    }
+    std::swap(present_slot_, produce_slot_);
+    needs_present_ = true;
+}
+
+bool ViewportSession::record_growth_present(VkCommandBuffer command_buffer, std::uint32_t image_index)
+{
+    GrowthSlot& slot = slots_[present_slot_];
+    if (!growth_ready_ || slot.timeline_value == 0) {
+        return false;
+    }
+    VkImage swapchain_image = swapchain_.images()[image_index];
+
+    // Move the slot's color image to a transfer-read layout for the blit.
+    transition(command_buffer, slot.color.image(), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                VK_PIPELINE_STAGE_TRANSFER_BIT);
     transition(command_buffer, swapchain_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
@@ -686,26 +766,28 @@ bool ViewportSession::record_growth_frame(VkCommandBuffer command_buffer, std::u
 
     VkImageBlit blit{};
     blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    blit.srcOffsets[1] = {interop_.width(), interop_.height(), 1};
+    blit.srcOffsets[1] = {slot.color.width(), slot.color.height(), 1};
     blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     blit.dstOffsets[1] = {static_cast<std::int32_t>(swapchain_.extent().width),
                           static_cast<std::int32_t>(swapchain_.extent().height), 1};
-    vkCmdBlitImage(command_buffer, interop_.image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchain_image,
+    vkCmdBlitImage(command_buffer, slot.color.image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchain_image,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
 
-    // Return the interop image to GENERAL for the next CUDA write.
-    transition(command_buffer, interop_.image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+    // Return the slot image to GENERAL for its next CUDA write.
+    transition(command_buffer, slot.color.image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
                VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
 
-    // Draw guide lines over the frame from the last rendered camera; the overlay
-    // render pass also moves the swapchain image to PRESENT_SRC. Otherwise
-    // transition it directly.
-    if (draw_guides && rendered_once_) {
-        const auto lines = build_overlay_lines(last_camera_);
-        const auto overlay_camera = to_overlay_camera(last_camera_);
-        const float depth_bias = overlay_depth_bias(last_camera_);
-        if (overlay_.record(command_buffer, image_index, swapchain_.extent(), overlay_camera, lines, depth_bias)) {
+    // Draw guide lines over the frame using the slot's own camera and distance
+    // image, so occlusion matches the frame on screen; the overlay render pass
+    // also moves the swapchain image to PRESENT_SRC. Otherwise transition it
+    // directly.
+    if (guides_visible_ && world_origin_axes_visible_ && slot.has_distance) {
+        const auto lines = build_overlay_lines(slot.camera);
+        const auto overlay_camera = to_overlay_camera(slot.camera);
+        const float depth_bias = overlay_depth_bias(slot.camera);
+        if (overlay_.record(command_buffer, image_index, swapchain_.extent(), overlay_camera, lines, depth_bias,
+                            static_cast<std::uint32_t>(present_slot_))) {
             return true;
         }
     }

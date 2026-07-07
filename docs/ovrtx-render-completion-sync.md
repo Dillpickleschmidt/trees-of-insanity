@@ -1,8 +1,13 @@
 # ovrtx render-completion synchronization — investigation & spec
 
-Status: investigation complete; current fix is `cudaDeviceSynchronize()`. A tighter,
-targeted sync is **not achievable with the ovrtx 0.3.0 API as exposed** (see Findings).
-Revisit if ovrtx is upgraded or NVIDIA clarifies the device-map read contract.
+Status: **RESOLVED** — the async pipeline is adopted (see "Resolution" at the end and
+ADR 0011). `cudaDeviceSynchronize()` has been removed; outputs are mapped as CUDA
+arrays and their render-completion events waited on the copy stream, double-buffered
+against Vulkan via a timeline semaphore. The decisive missing piece the investigation
+below hadn't isolated: the completion event works for **`OVRTX_MAP_DEVICE_TYPE_CUDA_ARRAY`**
+maps but not for the linear `OVRTX_MAP_DEVICE_TYPE_CUDA` map we used for color (its
+internal array→linear conversion is what raced). The history below is kept for the
+method and the dead ends.
 
 Version note: **0.3.0 is the latest ovrtx release** (checked 2026-07-06 —
 `NVIDIA-Omniverse/ovrtx` has only pre-releases 0.1.0 → 0.2.0 → 0.3.0, v0.3.0 dated
@@ -173,32 +178,38 @@ here; the real lever is double-buffering, not a newer ovrtx.
   trustworthy.
 - Confirm no regression to Vulkan sync via the validation layer run described above.
 
-## Future work: async double-buffered pipeline for continuous / ecosystem rendering
+## Resolution: async double-buffered pipeline (adopted)
 
-The single-buffer + `cudaDeviceSynchronize` + on-demand design is tuned for a mostly-static
-single-plant preview: we rarely render two frames back-to-back, so the device stall is free.
-That breaks down for **continuous** rendering — growth-animation playback, camera flythroughs,
-live ecosystem sim — and for **heavy** scenes (many plants). Under continuous load the device
-sync serializes the pipeline (`render → copy → present` with no overlap; throughput = sum of
-stages, not max).
+The pipeline was built for full-scene continuous growth (ADR 0011), and in the process the
+targeted sync was solved. The earlier "the event doesn't work" conclusion was **half right**:
+waiting `cuda_sync.wait_event` did not gate our color reads because color was mapped with
+`OVRTX_MAP_DEVICE_TYPE_CUDA` (linear tensor), whose internal array→linear conversion is not
+covered by the event. Mapped as **`OVRTX_MAP_DEVICE_TYPE_CUDA_ARRAY`** — the way NVIDIA's
+`examples/c/vulkan-interop` maps color, and the way our distance was always mapped (it never
+corrupted) — the event does gate completion. The shipped design:
 
-When that regime becomes real, port NVIDIA's `examples/c/vulkan-interop` architecture:
-- **Double/triple-buffered** interop images so CUDA renders+copies frame N+1 while Vulkan
-  displays frame N. This is the piece that makes the event-wait work (you read a frame-old,
-  complete buffer) and removes the `cudaDeviceSynchronize` stall.
-- **Timeline semaphore** for CUDA→Vulkan ordering (replaces our single binary semaphore).
-- `map_desc.sync_stream = 0` + `cudaStreamWaitEvent(consumer_stream, cuda_sync.wait_event)`
-  for render→copy ordering (already matches our map call; the event only *works* once
-  double-buffered).
+- `RendererSession` maps color + distance as CUDA arrays (`sync_stream = 0`) and calls
+  `cudaStreamWaitEvent(sync_stream, cuda_sync.wait_event)` for each map. Contract: the
+  returned arrays are safe to read from work enqueued on `sync_stream`. No device sync.
+- The viewport double-buffers slots (color + distance + camera per slot): CUDA copies frame
+  N into the produce slot while Vulkan presents frame N−1 from the other. A CUDA event tells
+  the CPU when copies land (slot swap); a **timeline semaphore** (Vulkan 1.2 feature, opaque-fd
+  shared) carries the ordering to Vulkan — the present submit waits the slot's value, and
+  re-presents re-wait the same value (timeline waits are non-consuming).
+- On-demand + idle-present gating stays layered on top: idle is still ~0% GPU; while a frame
+  cooks, the previous frame keeps presenting so interaction stays at display rate.
 
-Keep the current on-demand + idle-present gating **layered on top**: the async pipeline is for
-the active/continuous case; a user staring at a finished ecosystem should still cost ~0% GPU.
-Decision trigger is *continuous frames or heavy single renders*, not scene size alone — benchmark
-against the current path before committing to the rewrite.
+Verified: headless smoke test (non-black color + valid distances, no device sync); forced
+continuous render **0/25 black** (dense-sampled) with synchronization validation reporting
+**0 errors**; idle 0% GPU / ~14 W; continuous ~8 FPS on the dev laptop (identical with
+validation on → render-bound, pipeline overhead negligible).
 
 ## References
-- `src/toi/ovrtx/src/renderer_session.cpp` — `render_cuda_frame_once` (the sync site).
+- `src/toi/ovrtx/src/renderer_session.cpp` — array maps + event waits (the sync site).
+- `src/toi/viewport/src/viewport_session.cpp` — produce/complete/present double-buffer loop.
+- `docs/adr/0011-double-buffered-growth-preview-pipeline.md` — the architecture decision.
+- NVIDIA reference: `NVIDIA-Omniverse/ovrtx` `examples/c/vulkan-interop`.
 - ovrtx 0.3.0 headers: `include/ovrtx/ovrtx.h`, `include/ovrtx/ovrtx_types.h`
   (`ovrtx_map_output_description_t`, `ovrtx_render_var_output_t`, `ovrtx_cuda_sync_t`).
-- ovrtx device-map example: `tests/docs/c/test_camera_sensors.cpp`.
-- Commits: 66c8214 (device-sync fix), 60fb64f (swapchain WAR-on-acquire), 81d8ff8 (on-demand render).
+- Commits: 66c8214 (interim device-sync fix), 60fb64f (swapchain WAR-on-acquire),
+  81d8ff8 (on-demand render).

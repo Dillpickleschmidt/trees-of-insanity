@@ -25,16 +25,17 @@ enum class RenderFrameOutputs {
     ColorAndDistance,
 };
 
+// One rendered frame, mapped as CUDA arrays. The renderer orders sync_stream
+// after ovrtx's render-completion events, so the arrays are safe to read from
+// work enqueued on sync_stream (and only from there) while the frame is alive.
 struct MappedCudaFrame {
     ResultsHandle results;
     MappedOutputHandle output;
     MappedOutputHandle distance_output;
-    const DLTensor* tensor = nullptr;
+    const void* color_cuda_array = nullptr;
     int width = 0;
     int height = 0;
     int channel_count = 0;
-    std::size_t row_stride_bytes = 0;
-    std::size_t byte_offset = 0;
     std::uintptr_t sync_stream = 1;
     render::GrowthPreviewCamera camera;
     const void* scene_distance_cuda_array = nullptr;

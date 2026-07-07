@@ -214,6 +214,15 @@ struct PhysicalDeviceChoice {
     create_info.ppEnabledExtensionNames = device_extensions.data();
     create_info.pEnabledFeatures = &features;
 
+#ifdef TOI_ENABLE_OVRTX
+    // Timeline semaphores (Vulkan 1.2 core) order the CUDA frame copies against
+    // the Vulkan present work without a device-wide sync.
+    VkPhysicalDeviceVulkan12Features features12{};
+    features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    features12.timelineSemaphore = VK_TRUE;
+    create_info.pNext = &features12;
+#endif
+
     VkDevice device = VK_NULL_HANDLE;
     const auto result = vkCreateDevice(physical_device, &create_info, nullptr, &device);
     if (result != VK_SUCCESS) {

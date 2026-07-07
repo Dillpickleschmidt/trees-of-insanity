@@ -7,7 +7,6 @@
 #include "toi/ovrtx/renderer_session.hpp"
 
 #include <cuda_runtime_api.h>
-#include <ovx/dlpack/dlpack.h>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -70,18 +69,18 @@ TEST_CASE("ovrtx renders a growth-preview frame to a CUDA buffer")
     CHECK(frame->width == stage->usd_stage.width);
     CHECK(frame->height == stage->usd_stage.height);
     CHECK(frame->channel_count >= 4);
-    REQUIRE(frame->tensor != nullptr);
-    CHECK(frame->tensor->device.device_type == kDLCUDA);
-    CHECK(frame->tensor->data != nullptr);
+    REQUIRE(frame->color_cuda_array != nullptr);
 
     // Copy the CUDA color output to host and confirm the render is not black
-    // (isolates ovrtx scene rendering from downstream Vulkan interop).
-    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(frame->sync_stream));
+    // (isolates ovrtx scene rendering from downstream Vulkan interop). Reads are
+    // enqueued on sync_stream, which the renderer orders after render completion.
     const auto row_bytes = static_cast<std::size_t>(frame->width) * 4;
     std::vector<unsigned char> pixels(row_bytes * static_cast<std::size_t>(frame->height));
-    const auto* source = static_cast<const std::byte*>(frame->tensor->data) + frame->byte_offset;
-    REQUIRE(cudaMemcpy2D(pixels.data(), row_bytes, source, frame->row_stride_bytes, row_bytes,
-                         static_cast<std::size_t>(frame->height), cudaMemcpyDeviceToHost) == cudaSuccess);
+    REQUIRE(cudaMemcpy2DFromArrayAsync(pixels.data(), row_bytes,
+                                       reinterpret_cast<cudaArray_const_t>(frame->color_cuda_array), 0, 0, row_bytes,
+                                       static_cast<std::size_t>(frame->height), cudaMemcpyDeviceToHost,
+                                       reinterpret_cast<cudaStream_t>(frame->sync_stream)) == cudaSuccess);
+    REQUIRE(cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(frame->sync_stream)) == cudaSuccess);
 
     const auto brightest = *std::ranges::max_element(pixels);
     unsigned long long total = 0;
