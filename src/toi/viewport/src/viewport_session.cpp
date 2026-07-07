@@ -335,11 +335,16 @@ void ViewportSession::render_loop()
         vkEndCommandBuffer(command_buffer);
 
         VkSemaphore wait_semaphores[2] = {image_available_[frame], VK_NULL_HANDLE};
-        // The CUDA copies feed both the blit (TRANSFER) and the overlay's
-        // distance sampling (FRAGMENT_SHADER), so the semaphore wait must cover
-        // both stages.
+        // Acquisition must complete before ANY access to the swapchain image: the
+        // first thing the command buffer does is transition it (a write) from its
+        // just-acquired state, and that write must be ordered after the presentation
+        // engine's prior read. Waiting the acquire semaphore at ALL_COMMANDS gives
+        // that execution dependency (a TRANSFER-only wait lets the TOP_OF_PIPE
+        // layout transition race the acquire — SYNC-HAZARD-WRITE-AFTER-READ).
+        // The CUDA copies feed both the blit (TRANSFER) and the overlay's distance
+        // sampling (FRAGMENT_SHADER), so that wait must cover both stages.
         VkPipelineStageFlags wait_stages[2] = {
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT};
         std::uint32_t wait_count = 1;
 #ifdef TOI_ENABLE_OVRTX
