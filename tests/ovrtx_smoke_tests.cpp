@@ -1,7 +1,7 @@
 // Headless ovrtx smoke test: render one growth-preview frame to a CUDA buffer.
 // Exercises the full ovrtx path (renderer create -> open USD stage -> write mesh
-// points -> step -> map LdrColor) without a window or Vulkan swapchain.
-// Requires an NVIDIA GPU and the ovrtx runtime on the library path.
+// points -> step -> map LdrColor + DistanceToCameraSD) without a window or Vulkan
+// swapchain. Requires an NVIDIA GPU and the ovrtx runtime on the library path.
 
 #include "toi/app/application_controller.hpp"
 #include "toi/ovrtx/renderer_session.hpp"
@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <filesystem>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -60,7 +61,9 @@ TEST_CASE("ovrtx renders a growth-preview frame to a CUDA buffer")
     INFO((submitted.has_value() ? std::string{} : submitted.error().message));
     REQUIRE(submitted.has_value());
 
-    auto frame = session->render_cuda_frame(toi::ovrtx::RenderFrameOutputs::Color);
+    // Render color + DistanceToCameraSD together, as the depth-aware guide
+    // overlay does; requesting distance must not disturb the color output.
+    auto frame = session->render_cuda_frame(toi::ovrtx::RenderFrameOutputs::ColorAndDistance);
     INFO((frame.has_value() ? std::string{} : frame.error().message));
     REQUIRE(frame.has_value());
 
@@ -87,4 +90,26 @@ TEST_CASE("ovrtx renders a growth-preview frame to a CUDA buffer")
     }
     INFO("brightest channel=" << static_cast<int>(brightest) << " total=" << total);
     CHECK(brightest > 0);
+
+    // The R32_SFLOAT distance array is what the guide overlay samples to occlude
+    // guide lines behind geometry. Confirm the ColorAndDistance path produces it
+    // with finite positive distances to the plant/ground.
+    REQUIRE(frame->scene_distance_cuda_array != nullptr);
+    const auto distance_row_bytes = static_cast<std::size_t>(frame->width) * sizeof(float);
+    std::vector<float> distances(static_cast<std::size_t>(frame->width) * static_cast<std::size_t>(frame->height));
+    REQUIRE(cudaMemcpy2DFromArray(distances.data(), distance_row_bytes,
+                                  reinterpret_cast<cudaArray_const_t>(frame->scene_distance_cuda_array), 0, 0,
+                                  distance_row_bytes, static_cast<std::size_t>(frame->height),
+                                  cudaMemcpyDeviceToHost) == cudaSuccess);
+
+    std::size_t finite_hits = 0;
+    float nearest = std::numeric_limits<float>::max();
+    for (const float distance : distances) {
+        if (distance > 0.0F && distance < 3.402823e38F) {
+            ++finite_hits;
+            nearest = std::min(nearest, distance);
+        }
+    }
+    INFO("finite distance texels=" << finite_hits << " nearest=" << nearest);
+    CHECK(finite_hits > 0);
 }

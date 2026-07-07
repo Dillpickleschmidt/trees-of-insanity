@@ -79,4 +79,37 @@ private:
     int height_ = 0;
 };
 
+// An R32_SFLOAT Vulkan image sharing memory with a CUDA array, sampled by the
+// guide overlay for depth-aware occlusion (the ovrtx DistanceToCameraSD output).
+class CudaInteropFloatImage {
+public:
+    CudaInteropFloatImage() = default;
+    CudaInteropFloatImage(const CudaInteropFloatImage&) = delete;
+    CudaInteropFloatImage& operator=(const CudaInteropFloatImage&) = delete;
+    CudaInteropFloatImage(CudaInteropFloatImage&& other) noexcept;
+    CudaInteropFloatImage& operator=(CudaInteropFloatImage&& other) noexcept;
+    ~CudaInteropFloatImage();
+
+    [[nodiscard]] static Result<CudaInteropFloatImage> create(VulkanContext& context, int width, int height);
+    [[nodiscard]] Result<void> copy_from_cuda_array(const void* source_cuda_array, int width, int height,
+                                                    std::uintptr_t stream);
+    [[nodiscard]] VkImage image() const;
+    [[nodiscard]] VkImageView view() const;
+    [[nodiscard]] int width() const;
+    [[nodiscard]] int height() const;
+
+    void reset();
+
+private:
+    VulkanContext* context_ = nullptr;
+    VkImage image_ = VK_NULL_HANDLE;
+    VkDeviceMemory memory_ = VK_NULL_HANDLE;
+    VkImageView view_ = VK_NULL_HANDLE;
+    cudaExternalMemory_t cuda_memory_ = nullptr;
+    cudaMipmappedArray_t mipmapped_array_ = nullptr;
+    cudaArray_t cuda_array_ = nullptr;
+    int width_ = 0;
+    int height_ = 0;
+};
+
 } // namespace toi::viewport

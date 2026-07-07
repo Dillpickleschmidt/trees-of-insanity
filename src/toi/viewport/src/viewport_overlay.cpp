@@ -31,7 +31,7 @@ struct OverlayPushConstants {
     float up[4];
     float negative_forward[4];
     float projection[4]; // focal_length, horizontal_aperture, vertical_aperture, near_clip
-    float depth[4];      // far_clip, ...
+    float depth[4];      // far_clip, depth_bias, framebuffer_width, framebuffer_height
 };
 
 [[nodiscard]] Result<void> require_vk(VkResult result, std::string_view context)
@@ -120,6 +120,63 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
         return std::unexpected(result.error());
     }
 
+    // Descriptor set for the scene-distance sampler (depth-aware occlusion).
+    VkDescriptorSetLayoutBinding sampler_binding{};
+    sampler_binding.binding = 0;
+    sampler_binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    sampler_binding.descriptorCount = 1;
+    sampler_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo set_layout_info{};
+    set_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    set_layout_info.bindingCount = 1;
+    set_layout_info.pBindings = &sampler_binding;
+    if (auto result = require_vk(vkCreateDescriptorSetLayout(overlay.device_, &set_layout_info, nullptr,
+                                                            &overlay.descriptor_set_layout_),
+                                 "vkCreateDescriptorSetLayout");
+        !result) {
+        overlay.reset();
+        return std::unexpected(result.error());
+    }
+
+    VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+    VkDescriptorPoolCreateInfo pool_info{};
+    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_info.maxSets = 1;
+    pool_info.poolSizeCount = 1;
+    pool_info.pPoolSizes = &pool_size;
+    if (auto result = require_vk(vkCreateDescriptorPool(overlay.device_, &pool_info, nullptr, &overlay.descriptor_pool_),
+                                 "vkCreateDescriptorPool");
+        !result) {
+        overlay.reset();
+        return std::unexpected(result.error());
+    }
+
+    VkDescriptorSetAllocateInfo set_alloc{};
+    set_alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    set_alloc.descriptorPool = overlay.descriptor_pool_;
+    set_alloc.descriptorSetCount = 1;
+    set_alloc.pSetLayouts = &overlay.descriptor_set_layout_;
+    if (auto result = require_vk(vkAllocateDescriptorSets(overlay.device_, &set_alloc, &overlay.descriptor_set_),
+                                 "vkAllocateDescriptorSets");
+        !result) {
+        overlay.reset();
+        return std::unexpected(result.error());
+    }
+
+    VkSamplerCreateInfo sampler_info{};
+    sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sampler_info.magFilter = VK_FILTER_NEAREST;
+    sampler_info.minFilter = VK_FILTER_NEAREST;
+    sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    if (auto result = require_vk(vkCreateSampler(overlay.device_, &sampler_info, nullptr, &overlay.sampler_),
+                                 "vkCreateSampler");
+        !result) {
+        overlay.reset();
+        return std::unexpected(result.error());
+    }
+
     auto vert = create_shader(overlay.device_, overlay_lines_vert_spv, overlay_lines_vert_spv_len);
     if (!vert) {
         overlay.reset();
@@ -132,9 +189,12 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
         return std::unexpected(frag.error());
     }
 
-    VkPushConstantRange push_range{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(OverlayPushConstants)};
+    VkPushConstantRange push_range{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                   sizeof(OverlayPushConstants)};
     VkPipelineLayoutCreateInfo layout_info{};
     layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layout_info.setLayoutCount = 1;
+    layout_info.pSetLayouts = &overlay.descriptor_set_layout_;
     layout_info.pushConstantRangeCount = 1;
     layout_info.pPushConstantRanges = &push_range;
     auto layout_result =
@@ -319,8 +379,25 @@ Result<void> ViewportOverlay::set_swapchain(VulkanContext& context, const Vulkan
     return {};
 }
 
+Result<void> ViewportOverlay::set_scene_distance(VkImageView distance_view)
+{
+    VkDescriptorImageInfo image_info{};
+    image_info.sampler = sampler_;
+    image_info.imageView = distance_view;
+    image_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = descriptor_set_;
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &image_info;
+    vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+    return {};
+}
+
 Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, std::uint32_t image_index, VkExtent2D extent,
-                                     const OverlayCamera& camera, std::span<const OverlayLine> lines)
+                                     const OverlayCamera& camera, std::span<const OverlayLine> lines, float depth_bias)
 {
     if (image_index >= framebuffers_.size()) {
         return std::unexpected(make_error("overlay framebuffer index out of range"));
@@ -353,6 +430,8 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, std::uint32
         vkCmdSetViewport(command_buffer, 0, 1, &viewport);
         vkCmdSetScissor(command_buffer, 0, 1, &scissor);
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1,
+                                &descriptor_set_, 0, nullptr);
 
         OverlayPushConstants push{};
         std::memcpy(push.eye, camera.eye, sizeof(camera.eye));
@@ -364,7 +443,11 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, std::uint32
         push.projection[2] = camera.vertical_aperture;
         push.projection[3] = camera.near_clip;
         push.depth[0] = camera.far_clip;
-        vkCmdPushConstants(command_buffer, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
+        push.depth[1] = depth_bias;
+        push.depth[2] = static_cast<float>(extent.width);
+        push.depth[3] = static_cast<float>(extent.height);
+        vkCmdPushConstants(command_buffer, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(push), &push);
 
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer_, &offset);
@@ -420,6 +503,19 @@ void ViewportOverlay::reset()
         vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
         pipeline_layout_ = VK_NULL_HANDLE;
     }
+    if (sampler_ != VK_NULL_HANDLE) {
+        vkDestroySampler(device_, sampler_, nullptr);
+        sampler_ = VK_NULL_HANDLE;
+    }
+    if (descriptor_pool_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(device_, descriptor_pool_, nullptr);
+        descriptor_pool_ = VK_NULL_HANDLE;
+        descriptor_set_ = VK_NULL_HANDLE;
+    }
+    if (descriptor_set_layout_ != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(device_, descriptor_set_layout_, nullptr);
+        descriptor_set_layout_ = VK_NULL_HANDLE;
+    }
     if (render_pass_ != VK_NULL_HANDLE) {
         vkDestroyRenderPass(device_, render_pass_, nullptr);
         render_pass_ = VK_NULL_HANDLE;
@@ -431,6 +527,10 @@ void ViewportOverlay::move_from(ViewportOverlay& other) noexcept
 {
     device_ = std::exchange(other.device_, VK_NULL_HANDLE);
     render_pass_ = std::exchange(other.render_pass_, VK_NULL_HANDLE);
+    descriptor_set_layout_ = std::exchange(other.descriptor_set_layout_, VK_NULL_HANDLE);
+    descriptor_pool_ = std::exchange(other.descriptor_pool_, VK_NULL_HANDLE);
+    descriptor_set_ = std::exchange(other.descriptor_set_, VK_NULL_HANDLE);
+    sampler_ = std::exchange(other.sampler_, VK_NULL_HANDLE);
     pipeline_layout_ = std::exchange(other.pipeline_layout_, VK_NULL_HANDLE);
     pipeline_ = std::exchange(other.pipeline_, VK_NULL_HANDLE);
     vertex_buffer_ = std::exchange(other.vertex_buffer_, VK_NULL_HANDLE);

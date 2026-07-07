@@ -94,6 +94,9 @@ private:
 
     std::unique_ptr<ovrtx::RendererSession> renderer_;
     CudaInteropImage interop_;
+    // Shared scene-distance image (ovrtx DistanceToCameraSD), sampled by the
+    // overlay so guide lines are occluded by the plant/ground geometry.
+    CudaInteropFloatImage scene_distance_;
     CudaInteropSemaphore cuda_done_;
     ViewportOverlay overlay_;
     bool growth_ready_ = false;

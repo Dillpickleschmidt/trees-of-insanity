@@ -1,5 +1,6 @@
 #include "toi/viewport/viewport_session.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -82,6 +83,18 @@ void transition(VkCommandBuffer command_buffer, VkImage image, VkImageLayout old
         });
     }
     return lines;
+}
+
+// Bias the depth test by a fraction of the focus distance so guide lines lying
+// on a surface are not erased by their own z-fighting, while still being
+// occluded by clearly nearer geometry.
+[[nodiscard]] float overlay_depth_bias(const render::GrowthPreviewCamera& camera)
+{
+    const float dx = camera.eye.x - camera.target.x;
+    const float dy = camera.eye.y - camera.target.y;
+    const float dz = camera.eye.z - camera.target.z;
+    const float focus_distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+    return std::max(0.01F, focus_distance * 0.0005F);
 }
 #endif
 
@@ -322,7 +335,12 @@ void ViewportSession::render_loop()
         vkEndCommandBuffer(command_buffer);
 
         VkSemaphore wait_semaphores[2] = {image_available_[frame], VK_NULL_HANDLE};
-        VkPipelineStageFlags wait_stages[2] = {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT};
+        // The CUDA copies feed both the blit (TRANSFER) and the overlay's
+        // distance sampling (FRAGMENT_SHADER), so the semaphore wait must cover
+        // both stages.
+        VkPipelineStageFlags wait_stages[2] = {
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT};
         std::uint32_t wait_count = 1;
 #ifdef TOI_ENABLE_OVRTX
         if (drew_growth) {
@@ -369,6 +387,7 @@ void ViewportSession::render_loop()
 #ifdef TOI_ENABLE_OVRTX
     // Release CUDA/ovrtx on the thread that created them.
     overlay_.reset();
+    scene_distance_.reset();
     cuda_done_.reset();
     interop_.reset();
     renderer_.reset();
@@ -484,12 +503,20 @@ bool ViewportSession::ensure_growth_renderer()
     }
     cuda_done_ = std::move(*cuda_done);
 
-    // Guide overlay (world-origin axes) drawn over the presented frame.
+    // Guide overlay (world-origin axes) drawn over the presented frame, with a
+    // shared scene-distance image (ovrtx DistanceToCameraSD) so the axes are
+    // occluded by the plant/ground geometry.
+    auto scene_distance = CudaInteropFloatImage::create(context_, stage.usd_stage.width, stage.usd_stage.height);
     auto overlay = ViewportOverlay::create(context_, swapchain_.format());
-    if (overlay) {
+    if (scene_distance && overlay) {
+        scene_distance_ = std::move(*scene_distance);
         overlay_ = std::move(*overlay);
         if (auto targets = overlay_.set_swapchain(context_, swapchain_); !targets) {
             overlay_.reset();
+            scene_distance_.reset();
+        } else if (auto bound = overlay_.set_scene_distance(scene_distance_.view()); !bound) {
+            overlay_.reset();
+            scene_distance_.reset();
         }
     }
 
@@ -550,7 +577,13 @@ bool ViewportSession::record_growth_frame(VkCommandBuffer command_buffer, std::u
         }
     }
 
-    auto rendered = renderer_->render_cuda_frame(ovrtx::RenderFrameOutputs::Color);
+    // Sample the scene distance for depth-aware guide occlusion only when the
+    // guides are actually drawn; a color-only frame skips the extra output.
+    const bool draw_guides =
+        guides_visible_ && world_origin_axes_visible_ && scene_distance_.view() != VK_NULL_HANDLE;
+
+    auto rendered = renderer_->render_cuda_frame(draw_guides ? ovrtx::RenderFrameOutputs::ColorAndDistance
+                                                             : ovrtx::RenderFrameOutputs::Color);
     if (!rendered) {
         return false;
     }
@@ -570,8 +603,16 @@ bool ViewportSession::record_growth_frame(VkCommandBuffer command_buffer, std::u
     if (auto copied = interop_.copy_from_cuda_frame(view); !copied) {
         return false;
     }
-    // CUDA signals when the copy completes; the Vulkan submit waits on this so
-    // the blit reads the finished frame (a CPU sync does not order the engines).
+    if (draw_guides && rendered->scene_distance_cuda_array != nullptr) {
+        if (auto copied = scene_distance_.copy_from_cuda_array(rendered->scene_distance_cuda_array, rendered->width,
+                                                              rendered->height, rendered->sync_stream);
+            !copied) {
+            return false;
+        }
+    }
+    // CUDA signals when the copies complete; the Vulkan submit waits on this so
+    // the blit and the overlay's distance sampling read finished data (a CPU
+    // sync does not order the two GPU engines).
     if (auto signaled = cuda_done_.signal_from_ovrtx_stream(rendered->sync_stream); !signaled) {
         return false;
     }
@@ -599,10 +640,11 @@ bool ViewportSession::record_growth_frame(VkCommandBuffer command_buffer, std::u
 
     // Draw guide lines over the frame; the overlay render pass also moves the
     // swapchain image to PRESENT_SRC. Otherwise transition it directly.
-    if (guides_visible_ && world_origin_axes_visible_) {
+    if (draw_guides) {
         const auto lines = build_overlay_lines(rendered->camera);
         const auto overlay_camera = to_overlay_camera(rendered->camera);
-        if (overlay_.record(command_buffer, image_index, swapchain_.extent(), overlay_camera, lines)) {
+        const float depth_bias = overlay_depth_bias(rendered->camera);
+        if (overlay_.record(command_buffer, image_index, swapchain_.extent(), overlay_camera, lines, depth_bias)) {
             return true;
         }
     }

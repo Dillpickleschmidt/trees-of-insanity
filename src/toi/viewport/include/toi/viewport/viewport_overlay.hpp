@@ -48,10 +48,13 @@ public:
     [[nodiscard]] Result<void> set_swapchain(VulkanContext& context, const VulkanSwapchain& swapchain);
     void reset_swapchain();
 
+    // Point the depth-occlusion sampler at the scene-distance image.
+    [[nodiscard]] Result<void> set_scene_distance(VkImageView distance_view);
+
     // Records a render pass drawing the lines onto the swapchain image (which
     // must be in TRANSFER_DST_OPTIMAL); leaves it in PRESENT_SRC_KHR.
     [[nodiscard]] Result<void> record(VkCommandBuffer command_buffer, std::uint32_t image_index, VkExtent2D extent,
-                                      const OverlayCamera& camera, std::span<const OverlayLine> lines);
+                                      const OverlayCamera& camera, std::span<const OverlayLine> lines, float depth_bias);
 
     void reset();
 
@@ -60,6 +63,10 @@ private:
 
     VkDevice device_ = VK_NULL_HANDLE;
     VkRenderPass render_pass_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptor_set_layout_ = VK_NULL_HANDLE;
+    VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
+    VkDescriptorSet descriptor_set_ = VK_NULL_HANDLE;
+    VkSampler sampler_ = VK_NULL_HANDLE;
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     VkBuffer vertex_buffer_ = VK_NULL_HANDLE;

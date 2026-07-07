@@ -12,10 +12,11 @@ layout(push_constant) uniform PushConstants {
     vec4 up;
     vec4 negative_forward;
     vec4 projection; // focal_length, horizontal_aperture, vertical_aperture, near_clip
-    vec4 depth;      // far_clip, ...
+    vec4 depth;      // far_clip, depth_bias, framebuffer_width, framebuffer_height
 } pc;
 
-layout(location = 0) out vec4 fragment_color;
+layout(location = 0) out vec3 fragment_world_position;
+layout(location = 1) out vec4 fragment_color;
 
 void main()
 {
@@ -36,5 +37,6 @@ void main()
                    (far_clip * near_clip) / (far_clip - near_clip);
 
     gl_Position = vec4(clip_x, clip_y, clip_z, forward_distance);
+    fragment_world_position = in_position;
     fragment_color = vec4(in_color, in_alpha);
 }
