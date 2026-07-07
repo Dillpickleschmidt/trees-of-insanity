@@ -6,6 +6,8 @@
 #include <ovrtx/ovrtx_attributes.h>
 #include <ovrtx/ovrtx_types.h>
 
+#include <cuda_runtime_api.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <utility>
@@ -235,6 +237,19 @@ Result<MappedCudaFrame> RendererSession::render_cuda_frame_once(RenderFrameOutpu
         }
 
         scene_distance_cuda_array = distance_tensor->cuda_array;
+    }
+
+    // ovrtx renders asynchronously on its own CUDA stream, and ovrtx_step /
+    // ovrtx_fetch_results do not guarantee that render has finished on the GPU
+    // when they return. The output map targets sync_stream, but that does not
+    // cover ovrtx's render stream, so a caller that immediately reads the mapped
+    // LdrColor/distance on sync_stream can race the render and get a partly- or
+    // un-rendered (black) frame. Wait for the device so the returned frame's
+    // pixels are complete. (Paced callers only hid this by giving the render
+    // incidental time to land.)
+    if (auto synced = require_cuda_success(cudaDeviceSynchronize(), "cudaDeviceSynchronize after ovrtx render");
+        !synced) {
+        return std::unexpected(synced.error());
     }
 
     return MappedCudaFrame{
