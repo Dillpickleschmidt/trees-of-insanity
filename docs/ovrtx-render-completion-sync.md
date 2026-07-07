@@ -131,6 +131,39 @@ Recommendation: **keep `cudaDeviceSynchronize()`** until one of A–D is confirm
 ovrtx version in use. When revisiting, drive the decision with the experiment harness
 below rather than eyeballing.
 
+## Update: compared against NVIDIA's official `vulkan-interop` example
+
+Reviewed `NVIDIA-Omniverse/ovrtx` `examples/c/vulkan-interop` (main). It **is** fully async
+with **no per-frame device sync**, so "not achievable" was too strong — but it gets there
+through a whole architecture we don't share, and a *partial* adaptation into ours does not
+work. The example's recipe:
+- `map_desc.sync_stream = 0` (no stream sync; rely on the returned event).
+- `cudaStreamWaitEvent(consumer_stream, cuda_sync.wait_event)` before the copy (GPU-orders
+  copy-after-render), copy on that stream, then signal a **timeline semaphore** for the
+  CUDA→Vulkan handoff.
+- **Double-buffered**: Vulkan samples the PREVIOUS frame's buffer (already timeline-signaled,
+  hence complete) while CUDA writes the next — Vulkan never reads the buffer being written.
+- Default **async** render mode (no `sync_mode`); it also skips `ovrtx_wait_op` on the step
+  (fetch_results only). It **samples** a fullscreen quad rather than blitting.
+
+Tested adapting just the event-wait into our wrapper, forced continuous render, dense-sampled:
+
+| Adaptation | Black frames |
+|---|---|
+| `sync_stream=0` + `cudaStreamWaitEvent(stream, wait_event)`, no device sync | 24 / 25 |
+| same, plus `sync_mode=false` (async, like the example) | 25 / 25 |
+| `cudaDeviceSynchronize()` (shipped) | 0 / 25 |
+
+Conclusion: the returned `wait_event` does **not** act as a render-completion fence in our
+single-buffered, same-frame-read flow, regardless of `sync_stream` (0 vs ours) or `sync_mode`
+(true vs false). The example avoids the race chiefly via **double-buffering** (it reads a
+frame-old, already-complete buffer), not the event alone. Reaching the async ideal here would
+mean adopting the example's double-buffer + timeline-semaphore pipeline — a real rewrite — and
+since our on-demand loop only renders on a change (not continuously), the `cudaDeviceSynchronize`
+stall is negligible in practice. Not worth it now; **keep the device sync**. This supersedes
+options A/B/C above for 0.3.0: A/B are what the event/stream *should* do but empirically don't
+here; the real lever is double-buffering, not a newer ovrtx.
+
 ### Regression / verification harness (reusable)
 - Temporarily force `needs_render = true` in `record_growth_frame` (continuous render).
 - `bun run build:native && electrobun dev`; wait for `viewport attached` (retry once for
