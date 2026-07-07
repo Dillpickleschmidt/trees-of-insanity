@@ -101,6 +101,13 @@ private:
     ViewportOverlay overlay_;
     bool growth_ready_ = false;
     bool growth_failed_ = false;
+    // ovrtx is re-rendered only on change (new stage, camera move, guide toggle);
+    // idle frames re-blit the cached interop image. Continuously stepping the
+    // path tracer on a static scene makes it flicker and wastes the GPU.
+    bool rendered_once_ = false;
+    bool last_draw_guides_ = false;
+    bool cuda_signaled_this_frame_ = false;
+    render::GrowthPreviewCamera last_camera_{};
     std::atomic<bool> guides_visible_{true};
     std::atomic<bool> world_origin_axes_visible_{true};
 

@@ -343,7 +343,9 @@ void ViewportSession::render_loop()
             VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT};
         std::uint32_t wait_count = 1;
 #ifdef TOI_ENABLE_OVRTX
-        if (drew_growth) {
+        // Only wait on the CUDA semaphore when this frame actually re-rendered;
+        // idle frames re-blit an interop image CUDA finished writing earlier.
+        if (drew_growth && cuda_signaled_this_frame_) {
             wait_semaphores[1] = cuda_done_.vk_semaphore();
             wait_count = 2;
         }
@@ -379,7 +381,9 @@ void ViewportSession::render_loop()
 
         frame = (frame + 1) % kFramesInFlight;
         ++counter;
-        if (!drew_growth) {
+        // Cap the idle rate: the test pattern and idle re-presents of the cached
+        // growth frame don't need to run flat out; an active re-render does.
+        if (!drew_growth || !cuda_signaled_this_frame_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(8));
         }
     }
@@ -433,9 +437,9 @@ void ViewportSession::poll_pointer()
 
     const bool left = (mask & Button1Mask) != 0;
     const bool right = (mask & Button3Mask) != 0;
-    if ((left || right) && last_dragging_) {
-        const int dx = win_x - last_pointer_x_;
-        const int dy = win_y - last_pointer_y_;
+    const int dx = win_x - last_pointer_x_;
+    const int dy = win_y - last_pointer_y_;
+    if ((left || right) && last_dragging_ && (dx != 0 || dy != 0)) {
         std::lock_guard<std::mutex> lock(camera_mutex_);
         if (!orbit_initialized_ && has_base_camera_) {
             orbit_ = render::orbit_view_from_camera(base_camera_);
@@ -526,6 +530,7 @@ bool ViewportSession::ensure_growth_renderer()
 
 bool ViewportSession::record_growth_frame(VkCommandBuffer command_buffer, std::uint32_t image_index)
 {
+    cuda_signaled_this_frame_ = false;
     if (!ensure_growth_renderer()) {
         return false;
     }
@@ -582,42 +587,53 @@ bool ViewportSession::record_growth_frame(VkCommandBuffer command_buffer, std::u
     const bool draw_guides =
         guides_visible_ && world_origin_axes_visible_ && scene_distance_.view() != VK_NULL_HANDLE;
 
-    auto rendered = renderer_->render_cuda_frame(draw_guides ? ovrtx::RenderFrameOutputs::ColorAndDistance
-                                                             : ovrtx::RenderFrameOutputs::Color);
-    if (!rendered) {
-        return false;
-    }
-    if (rendered->width != interop_.width() || rendered->height != interop_.height()) {
-        return false;
-    }
-
-    const CudaDeviceFrameView view{
-        .device_data = rendered->tensor->data,
-        .width = rendered->width,
-        .height = rendered->height,
-        .channel_count = rendered->channel_count,
-        .row_stride_bytes = rendered->row_stride_bytes,
-        .byte_offset = rendered->byte_offset,
-        .stream = rendered->sync_stream,
-    };
-    if (auto copied = interop_.copy_from_cuda_frame(view); !copied) {
-        return false;
-    }
-    if (draw_guides && rendered->scene_distance_cuda_array != nullptr) {
-        if (auto copied = scene_distance_.copy_from_cuda_array(rendered->scene_distance_cuda_array, rendered->width,
-                                                              rendered->height, rendered->sync_stream);
-            !copied) {
+    // Re-render ovrtx only when something changed; idle frames re-present the
+    // cached interop image. The path tracer flickers (and pegs the GPU) if it is
+    // stepped continuously on an unchanging scene.
+    const bool needs_render = submitted_new || apply_camera || !rendered_once_ || draw_guides != last_draw_guides_;
+    if (needs_render) {
+        auto rendered = renderer_->render_cuda_frame(draw_guides ? ovrtx::RenderFrameOutputs::ColorAndDistance
+                                                                 : ovrtx::RenderFrameOutputs::Color);
+        if (!rendered) {
             return false;
         }
-    }
-    // CUDA signals when the copies complete; the Vulkan submit waits on this so
-    // the blit and the overlay's distance sampling read finished data (a CPU
-    // sync does not order the two GPU engines).
-    if (auto signaled = cuda_done_.signal_from_ovrtx_stream(rendered->sync_stream); !signaled) {
-        return false;
+        if (rendered->width != interop_.width() || rendered->height != interop_.height()) {
+            return false;
+        }
+
+        const CudaDeviceFrameView view{
+            .device_data = rendered->tensor->data,
+            .width = rendered->width,
+            .height = rendered->height,
+            .channel_count = rendered->channel_count,
+            .row_stride_bytes = rendered->row_stride_bytes,
+            .byte_offset = rendered->byte_offset,
+            .stream = rendered->sync_stream,
+        };
+        if (auto copied = interop_.copy_from_cuda_frame(view); !copied) {
+            return false;
+        }
+        if (draw_guides && rendered->scene_distance_cuda_array != nullptr) {
+            if (auto copied = scene_distance_.copy_from_cuda_array(rendered->scene_distance_cuda_array, rendered->width,
+                                                                  rendered->height, rendered->sync_stream);
+                !copied) {
+                return false;
+            }
+        }
+        // CUDA signals when the copies complete; the Vulkan submit waits on this
+        // so the blit and the overlay's distance sampling read finished data (a
+        // CPU sync does not order the two GPU engines).
+        if (auto signaled = cuda_done_.signal_from_ovrtx_stream(rendered->sync_stream); !signaled) {
+            return false;
+        }
+        cuda_signaled_this_frame_ = true;
+        last_camera_ = rendered->camera;
+        last_draw_guides_ = draw_guides;
+        rendered_once_ = true;
     }
 
-    // CUDA wrote the shared image; move it to a transfer-read layout for the blit.
+    // Move the (freshly written or cached) interop image to a transfer-read
+    // layout for the blit.
     transition(command_buffer, interop_.image(), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -638,12 +654,13 @@ bool ViewportSession::record_growth_frame(VkCommandBuffer command_buffer, std::u
                VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
 
-    // Draw guide lines over the frame; the overlay render pass also moves the
-    // swapchain image to PRESENT_SRC. Otherwise transition it directly.
-    if (draw_guides) {
-        const auto lines = build_overlay_lines(rendered->camera);
-        const auto overlay_camera = to_overlay_camera(rendered->camera);
-        const float depth_bias = overlay_depth_bias(rendered->camera);
+    // Draw guide lines over the frame from the last rendered camera; the overlay
+    // render pass also moves the swapchain image to PRESENT_SRC. Otherwise
+    // transition it directly.
+    if (draw_guides && rendered_once_) {
+        const auto lines = build_overlay_lines(last_camera_);
+        const auto overlay_camera = to_overlay_camera(last_camera_);
+        const float depth_bias = overlay_depth_bias(last_camera_);
         if (overlay_.record(command_buffer, image_index, swapchain_.extent(), overlay_camera, lines, depth_bias)) {
             return true;
         }
