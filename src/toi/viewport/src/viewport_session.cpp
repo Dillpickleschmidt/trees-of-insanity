@@ -292,10 +292,25 @@ void ViewportSession::render_loop()
     VkQueue queue = context_.graphics_queue();
     int frame = 0;
     std::uint64_t counter = 0;
+    std::uint64_t idle_skip_ticks = 0;
+    // ~1s at the 8ms idle poll interval: a slow keepalive present so the viewport
+    // self-corrects from any display change the dirty/resize checks miss.
+    constexpr std::uint64_t kIdleKeepaliveTicks = 125;
 
     while (running_) {
 #ifdef TOI_ENABLE_OVRTX
         poll_pointer();
+        // A settled preview does not need to re-present the same frame: keep
+        // polling input every tick for responsiveness, but skip the whole GPU
+        // present until something changes (new stage, camera move, guide toggle,
+        // resize). This takes idle GPU/compositor load to near zero. Startup and
+        // the animated test pattern (before the first growth frame) always present.
+        if (growth_ready_ && rendered_once_ && !needs_present_.exchange(false) &&
+            ++idle_skip_ticks < kIdleKeepaliveTicks) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(8));
+            continue;
+        }
+        idle_skip_ticks = 0;
 #endif
         vkWaitForFences(device, 1, &in_flight_[frame], VK_TRUE, UINT64_MAX);
 
@@ -388,7 +403,12 @@ void ViewportSession::render_loop()
         ++counter;
         // Cap the idle rate: the test pattern and idle re-presents of the cached
         // growth frame don't need to run flat out; an active re-render does.
-        if (!drew_growth || !cuda_signaled_this_frame_) {
+#ifdef TOI_ENABLE_OVRTX
+        const bool cap_idle_rate = !drew_growth || !cuda_signaled_this_frame_;
+#else
+        const bool cap_idle_rate = true; // no growth path: always the animated test pattern
+#endif
+        if (cap_idle_rate) {
             std::this_thread::sleep_for(std::chrono::milliseconds(8));
         }
     }
@@ -411,12 +431,14 @@ void ViewportSession::set_pending_stage(render::GrowthPreviewStageProjection sta
     std::lock_guard<std::mutex> lock(stage_mutex_);
     pending_stage_ = std::move(stage);
     stage_dirty_ = true;
+    needs_present_ = true;
 }
 
 void ViewportSession::set_guide_options(bool guides_visible, bool world_origin_axes_visible)
 {
     guides_visible_ = guides_visible;
     world_origin_axes_visible_ = world_origin_axes_visible;
+    needs_present_ = true;
 }
 
 // Poll the pointer against the viewport window: left drag orbits, right drag
@@ -458,11 +480,28 @@ void ViewportSession::poll_pointer()
                 orbit_ = render::dolly_orbit_view(orbit_, 1.0F + static_cast<float>(dy) * 0.004F);
             }
             orbit_dirty_ = true;
+            needs_present_ = true;
         }
     }
     last_dragging_ = left || right;
     last_pointer_x_ = win_x;
     last_pointer_y_ = win_y;
+
+    // Detect a resize while the preview is idle: if the window no longer matches
+    // the swapchain, force a present so the loop acquires, hits OUT_OF_DATE, and
+    // recreates the swapchain. Without this the present gate would skip resizes.
+    Window geo_root = 0;
+    int geo_x = 0;
+    int geo_y = 0;
+    unsigned int geo_w = 0;
+    unsigned int geo_h = 0;
+    unsigned int geo_border = 0;
+    unsigned int geo_depth = 0;
+    if (XGetGeometry(display, static_cast<Drawable>(x_window_), &geo_root, &geo_x, &geo_y, &geo_w, &geo_h, &geo_border,
+                     &geo_depth) != 0 &&
+        (geo_w != swapchain_.extent().width || geo_h != swapchain_.extent().height)) {
+        needs_present_ = true;
+    }
 }
 
 bool ViewportSession::ensure_growth_renderer()

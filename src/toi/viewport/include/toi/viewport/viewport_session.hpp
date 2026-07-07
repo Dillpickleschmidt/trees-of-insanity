@@ -108,6 +108,11 @@ private:
     bool last_draw_guides_ = false;
     bool cuda_signaled_this_frame_ = false;
     render::GrowthPreviewCamera last_camera_{};
+    // Set whenever the presented image should change (new stage, camera move,
+    // guide toggle). The render loop keeps polling input every tick for
+    // responsiveness but only runs the GPU present when this is set, so a static
+    // preview stops re-presenting and the GPU/compositor go idle.
+    std::atomic<bool> needs_present_{true};
     std::atomic<bool> guides_visible_{true};
     std::atomic<bool> world_origin_axes_visible_{true};
 
