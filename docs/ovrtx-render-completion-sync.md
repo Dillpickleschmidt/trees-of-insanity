@@ -173,6 +173,29 @@ here; the real lever is double-buffering, not a newer ovrtx.
   trustworthy.
 - Confirm no regression to Vulkan sync via the validation layer run described above.
 
+## Future work: async double-buffered pipeline for continuous / ecosystem rendering
+
+The single-buffer + `cudaDeviceSynchronize` + on-demand design is tuned for a mostly-static
+single-plant preview: we rarely render two frames back-to-back, so the device stall is free.
+That breaks down for **continuous** rendering — growth-animation playback, camera flythroughs,
+live ecosystem sim — and for **heavy** scenes (many plants). Under continuous load the device
+sync serializes the pipeline (`render → copy → present` with no overlap; throughput = sum of
+stages, not max).
+
+When that regime becomes real, port NVIDIA's `examples/c/vulkan-interop` architecture:
+- **Double/triple-buffered** interop images so CUDA renders+copies frame N+1 while Vulkan
+  displays frame N. This is the piece that makes the event-wait work (you read a frame-old,
+  complete buffer) and removes the `cudaDeviceSynchronize` stall.
+- **Timeline semaphore** for CUDA→Vulkan ordering (replaces our single binary semaphore).
+- `map_desc.sync_stream = 0` + `cudaStreamWaitEvent(consumer_stream, cuda_sync.wait_event)`
+  for render→copy ordering (already matches our map call; the event only *works* once
+  double-buffered).
+
+Keep the current on-demand + idle-present gating **layered on top**: the async pipeline is for
+the active/continuous case; a user staring at a finished ecosystem should still cost ~0% GPU.
+Decision trigger is *continuous frames or heavy single renders*, not scene size alone — benchmark
+against the current path before committing to the rewrite.
+
 ## References
 - `src/toi/ovrtx/src/renderer_session.cpp` — `render_cuda_frame_once` (the sync site).
 - ovrtx 0.3.0 headers: `include/ovrtx/ovrtx.h`, `include/ovrtx/ovrtx_types.h`
