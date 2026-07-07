@@ -253,6 +253,15 @@ export function App() {
 	});
 
 	onMount(() => {
+		// Surface uncaught webview errors on the automation event channel; a
+		// broken Solid render otherwise fails silently (handlers keep working
+		// while the UI stops updating).
+		window.addEventListener("error", (event) =>
+			reportUiEvent("js-error", { message: String(event.error?.stack ?? event.message) }),
+		);
+		window.addEventListener("unhandledrejection", (event) =>
+			reportUiEvent("js-rejection", { message: String((event.reason as Error)?.stack ?? event.reason) }),
+		);
 		reportUiEvent("app-mounted");
 		void refreshAll();
 	});

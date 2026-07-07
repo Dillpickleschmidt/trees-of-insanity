@@ -10,3 +10,4 @@ toi.project.json
 *.toi.project.json
 .cache/
 viewport-preferences.json
+tools/agent/build/
