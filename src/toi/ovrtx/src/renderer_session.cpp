@@ -189,7 +189,10 @@ Result<MappedCudaFrame> RendererSession::render_cuda_frame_once(RenderFrameOutpu
     }
     ovrtx_map_output_description_t map_desc = {};
     map_desc.device_type = OVRTX_MAP_DEVICE_TYPE_CUDA;
-    map_desc.sync_stream = sync_stream;
+    // We do not rely on the map's stream-sync contract (the cudaDeviceSynchronize
+    // below covers render completion), so pass 0 rather than asking ovrtx to sync
+    // to our stream — matching NVIDIA's vulkan-interop example.
+    map_desc.sync_stream = 0;
 
     ovrtx_render_var_output_t mapped = {};
     const auto mapped_result =
@@ -218,7 +221,7 @@ Result<MappedCudaFrame> RendererSession::render_cuda_frame_once(RenderFrameOutpu
 
         ovrtx_map_output_description_t distance_map_desc = {};
         distance_map_desc.device_type = OVRTX_MAP_DEVICE_TYPE_CUDA_ARRAY;
-        distance_map_desc.sync_stream = sync_stream;
+        distance_map_desc.sync_stream = 0;
         ovrtx_render_var_output_t mapped_distance = {};
         const auto mapped_distance_result = ovrtx_map_render_var_output(
             renderer_.get(), distance_handle, &distance_map_desc, ovrtx_timeout_infinite, &mapped_distance);
