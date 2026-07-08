@@ -50,6 +50,9 @@ struct PlacedModule {
 // root module). Deterministic for a given (plant type, prototype library, plant age).
 struct PlantArchitecture {
     std::vector<PlacedModule> modules;
+    // Prepared prototypes used by this plant; PlacedModule::prototype_index indexes here.
+    // Carried so consumers (e.g. render projection) are self-contained.
+    std::vector<growth::BranchModulePrototype> prototypes;
     float plant_age = 0.0F;                  // Paper: p_t, plant physiological age
     bool senescent = false;                  // p_t >= p_max reached
 };

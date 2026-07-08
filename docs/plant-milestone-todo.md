@@ -40,15 +40,16 @@ The deep core. Interface: `develop_plant(plant_type, prototype_library, plant_ag
 
 ## Piece 2 — Plant preview projection (`toi::render`)
 
-Interface: `make_plant_preview_stage_projection(architecture, prototype_library, options) → GrowthPreviewStageProjection`
-(same output type as the module preview, so the ovrtx viewport seam is unchanged).
+Interface: `make_plant_preview_stage_projection(architecture, options) → GrowthPreviewStageProjection`
+(same output type as the module preview, so the ovrtx viewport seam is unchanged; `PlantArchitecture` now
+carries its prepared prototypes, so no separate library argument is needed).
 
-- [ ] Factor the existing single-module mesh builder to take `(transform, snapshot)`; call it per placed module.
-- [ ] Accumulate chains/meshes across all placed modules; resolve continuation topology via prototype ids.
-- [ ] Internal seam `camera_from_bounds(Bounds)` — whole-plant framing camera (real seam: also used by module preview).
-- [ ] Optional `options.camera_bounds` framing hint to avoid camera jitter across scrub ticks.
-- [ ] Honor ADR-0007 (growth separate from render), ADR-0008 (chain meshes). Cross-module diameter continuity (eq8) is piece 1's job, not render's.
-- [ ] Tests: a 2-module architecture yields >1 chain; camera frames all modules; module set tracks age.
+- [x] Factor the existing single-module mesh builder to take `(transform, snapshot)`; call it per placed module.
+- [x] Accumulate chains/meshes across all placed modules; resolve continuation topology via prototype ids.
+- [x] Internal seam `camera_from_bounds(Bounds)` — whole-plant framing camera (real seam: also used by module preview).
+- [ ] Optional `options.camera_bounds` framing hint to avoid camera jitter across scrub ticks. _(Deferred: camera frames current bounds each projection; stable-framing policy decided in Piece 3/4 once scrub UX is evaluated.)_
+- [x] Honor ADR-0007 (growth separate from render), ADR-0008 (chain meshes). Cross-module diameter continuity (eq8) is piece 1's job, not render's.
+- [x] Tests: a 2-module architecture yields >1 chain; camera frames all modules; module set tracks age.
 
 ## Piece 3 — Plant workspace surface (`toi::app`)
 

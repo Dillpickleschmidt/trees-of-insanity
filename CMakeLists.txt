@@ -51,7 +51,7 @@ add_library(toi_render
 target_include_directories(toi_render PUBLIC
     src/toi/render/include
 )
-target_link_libraries(toi_render PUBLIC toi_growth)
+target_link_libraries(toi_render PUBLIC toi_growth toi_plant)
 target_compile_features(toi_render PUBLIC cxx_std_23)
 
 add_library(toi_project
@@ -197,6 +197,7 @@ if(TOI_BUILD_TESTS)
     add_executable(toi_core_tests
         tests/core_smoke_tests.cpp
         tests/plant_tests.cpp
+        tests/plant_render_tests.cpp
     )
     target_link_libraries(toi_core_tests PRIVATE
         toi_app

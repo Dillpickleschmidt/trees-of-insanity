@@ -40,6 +40,10 @@ make_chain_build_requests(const growth::GrowthSnapshot& snapshot,
     const growth::GrowthSnapshot& topology_snapshot, const growth::BranchModulePrototype& prepared_prototype);
 [[nodiscard]] std::vector<MeshGeometry> build_meshes(const std::vector<ChainBuildRequest>& requests);
 [[nodiscard]] std::vector<GrowthPreviewMeshAttributes> mesh_attributes_for(const std::vector<MeshGeometry>& meshes);
+[[nodiscard]] GrowthPreviewStageProjection
+make_plant_preview_stage_projection_impl(const plant::PlantArchitecture& architecture,
+                                         GrowthPreviewStageOptions options);
+[[nodiscard]] GrowthPreviewCamera make_camera_from_bounds(Bounds bounds, int requested_width, int requested_height);
 
 } // namespace
 
@@ -48,6 +52,12 @@ GrowthPreviewStageProjection make_growth_preview_stage_projection(
     const growth::BranchModulePrototype& prepared_prototype, GrowthPreviewStageOptions options)
 {
     return make_growth_preview_stage_projection_impl(snapshot, camera_snapshot, prepared_prototype, options);
+}
+
+GrowthPreviewStageProjection make_plant_preview_stage_projection(const plant::PlantArchitecture& architecture,
+                                                                GrowthPreviewStageOptions options)
+{
+    return make_plant_preview_stage_projection_impl(architecture, options);
 }
 
 std::array<double, 16> growth_preview_camera_transform_matrix(const GrowthPreviewCamera& camera)
@@ -267,14 +277,12 @@ GrowthPreviewStageProjection make_growth_preview_stage_projection_impl(
     return std::max(1.0F, growth::length(growth::scale(growth::subtract(bounds.max, bounds.min), 0.5F)));
 }
 
-[[nodiscard]] GrowthPreviewCamera make_growth_preview_camera(const growth::GrowthSnapshot& camera_snapshot,
-                                                             int requested_width, int requested_height)
+[[nodiscard]] GrowthPreviewCamera make_camera_from_bounds(Bounds bounds, int requested_width, int requested_height)
 {
     const int width = std::max(1, requested_width);
     const int height = std::max(1, requested_height);
     const double vertical_aperture =
         kCameraHorizontalAperture * static_cast<double>(height) / static_cast<double>(width);
-    const auto bounds = snapshot_bounds(camera_snapshot);
     const growth::Vec3 center = center_of(bounds);
     const float radius = radius_of(bounds);
     const float distance = std::max(10.0F, radius * 3.0F);
@@ -295,6 +303,12 @@ GrowthPreviewStageProjection make_growth_preview_stage_projection_impl(
         .width = width,
         .height = height,
     };
+}
+
+[[nodiscard]] GrowthPreviewCamera make_growth_preview_camera(const growth::GrowthSnapshot& camera_snapshot,
+                                                             int requested_width, int requested_height)
+{
+    return make_camera_from_bounds(snapshot_bounds(camera_snapshot), requested_width, requested_height);
 }
 
 void write_vec3(std::ostream& out, growth::Vec3 value)
@@ -877,6 +891,79 @@ GrowthPreviewUsdStage make_growth_preview_usd_stage(const std::vector<MeshGeomet
         .hdri_texture_path = std::move(options.hdri_texture_path),
         .width = width,
         .height = height,
+    };
+}
+
+[[nodiscard]] growth::Vec3 module_to_world(const plant::PlacedModule& module, growth::Vec3 local,
+                                           growth::Vec3 root_local)
+{
+    const growth::Vec3 relative = growth::subtract(local, root_local);
+    return growth::add(module.origin, growth::add(growth::add(growth::scale(module.basis_x, relative.x),
+                                                              growth::scale(module.basis_y, relative.y)),
+                                                  growth::scale(module.basis_z, relative.z)));
+}
+
+GrowthPreviewStageProjection make_plant_preview_stage_projection_impl(const plant::PlantArchitecture& architecture,
+                                                                     GrowthPreviewStageOptions options)
+{
+    std::vector<MeshGeometry> meshes;
+    std::size_t chain_count = 0;
+    Bounds bounds{};
+    bool has_points = false;
+    const auto include_point = [&](growth::Vec3 point) {
+        if (!has_points) {
+            bounds.min = point;
+            bounds.max = point;
+            has_points = true;
+            return;
+        }
+        bounds.min.x = std::min(bounds.min.x, point.x);
+        bounds.min.y = std::min(bounds.min.y, point.y);
+        bounds.min.z = std::min(bounds.min.z, point.z);
+        bounds.max.x = std::max(bounds.max.x, point.x);
+        bounds.max.y = std::max(bounds.max.y, point.y);
+        bounds.max.z = std::max(bounds.max.z, point.z);
+    };
+
+    for (const auto& module : architecture.modules) {
+        if (module.prototype_index >= architecture.prototypes.size()) {
+            continue;
+        }
+        const auto& prototype = architecture.prototypes[module.prototype_index];
+        if (prototype.root_node >= prototype.nodes.size()) {
+            continue;
+        }
+        const growth::Vec3 root_local = prototype.nodes[prototype.root_node].position;
+
+        // Transform the module's local snapshot into plant world space, then mesh it with the
+        // shared chain builder (continuation topology comes from the prototype).
+        growth::GrowthSnapshot world_snapshot = module.snapshot;
+        for (auto& segment : world_snapshot.segments) {
+            segment.parent_position = module_to_world(module, segment.parent_position, root_local);
+            segment.child_position = module_to_world(module, segment.child_position, root_local);
+            include_point(segment.parent_position);
+            include_point(segment.child_position);
+        }
+
+        auto requests = make_chain_build_requests(world_snapshot, prototype);
+        chain_count += requests.size();
+        auto module_meshes = build_meshes(requests);
+        for (auto& mesh : module_meshes) {
+            meshes.push_back(std::move(mesh));
+        }
+    }
+
+    if (!has_points) {
+        bounds = {.min = {.x = -1.0F, .y = -1.0F, .z = 0.0F}, .max = {.x = 1.0F, .y = 1.0F, .z = 1.0F}};
+    }
+    const auto camera = make_camera_from_bounds(bounds, options.width, options.height);
+    auto usd_stage = make_growth_preview_usd_stage(meshes, camera, options);
+
+    return {
+        .usd_stage = std::move(usd_stage),
+        .mesh = stats_for(meshes, chain_count),
+        .camera = camera,
+        .mesh_attributes = mesh_attributes_for(meshes),
     };
 }
 
