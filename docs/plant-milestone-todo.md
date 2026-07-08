@@ -55,14 +55,14 @@ carries its prepared prototypes, so no separate library argument is needed).
 
 Controller as thin conductor over pieces 1–2; controller stays the single command seam.
 
-- [ ] `ApplicationController`: add `plant_architecture()`, `plant_growth_snapshot_summary()`, `plant_preview_stage_projection()`, `set_plant_physiological_age(float)`, `plant_fully_grown_age()`.
-- [ ] Add `plant_physiological_age_` field (mirrors `module_physiological_age_`) and `active_workspace_` field.
-- [ ] Develop the plant **once per command handler** (mirror `inspect.snapshot`).
-- [ ] `CommandMap` additions (`src/shared/appCommands.ts` + C++ `application_commands.cpp`): `plant.set_age`, `plant.get_growth_snapshot_summary`, `plant.get_growth_preview_stage`, `plant.get_architecture_summary`, `workspace.set`, `plant.preview_preset`.
-- [ ] Add the plant preview-changing commands to `application_command_changes_preview(method)` so the native viewport re-projects.
-- [ ] `state()` reports `active_workspace = "plant"` and marks the plant `workspace_previews` entry `implemented=true`.
-- [ ] Species = existing `active_plant_type` (reuse `set_active_plant_type`).
-- [ ] Tests: `set_plant_physiological_age` drives `plant_preview_stage_projection`; switching active plant type re-develops.
+- [x] `ApplicationController`: add `plant_architecture()`, `plant_growth_snapshot_summary()`, `plant_preview_stage_projection()`, `set_plant_physiological_age(float)`, `plant_fully_grown_age()`.
+- [x] Add `plant_physiological_age_` field (mirrors `module_physiological_age_`) and `active_workspace_` field.
+- [x] Develop the plant **once per command handler** (mirror `inspect.snapshot`).
+- [x] `CommandMap` additions (`src/shared/appCommands.ts` + C++ `application_commands.cpp`): `plant.set_age`, `plant.get_growth_snapshot_summary`, `plant.get_growth_preview_stage`, `plant.get_architecture_summary`, `workspace.set`, `plant.preview_preset`.
+- [x] Add the plant preview-changing commands to `application_command_changes_preview(method)` so the native viewport re-projects.
+- [x] `state()` reports `active_workspace = "plant"` and marks the plant `workspace_previews` entry `implemented=true`.
+- [x] Species = existing `active_plant_type` (reuse `set_active_plant_type`).
+- [x] Tests: `set_plant_physiological_age` drives `plant_preview_stage_projection`; switching active plant type re-develops.
 
 ## Piece 4 — Plant workspace + species gallery (Solid UI)
 

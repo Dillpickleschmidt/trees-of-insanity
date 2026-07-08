@@ -38,8 +38,12 @@ export type AppState = {
 	active_plant_type_id: string;
 	module_physiological_age: number;
 	fully_grown_age: number;
+	plant_physiological_age: number;
+	plant_fully_grown_age: number;
 	plant_type_parameter_descriptors: PlantTypeParameterDescriptor[];
 };
+
+export type Workspace = "module" | "plant" | "ecosystem";
 
 export type PrototypeTreeItemKind = "node" | "segment";
 
@@ -61,6 +65,15 @@ export type GrowthSnapshotSummary = {
 	growing_segment_count: number;
 	mature_segment_count: number;
 	max_diameter: number;
+};
+
+export type PlantGrowthSummary = {
+	plant_physiological_age: number;
+	plant_fully_grown_age: number;
+	module_count: number;
+	visible_segment_count: number;
+	max_diameter: number;
+	senescent: boolean;
 };
 
 export type SegmentState = "growing" | "mature";
@@ -167,6 +180,12 @@ export type CommandMap = {
 	"module.get_growth_snapshot_summary": { params: NoParams; result: GrowthSnapshotSummary };
 	"module.get_growth_snapshot": { params: NoParams; result: GrowthSnapshot };
 	"module.get_growth_preview_stage": { params: NoParams; result: GrowthPreviewStage };
+	"workspace.set": { params: { workspace: Workspace }; result: NoParams };
+	"plant.set_age": { params: { age: number }; result: NoParams };
+	"plant.set_active_plant_type": { params: { plant_type_id: string }; result: NoParams };
+	"plant.get_growth_summary": { params: NoParams; result: PlantGrowthSummary };
+	"plant.get_growth_preview_stage": { params: NoParams; result: GrowthPreviewStage };
+	"plant.preview_preset": { params: { preset_key: PlantTypePresetKey; age?: number }; result: GrowthPreviewStage };
 	"plant_types.list": { params: NoParams; result: PlantTypeSummary[] };
 	"plant_types.get": { params: { plant_type_id: string }; result: PlantType };
 	"plant_types.create": { params: { name: string; preset_key?: PlantTypePresetKey }; result: PlantType };
