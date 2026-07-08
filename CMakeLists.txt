@@ -34,6 +34,15 @@ target_include_directories(toi_import PUBLIC
 target_link_libraries(toi_import PUBLIC toi_growth)
 target_compile_features(toi_import PUBLIC cxx_std_23)
 
+add_library(toi_plant
+    src/toi/plant/src/plant.cpp
+)
+target_include_directories(toi_plant PUBLIC
+    src/toi/plant/include
+)
+target_link_libraries(toi_plant PUBLIC toi_growth toi_import)
+target_compile_features(toi_plant PUBLIC cxx_std_23)
+
 add_library(toi_render
     src/toi/render/src/orbit_view.cpp
     src/toi/render/src/render_projection.cpp
@@ -187,9 +196,12 @@ if(TOI_BUILD_TESTS)
 
     add_executable(toi_core_tests
         tests/core_smoke_tests.cpp
+        tests/plant_tests.cpp
     )
     target_link_libraries(toi_core_tests PRIVATE
         toi_app
+        toi_plant
+        toi_import
         toi_native_core
         Catch2::Catch2WithMain
     )
