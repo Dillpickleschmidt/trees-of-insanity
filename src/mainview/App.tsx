@@ -1,5 +1,5 @@
 import { TriangleAlert } from "lucide-solid";
-import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 
 import { PlantTypesDialog } from "~/components/PlantTypesDialog";
 import { Field, PlantTypeOption, PrototypeOption, Readout, Section } from "~/components/panelPrimitives";
@@ -14,16 +14,19 @@ import { appClient, reportUiEvent } from "~/shell";
 import type {
 	AppState,
 	GrowthSnapshotSummary,
+	PlantGrowthSummary,
 	PlantTypeSummary,
 	PrototypeSummary,
 	PrototypeTree,
 	ViewportPreferences,
 	ViewportPreferencesView,
+	Workspace,
 } from "~/types";
 import {
 	type ColorTheme,
 	colorThemes,
 	type PlantTypePresetKey,
+	plantTypePresetKeys,
 	plantTypePresetLabel,
 	type StatusTone,
 	storedTheme,
@@ -61,6 +64,15 @@ const initialSummary: GrowthSnapshotSummary = {
 	max_diameter: 0,
 };
 
+const initialPlantSummary: PlantGrowthSummary = {
+	plant_physiological_age: 0,
+	plant_fully_grown_age: 0,
+	module_count: 0,
+	visible_segment_count: 0,
+	max_diameter: 0,
+	senescent: false,
+};
+
 function formatNumber(value: number, digits = 3) {
 	if (!Number.isFinite(value)) return "—";
 	return value.toFixed(digits);
@@ -81,6 +93,8 @@ export function App() {
 	const [colorTheme, setColorTheme] = createSignal<ColorTheme>(storedTheme("toi.colorTheme", "neutral", colorThemes));
 	const [panelWidth, setPanelWidth] = createSignal(384);
 	const [dragSliderValue, setDragSliderValue] = createSignal<number | null>(null);
+	const [plantSummary, setPlantSummary] = createSignal(initialPlantSummary);
+	const [plantDragValue, setPlantDragValue] = createSignal<number | null>(null);
 	let latestAgeGeneration = 0;
 	let pendingAgeUpdate: { age: number; generation: number } | null = null;
 	let ageRequestInFlight = false;
@@ -104,6 +118,21 @@ export function App() {
 	};
 	const ready = () => state().prototypes.length > 0;
 
+	const isPlantWorkspace = () => state().active_workspace === "plant";
+	const plantSliderValue = () => {
+		const drag = plantDragValue();
+		if (drag !== null) return drag;
+		const max = state().plant_fully_grown_age;
+		if (max <= 0) return 0;
+		return Math.round(Math.max(0, Math.min(1, state().plant_physiological_age / max)) * 1000);
+	};
+	const plantSliderValues = createMemo<[number]>(() => [plantSliderValue()]);
+	// The gallery preset backing the active plant type, matched by its label.
+	const activeGalleryPresetKey = () => {
+		const active = activePlantType();
+		return active ? plantTypePresetKeys.find((key) => plantTypePresetLabel(key) === active.name) : undefined;
+	};
+
 	const statusTone = (): StatusTone => {
 		if (error() || status() === "Command failed") return "error";
 		if (status() === "Connected") return "live";
@@ -114,16 +143,21 @@ export function App() {
 		setBusy(true);
 		setError(null);
 		try {
-			const [nextState, nextTree, nextSummary, nextViewport] = await Promise.all([
+			const [nextState, nextTree, nextViewport] = await Promise.all([
 				appClient.command("app.get_state"),
 				appClient.command("module.get_prototype_tree"),
-				appClient.command("module.get_growth_snapshot_summary"),
 				appClient.command("viewport.get_preferences"),
 			]);
 			setState(nextState);
 			setTree(nextTree);
-			setSummary(nextSummary);
 			setViewport(nextViewport);
+			// The plant summary develops the whole plant (expensive), so only fetch the
+			// summary for the active workspace.
+			if (nextState.active_workspace === "plant") {
+				setPlantSummary(await appClient.command("plant.get_growth_summary"));
+			} else {
+				setSummary(await appClient.command("module.get_growth_snapshot_summary"));
+			}
 			setStatus("Connected");
 			reportUiEvent("app-state-loaded", {
 				active_workspace: nextState.active_workspace,
@@ -180,6 +214,39 @@ export function App() {
 		setNewPlantTypePresetKey(key);
 		if (newPlantTypeName().trim() === "") {
 			setNewPlantTypeName(plantTypePresetLabel(key));
+		}
+	}
+
+	function selectWorkspace(workspace: string) {
+		if (workspace === state().active_workspace) return;
+		void runCommand(() => appClient.command("workspace.set", { workspace: workspace as Workspace }));
+	}
+
+	// Plant development is expensive, so the plant slider commits only on release.
+	function commitPlantAge(value: number) {
+		setPlantDragValue(null);
+		const max = state().plant_fully_grown_age;
+		const age = max <= 0 ? 0 : (value / 1000) * max;
+		void runCommand(() => appClient.command("plant.set_age", { age }));
+	}
+
+	// Instantiate a built-in species from the gallery (reusing an existing plant type of
+	// the same name) and make it the active plant type so the viewport renders it.
+	async function activateGalleryPreset(key: PlantTypePresetKey) {
+		const label = plantTypePresetLabel(key);
+		setBusy(true);
+		setError(null);
+		try {
+			const existing = state().plant_types.find((plantType) => plantType.name === label);
+			const plantTypeId =
+				existing?.id ?? (await appClient.command("plant_types.create", { name: label, preset_key: key })).id;
+			await appClient.command("plant.set_active_plant_type", { plant_type_id: plantTypeId });
+			await refreshAll();
+		} catch (caught) {
+			setError(caught instanceof Error ? caught.message : String(caught));
+			setStatus("Command failed");
+		} finally {
+			setBusy(false);
 		}
 	}
 
@@ -279,6 +346,8 @@ export function App() {
 					tone={statusTone()}
 					busy={busy()}
 					previews={state().workspace_previews}
+					activeWorkspace={state().active_workspace}
+					onSelectWorkspace={selectWorkspace}
 					uiTheme={uiTheme()}
 					colorTheme={colorTheme()}
 					onUiTheme={setUiTheme}
@@ -295,6 +364,7 @@ export function App() {
 					</Show>
 
 					<div class="space-y-6">
+						<Show when={!isPlantWorkspace()}>
 						{/* SOURCE — what is being grown */}
 						<Section eyebrow="Source">
 							<Field label="Branch module prototype">
@@ -420,19 +490,132 @@ export function App() {
 							/>
 						</Section>
 
-						{/* VIEWPORT — how the growth preview is drawn */}
-						<Show when={viewport()}>
-							{(view) => (
-								<ViewportControls view={view()} busy={busy()} onChange={setViewportPreference} />
-							)}
-						</Show>
-
 						{/* STRUCTURE — the prototype inspector */}
 						<Section eyebrow="Structure">
 							<div class="rounded-lg border border-border bg-card/40 p-3.5">
 								<PrototypeTreeView tree={tree()} />
 							</div>
 						</Section>
+						</Show>
+
+						<Show when={isPlantWorkspace()}>
+							{/* SPECIES — which plant type is growing */}
+							<Section eyebrow="Species">
+								<Field
+									label="Plant type"
+									action={
+										<button
+											type="button"
+											class="text-[11px] font-medium text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:text-foreground"
+											onClick={() => setShowPlantTypes(true)}
+										>
+											Manage
+										</button>
+									}
+								>
+									<Select<PlantTypeSummary>
+										options={state().plant_types}
+										value={activePlantType() ?? null}
+										disabled={busy() || state().plant_types.length === 0}
+										optionValue="id"
+										optionTextValue={(option) => option.name}
+										placeholder={state().plant_types.length === 0 ? "No plant types" : "Select a plant type"}
+										onChange={(plantType) => {
+											if (!plantType || plantType.id === state().active_plant_type_id) return;
+											void runCommand(() =>
+												appClient.command("plant.set_active_plant_type", { plant_type_id: plantType.id }),
+											);
+										}}
+										itemComponent={(itemProps) => (
+											<SelectItem item={itemProps.item}>
+												<PlantTypeOption plantType={itemProps.item.rawValue} />
+											</SelectItem>
+										)}
+									>
+										<SelectTrigger
+											placeholder={state().plant_types.length === 0 ? "No plant types" : "Select a plant type"}
+											valueComponent={(option: PlantTypeSummary) => <PlantTypeOption plantType={option} />}
+										/>
+										<SelectContent />
+									</Select>
+								</Field>
+							</Section>
+
+							{/* DEVELOPMENT — plant physiological age (commits on release; develop is costly) */}
+							<Section eyebrow="Development">
+								<div class="flex items-end justify-between">
+									<div class="flex items-baseline gap-1.5">
+										<span class="font-mono text-2xl font-medium tabular-nums tracking-tight">
+											{formatNumber(state().plant_physiological_age, 1)}
+										</span>
+										<span class="font-mono text-sm text-muted-foreground tabular-nums">
+											/ {formatNumber(state().plant_fully_grown_age, 1)}
+										</span>
+									</div>
+									<Show when={plantSummary().senescent}>
+										<span class="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-[11px] font-semibold text-muted-foreground">
+											Senescent
+										</span>
+									</Show>
+								</div>
+
+								<div class="mt-4">
+									<Slider
+										minValue={0}
+										maxValue={1000}
+										step={1}
+										value={plantSliderValues()}
+										disabled={busy() || state().plant_fully_grown_age <= 0}
+										onChange={(value) => setPlantDragValue(value[0] ?? 0)}
+										onChangeEnd={(value) => commitPlantAge(value[0] ?? plantSliderValue())}
+									/>
+									<div class="mt-2.5 flex justify-between font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
+										<span>Seed</span>
+										<span>Mature</span>
+									</div>
+								</div>
+							</Section>
+
+							{/* GROWTH — live plant snapshot at the current age */}
+							<Section eyebrow="Growth">
+								<Readout
+									items={[
+										{ label: "Branch modules", value: plantSummary().module_count },
+										{ label: "Visible segments", value: plantSummary().visible_segment_count },
+										{ label: "Max diameter", value: formatNumber(plantSummary().max_diameter, 3) },
+									]}
+								/>
+							</Section>
+
+							{/* SPECIES GALLERY — instantiate any built-in plant type */}
+							<Section eyebrow="Species gallery">
+								<div class="grid grid-cols-2 gap-1.5">
+									<For each={plantTypePresetKeys}>
+										{(key) => (
+											<button
+												type="button"
+												disabled={busy()}
+												onClick={() => void activateGalleryPreset(key)}
+												class="truncate rounded-md border border-border px-2.5 py-2 text-left text-[12px] transition-colors hover:border-grow/50 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+												classList={{
+													"border-grow/60 bg-grow/10 text-foreground": key === activeGalleryPresetKey(),
+													"text-muted-foreground": key !== activeGalleryPresetKey(),
+												}}
+											>
+												{plantTypePresetLabel(key)}
+											</button>
+										)}
+									</For>
+								</div>
+							</Section>
+						</Show>
+
+						{/* VIEWPORT — shared across workspaces */}
+						<Show when={viewport()}>
+							{(view) => (
+								<ViewportControls view={view()} busy={busy()} onChange={setViewportPreference} />
+							)}
+						</Show>
 					</div>
 				</main>
 

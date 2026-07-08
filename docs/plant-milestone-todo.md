@@ -68,12 +68,12 @@ Controller as thin conductor over pieces 1–2; controller stays the single comm
 
 Mirror the Module workspace; reuse the native `Viewport` (one adapter, both workspaces).
 
-- [ ] Lift shared structure from the Module workspace; add `PlantWorkspace` pane in `src/mainview/` (plant type selector, plant development slider, growth summary, reused `Viewport`).
-- [ ] Add `SpeciesGallery` iterating the 16 preset keys `a`–`p` (`PlantTypePresetKey`), previewing each via `plant.preview_preset`.
-- [ ] Wire slider → `appClient.command("plant.set_age", {age})`; native viewport re-renders on the changes-preview predicate (no pixel fetching).
-- [ ] Unlock the plant workspace preview in `TopBar` once piece 3 marks it implemented.
-- [ ] Use solidcn Select/Slider (ADR-0009).
-- [ ] Tests: slider issues `plant.set_age`; gallery renders 16 entries; workspace switch works.
+- [x] Lift shared structure from the Module workspace; add `PlantWorkspace` pane in `src/mainview/` (plant type selector, plant development slider, growth summary, reused `Viewport`).
+- [x] Species gallery iterating the 16 preset keys `a`–`p`; a click instantiates that species (`plant_types.create` + `plant.set_active_plant_type`, deduped by name) so the viewport renders it. _(v1 uses instantiate-and-activate; `plant.preview_preset` stays available for a future in-viewport transient preview.)_
+- [x] Wire slider → `appClient.command("plant.set_age", {age})`; native viewport re-renders on the changes-preview predicate (no pixel fetching).
+- [x] Unlock the plant workspace preview in `TopBar` once piece 3 marks it implemented.
+- [x] Use solidcn Select/Slider (ADR-0009).
+- [x] Verified via typecheck + `build:ui` + the Piece 3 command-seam tests (`workspace.set`, `plant.set_age`, preset instantiation). _(No Solid component-test harness in the repo; UI wiring is typed against the CommandMap. On-screen scrub of all 16 species is the deferred manual check below — needs the ovrtx build.)_
 
 ---
 
