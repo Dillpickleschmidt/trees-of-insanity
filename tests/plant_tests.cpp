@@ -2,6 +2,7 @@
 #include "toi/import/obj_importer.hpp"
 #include "toi/plant/plant.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
@@ -100,6 +101,53 @@ TEST_CASE("a plant grows beyond its root over developmental time")
     INFO("young modules " << young->modules.size() << " old modules " << old->modules.size());
     REQUIRE(old->modules.size() > young->modules.size());
     REQUIRE(old->modules.size() > 1);
+}
+
+TEST_CASE("development integrates to the exact requested plant age")
+{
+    const auto library = load_library();
+    const auto plant_type = toi::growth::plant_type_preset_by_key('e');
+    REQUIRE(plant_type.has_value());
+
+    // A fractional age must not round up to a whole step (regression: lround overshoot).
+    const auto quarter = toi::plant::develop_plant(*plant_type, library, 0.4F);
+    const auto small = toi::plant::develop_plant(*plant_type, library, 0.6F);
+    REQUIRE(quarter.has_value());
+    REQUIRE(small.has_value());
+    REQUIRE(quarter->plant_age == Catch::Approx(0.4F));
+    REQUIRE(small->plant_age == Catch::Approx(0.6F));
+}
+
+TEST_CASE("returned modules all satisfy the shedding rule (no stale-zero vigor)")
+{
+    const auto library = load_library();
+    const auto plant_type = toi::growth::plant_type_preset_by_key('i');
+    REQUIRE(plant_type.has_value());
+    const float threshold = 0.02F * plant_type->root_max_vigor;
+
+    const auto architecture = toi::plant::develop_plant(*plant_type, library, 200.0F);
+    REQUIRE(architecture.has_value());
+    REQUIRE(architecture->modules.size() > 1);
+    for (const auto& module : architecture->modules) {
+        // Every returned module is either the root or carries vigor at/above the shed threshold.
+        INFO("vigor " << module.vigor << " threshold " << threshold);
+        REQUIRE((module.parent_module == toi::plant::kNoParent || module.vigor >= threshold));
+    }
+}
+
+TEST_CASE("senescence past the ramp collapses the plant to its root")
+{
+    const auto library = load_library();
+    const auto plant_type = toi::growth::plant_type_preset_by_key('a'); // p_max = 20
+    REQUIRE(plant_type.has_value());
+
+    // Past plant_max_age + the senescence ramp, root vigor reaches zero and all modules shed.
+    const auto dead = toi::plant::develop_plant(*plant_type, library, plant_type->plant_max_age + 60.0F);
+    REQUIRE(dead.has_value());
+    REQUIRE(dead->senescent);
+    REQUIRE(dead->modules.size() == 1);
+    const auto summary = toi::plant::summarize(*dead);
+    REQUIRE(summary.root_vigor < 1.0e-3F);
 }
 
 TEST_CASE("every built-in species attaches modules by end of life")

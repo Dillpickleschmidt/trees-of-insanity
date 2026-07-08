@@ -266,27 +266,6 @@ struct SimModule {
     return std::max(0.0F, 1.0F - over / kSenescenceRampAge);
 }
 
-// Which child module continues the parent's axis (SS/Palubicki main vs lateral). We use
-// the child attached at the deepest terminal node (largest node physiological age) as the
-// axis continuation. NOTE(decision): topological proxy; paper leaves module-scale main
-// designation implicit.
-[[nodiscard]] std::size_t main_child(const SimModule& module, const std::vector<SimModule>& modules,
-                                     const std::vector<Prototype>& prototypes)
-{
-    std::size_t best = module.children.front();
-    float best_age = -1.0F;
-    for (const std::size_t child_index : module.children) {
-        const SimModule& child = modules[child_index];
-        const auto& parent_proto = prototypes[module.prototype_index].prepared;
-        const float node_age = parent_proto.nodes[child.parent_terminal_node].physiological_age;
-        if (node_age > best_age) {
-            best_age = node_age;
-            best = child_index;
-        }
-    }
-    return best;
-}
-
 // Basipetal light accumulation (tips -> root) into subtree_light.
 void accumulate_light(std::vector<SimModule>& modules)
 {
@@ -300,8 +279,10 @@ void accumulate_light(std::vector<SimModule>& modules)
     }
 }
 
-// Acropetal vigor distribution (root -> tips), Borchert-Honda eq2 with recursive
-// main-vs-rest split for >2 children.
+// Acropetal vigor distribution (root -> tips), Borchert-Honda eq2 applied recursively:
+// at each branching point the deepest child axis is "main" and eq2 splits it against the
+// combined rest, then the rest is split the same way, so apical control (lambda) applies
+// at every level (main vs. lateral, then lateral vs. lateral, ...).
 void distribute_vigor(std::vector<SimModule>& modules, const std::vector<Prototype>& prototypes, float lambda,
                       float root_vigor)
 {
@@ -310,36 +291,34 @@ void distribute_vigor(std::vector<SimModule>& modules, const std::vector<Prototy
     }
     modules.front().vigor = root_vigor;
     for (std::size_t index = 0; index < modules.size(); ++index) {
-        SimModule& module = modules[index];
-        if (module.children.empty()) {
+        if (modules[index].children.empty()) {
             continue;
         }
-        const float available = module.vigor;
-        if (module.children.size() == 1) {
-            modules[module.children.front()].vigor = available;
-            continue;
-        }
-        const std::size_t main = main_child(module, modules, prototypes);
-        const float main_light = modules[main].subtree_light;
-        float lateral_light = 0.0F;
-        for (const std::size_t child_index : module.children) {
-            if (child_index != main) {
-                lateral_light += modules[child_index].subtree_light;
+        // Order children by continuation depth (base node physiological age) descending, so
+        // the deepest axis is "main" first at each recursive split.
+        const auto& parent_proto = prototypes[modules[index].prototype_index].prepared;
+        std::vector<std::size_t> ordered(modules[index].children.begin(), modules[index].children.end());
+        std::sort(ordered.begin(), ordered.end(), [&](std::size_t a, std::size_t b) {
+            return parent_proto.nodes[modules[a].parent_terminal_node].physiological_age >
+                   parent_proto.nodes[modules[b].parent_terminal_node].physiological_age;
+        });
+
+        float available = modules[index].vigor;
+        for (std::size_t i = 0; i < ordered.size(); ++i) {
+            if (i + 1 == ordered.size()) {
+                modules[ordered[i]].vigor = available; // last child takes the remainder
+                break;
             }
-        }
-        const float denominator = lambda * main_light + (1.0F - lambda) * lateral_light;
-        const float main_vigor =
-            denominator <= growth::kEpsilon ? available : available * lambda * main_light / denominator;
-        modules[main].vigor = main_vigor;
-        const float lateral_vigor = available - main_vigor;
-        for (const std::size_t child_index : module.children) {
-            if (child_index == main) {
-                continue;
+            const float main_light = modules[ordered[i]].subtree_light;
+            float rest_light = 0.0F;
+            for (std::size_t j = i + 1; j < ordered.size(); ++j) {
+                rest_light += modules[ordered[j]].subtree_light;
             }
-            const float share = lateral_light <= growth::kEpsilon
-                                    ? lateral_vigor / static_cast<float>(module.children.size() - 1)
-                                    : lateral_vigor * modules[child_index].subtree_light / lateral_light;
-            modules[child_index].vigor = share;
+            const float denominator = lambda * main_light + (1.0F - lambda) * rest_light;
+            const float main_vigor =
+                denominator <= growth::kEpsilon ? available : available * lambda * main_light / denominator;
+            modules[ordered[i]].vigor = main_vigor;
+            available -= main_vigor;
         }
     }
 }
@@ -506,6 +485,23 @@ void shed_low_vigor(std::vector<SimModule>& modules, float threshold)
     modules = std::move(kept);
 }
 
+// Rebuild geometry, self-collision light (SS eq1), and Borchert-Honda vigor for the whole
+// architecture at the given plant clock. Used each step and once more after the loop so the
+// returned modules (including last-step attachments) carry vigor consistent with the state.
+void refresh_vigor(std::vector<SimModule>& modules, const std::vector<Prototype>& prototypes,
+                   const PlantTypeParameters& plant_type, std::vector<Sphere>& spheres, float plant_clock)
+{
+    rebuild_children(modules);
+    step_geometry(modules, prototypes, plant_type, spheres);
+    for (std::size_t index = 0; index < modules.size(); ++index) {
+        modules[index].light = std::exp(-collision_measure(index, spheres[index], modules, spheres));
+    }
+    accumulate_light(modules);
+    const float lambda = current_apical_control(plant_type, plant_clock);
+    const float root_vigor = plant_type.root_max_vigor * senescence_factor(plant_type, plant_clock);
+    distribute_vigor(modules, prototypes, lambda, root_vigor);
+}
+
 // Recompute per-module terminal occupancy from the actual children, so terminals freed
 // by shedding become available again.
 void recompute_occupancy(std::vector<SimModule>& modules, const std::vector<Prototype>& prototypes)
@@ -605,23 +601,16 @@ Result<PlantArchitecture> develop_plant(const PlantTypeParameters& plant_type,
     const float age_scale = kLifespanMaturities * std::max(root_mature, growth::kEpsilon) / lifespan;
 
     std::vector<Sphere> spheres;
-    const int steps = std::min(kMaxSimSteps, static_cast<int>(std::lround(plant_age / kSimStep)));
     float plant_clock = 0.0F;
+    float remaining = plant_age;
+    int guard = 0;
 
-    for (int step = 0; step < steps; ++step) {
-        rebuild_children(modules);
-        step_geometry(modules, *prototypes, plant_type, spheres);
+    // Fixed step of kSimStep, with a final partial step so the clock lands exactly on
+    // plant_age (no rounding overshoot; develop_plant(0.6) integrates to 0.6, not 1.0).
+    while (remaining > growth::kEpsilon && guard < kMaxSimSteps) {
+        const float dt = std::min(kSimStep, remaining);
 
-        for (std::size_t index = 0; index < modules.size(); ++index) {
-            const float measure = collision_measure(index, spheres[index], modules, spheres);
-            modules[index].light = std::exp(-measure); // SS eq1
-        }
-        accumulate_light(modules);
-
-        const float lambda = current_apical_control(plant_type, plant_clock);
-        const float root_vigor = plant_type.root_max_vigor * senescence_factor(plant_type, plant_clock);
-        distribute_vigor(modules, *prototypes, lambda, root_vigor);
-
+        refresh_vigor(modules, *prototypes, plant_type, spheres, plant_clock);
         shed_low_vigor(modules, threshold);
         rebuild_children(modules);
 
@@ -630,15 +619,24 @@ Result<PlantArchitecture> develop_plant(const PlantTypeParameters& plant_type,
                 .vigor = module.vigor, .min_vigor = threshold, .max_vigor = plant_type.root_max_vigor};
             const auto rate = growth::growth_rate(plant_type, vigor);
             if (rate) {
-                module.age += *rate * kSimStep * age_scale; // Paper: da_u/dt = Upsilon(u)
+                module.age += *rate * dt * age_scale; // Paper: da_u/dt = Upsilon(u)
             }
         }
 
         step_geometry(modules, *prototypes, plant_type, spheres);
         attach_modules(modules, *prototypes, plant_type, spheres, plant_clock, threshold);
 
-        plant_clock += kSimStep;
+        plant_clock += dt;
+        remaining -= dt;
+        ++guard;
     }
+
+    // Final consistency pass: assign vigor for the final clock (so last-step attachments are
+    // not stale-zero) and shed sub-threshold modules, so every returned module satisfies the
+    // shedding rule and senescence is fully resolved at the returned plant age.
+    refresh_vigor(modules, *prototypes, plant_type, spheres, plant_clock);
+    shed_low_vigor(modules, threshold);
+    rebuild_children(modules);
 
     PlantArchitecture architecture;
     architecture.plant_age = plant_clock;

@@ -23,9 +23,11 @@ develops every built-in plant type across its lifespan. Each is a `NOTE(decision
   `age_scale` makes a fully-vigorous module reach ~8 root-maturation ages over the lifespan.
   This reconciles unscaled growth rates (`g_p`) with import-scaled geometry so every species
   develops across its slider range. Absolute plant-scale time units are unspecified.
-- **Integration** — fixed `dt = 1`, steps = `plant_age` (capped at 1200); `develop_plant`
-  re-develops from age 0 each call. Pure and deterministic; a stepping interface is deferred
-  to a later piece if scrub performance requires it.
+- **Integration** — fixed `dt = 1` with a final partial step so the clock lands exactly on the
+  requested `plant_age` (capped at 1200 steps); `develop_plant` re-develops from age 0 each call. A
+  final vigor pass makes returned module vigor consistent with the shedding rule and resolves
+  senescence at the returned age. Pure and deterministic; a stepping interface is deferred if scrub
+  performance requires it.
 
 ## Consequences
 
