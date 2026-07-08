@@ -465,7 +465,8 @@ json handle_application_command(ApplicationController& controller, const json& r
         }
         if (method == "plant.preview_preset") {
             const char preset = plant_type_preset_key(params);
-            const float age = params.contains("age") ? json_float(params, "age") : 0.0F;
+            const std::optional<float> age =
+                params.contains("age") ? std::optional<float>(json_float(params, "age")) : std::nullopt;
             auto stage = controller.plant_preset_preview_stage_projection(preset, age);
             return stage ? response_ok(id, to_json(*stage)) : response_error(id, stage.error());
         }

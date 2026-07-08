@@ -8,6 +8,7 @@
 
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -135,8 +136,9 @@ public:
     [[nodiscard]] Result<render::GrowthPreviewStageProjection>
     plant_preview_stage_projection(render::GrowthPreviewStageOptions options = {}) const;
     // Transient preview of a built-in plant type preset (species gallery); no state change.
+    // A nullopt age previews the fully-grown plant; a provided age is validated and clamped.
     [[nodiscard]] Result<render::GrowthPreviewStageProjection>
-    plant_preset_preview_stage_projection(char preset_key, float plant_age,
+    plant_preset_preview_stage_projection(char preset_key, std::optional<float> plant_age,
                                           render::GrowthPreviewStageOptions options = {}) const;
     // Dispatch to the module or plant preview based on the active workspace.
     [[nodiscard]] Result<render::GrowthPreviewStageProjection>

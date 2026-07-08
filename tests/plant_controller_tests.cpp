@@ -119,3 +119,47 @@ TEST_CASE("plant commands round-trip through the command seam")
     REQUIRE(preset_preview["ok"] == true);
     REQUIRE(preset_preview["result"]["mesh_count"].get<int>() > 0);
 }
+
+TEST_CASE("plant.preview_preset distinguishes omitted age from explicit age zero")
+{
+    auto controller = make_controller("plant-preset-age");
+
+    // Omitted age -> fully grown -> meshes present.
+    const auto grown = toi::app::handle_application_command(
+        controller, json{{"id", 1}, {"method", "plant.preview_preset"}, {"params", {{"preset_key", "i"}}}});
+    REQUIRE(grown["ok"] == true);
+    const int grown_meshes = grown["result"]["mesh_count"].get<int>();
+    REQUIRE(grown_meshes > 0);
+
+    // Explicit age 0 -> seedling -> strictly fewer meshes than fully grown.
+    const auto seedling = toi::app::handle_application_command(
+        controller, json{{"id", 2}, {"method", "plant.preview_preset"}, {"params", {{"preset_key", "i"}, {"age", 0.0}}}});
+    REQUIRE(seedling["ok"] == true);
+    REQUIRE(seedling["result"]["mesh_count"].get<int>() < grown_meshes);
+
+    // Negative age is rejected.
+    const auto negative = toi::app::handle_application_command(
+        controller, json{{"id", 3}, {"method", "plant.preview_preset"}, {"params", {{"preset_key", "i"}, {"age", -5.0}}}});
+    REQUIRE(negative["ok"] == false);
+}
+
+TEST_CASE("switching the active plant type re-develops the plant state")
+{
+    auto controller = make_controller("plant-switch");
+
+    // Create and activate a plant type from a short-lived preset ('a', plant_max_age 20).
+    const auto created = controller.create_plant_type("Tiny", 'a');
+    REQUIRE(created.has_value());
+    REQUIRE(controller.set_active_plant_type(created->id).has_value());
+
+    const auto state = controller.state();
+    REQUIRE(state.has_value());
+    REQUIRE(state->plant_fully_grown_age == 20.0F);
+}
+
+TEST_CASE("active preview rejects the unimplemented ecosystem workspace")
+{
+    auto controller = make_controller("plant-ecosystem");
+    REQUIRE(controller.set_active_workspace("ecosystem").has_value());
+    REQUIRE_FALSE(controller.active_preview_stage_projection().has_value());
+}

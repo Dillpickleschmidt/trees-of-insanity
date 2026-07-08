@@ -437,7 +437,7 @@ ApplicationController::plant_preview_stage_projection(render::GrowthPreviewStage
 }
 
 Result<render::GrowthPreviewStageProjection>
-ApplicationController::plant_preset_preview_stage_projection(char preset_key, float plant_age,
+ApplicationController::plant_preset_preview_stage_projection(char preset_key, std::optional<float> plant_age,
                                                             render::GrowthPreviewStageOptions options) const
 {
     const auto preset = growth::plant_type_preset_by_key(preset_key);
@@ -445,7 +445,12 @@ ApplicationController::plant_preset_preview_stage_projection(char preset_key, fl
         return std::unexpected(make_error(ApplicationError::Code::NotFound,
                                           std::string("unknown plant type preset '") + preset_key + "'"));
     }
-    const float requested = plant_age <= 0.0F ? preset->plant_max_age : plant_age;
+    if (plant_age && (!std::isfinite(*plant_age) || *plant_age < 0.0F)) {
+        return std::unexpected(
+            make_error(ApplicationError::Code::InvalidCommand, "plant age must be finite and non-negative"));
+    }
+    // Omitted age previews the fully-grown plant; a provided age (including 0) is used as-is.
+    const float requested = plant_age ? *plant_age : preset->plant_max_age;
     const float clamped = std::clamp(requested, 0.0F, preset->plant_max_age);
     auto architecture = plant::develop_plant(*preset, prototype_library_, clamped);
     if (!architecture) {
@@ -463,7 +468,11 @@ ApplicationController::active_preview_stage_projection(render::GrowthPreviewStag
     if (active_workspace_ == "plant") {
         return plant_preview_stage_projection(options);
     }
-    return growth_preview_stage_projection(options);
+    if (active_workspace_ == "module") {
+        return growth_preview_stage_projection(options);
+    }
+    return std::unexpected(
+        make_error(ApplicationError::Code::InvalidCommand, "no preview for workspace " + active_workspace_));
 }
 
 Result<void> ApplicationController::set_plant_physiological_age(float plant_physiological_age)
