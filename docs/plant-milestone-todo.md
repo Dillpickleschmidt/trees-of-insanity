@@ -1,0 +1,92 @@
+# Milestone: single-plant growth previews
+
+**Goal:** in the Plant workspace, select any built-in species (one of 16 plant type presets `a`–`p`),
+scrub a plant-development slider, and watch the whole plant grow via the documented plant-scale model,
+rendered in the existing ovrtx viewport. Ship = full-plant previews for each built-in species.
+
+**Reference:** [`single-plant-growth-model.md`](single-plant-growth-model.md) (equations, Table 4 mapping,
+morphospace 3×3 grid, provisional rules). HTML plans were authored in a temp dir for review; build steps
+below distill them. Honor ADRs 0006, 0007, 0008, 0009, 0012, 0013 — do not re-litigate.
+
+**Sequencing:** 1 → 2 → 3 → 4. Each piece depends on the prior's output type. All paths are relative to
+`~/Projects/trees-of-insanity/`.
+
+**Decisions already made** (from grilling; don't re-open unless a hard blocker appears):
+- `develop_plant(age)` is **pure + deterministic** — re-develops from age 0 each call (mirrors
+  `make_growth_snapshot(age)`). No stepping simulation unless perf forces it.
+- Root module prototype selected as if full vigor (`D' = D`).
+- Borchert-Honda >2 children: apply eq2 recursively (main vs. combined rest).
+- Orientation: `ω₁ = 1` fixed, `ω₂` from Table 4; small step angle, few steps.
+- Species gallery previews built-ins via a transient `plant.preview_preset` command (no plant-type-library churn).
+
+---
+
+## Piece 1 — Plant development module (`toi::plant`)
+
+The deep core. Interface: `develop_plant(plant_type, prototype_library, plant_age) → PlantArchitecture`.
+
+- [ ] Create `src/toi/plant/include/toi/plant/plant.hpp` + `src/toi/plant/src/plant.cpp`; add to CMake `core` preset (no ovrtx/Vulkan).
+- [ ] Define `PlantArchitecture` = placed modules `{prototype id, world transform, module physiological age, per-module GrowthSnapshot, vigor}` (vigor feeds piece 3's summary).
+- [ ] Prepare prototypes internally via `prepare_branch_module_prototype(raw, plant_type)` (reuse `toi::growth`).
+- [ ] Light: `Q(u) = exp(−f_collisions(u))`, self-collision only over own module bounding spheres (`B_u` = centroid, diameter = tip-to-tip extent). (ADR-0012)
+- [ ] Vigor: basipetal `Q(u)=Q(u_m)+Q(u_l)`; acropetal eq2 split by `λ`, `v̄(u_l)=v̄(u)−v̄(u_m)`; root gets constant `v̄_rootmax`.
+- [ ] Growth rate eq5 + age eq6 per module by reusing `make_growth_snapshot`.
+- [ ] Attach: for `a_u > a_mature`, `q(n_i)=Q(u)/#n`, per-terminal-node BH, attach child where `v > v̄_min`.
+- [ ] Internal seam `select_prototype` — nearest-seed on the 3×3 morphospace grid, `D' = v̄(parent)·D/v̄_max` (root: `D'=D`). Keep private (hypothetical seam). (ADR-0013)
+- [ ] Internal seam `orient_module` — coordinate descent over `{±φ, ±ψ}` minimizing `f_distribution = ω₁·f_collisions + ω₂·f_tropism`. Keep private.
+- [ ] Shedding (`v̄ < v̄_min`) and senescence (`p_t ≥ p_max` → ramp `v̄_rootmax → 0`).
+- [ ] Maturation: swap to `mature_apical_control` / `mature_determinacy` at `p_t ≥ flowering_age`.
+- [ ] Tests through `develop_plant`: determinism; **all 16 presets develop to a bounded plant (no explosion)**; shedding + senescence fire; vigor conserved at splits.
+
+## Piece 2 — Plant preview projection (`toi::render`)
+
+Interface: `make_plant_preview_stage_projection(architecture, prototype_library, options) → GrowthPreviewStageProjection`
+(same output type as the module preview, so the ovrtx viewport seam is unchanged).
+
+- [ ] Factor the existing single-module mesh builder to take `(transform, snapshot)`; call it per placed module.
+- [ ] Accumulate chains/meshes across all placed modules; resolve continuation topology via prototype ids.
+- [ ] Internal seam `camera_from_bounds(Bounds)` — whole-plant framing camera (real seam: also used by module preview).
+- [ ] Optional `options.camera_bounds` framing hint to avoid camera jitter across scrub ticks.
+- [ ] Honor ADR-0007 (growth separate from render), ADR-0008 (chain meshes). Cross-module diameter continuity (eq8) is piece 1's job, not render's.
+- [ ] Tests: a 2-module architecture yields >1 chain; camera frames all modules; module set tracks age.
+
+## Piece 3 — Plant workspace surface (`toi::app`)
+
+Controller as thin conductor over pieces 1–2; controller stays the single command seam.
+
+- [ ] `ApplicationController`: add `plant_architecture()`, `plant_growth_snapshot_summary()`, `plant_preview_stage_projection()`, `set_plant_physiological_age(float)`, `plant_fully_grown_age()`.
+- [ ] Add `plant_physiological_age_` field (mirrors `module_physiological_age_`) and `active_workspace_` field.
+- [ ] Develop the plant **once per command handler** (mirror `inspect.snapshot`).
+- [ ] `CommandMap` additions (`src/shared/appCommands.ts` + C++ `application_commands.cpp`): `plant.set_age`, `plant.get_growth_snapshot_summary`, `plant.get_growth_preview_stage`, `plant.get_architecture_summary`, `workspace.set`, `plant.preview_preset`.
+- [ ] Add the plant preview-changing commands to `application_command_changes_preview(method)` so the native viewport re-projects.
+- [ ] `state()` reports `active_workspace = "plant"` and marks the plant `workspace_previews` entry `implemented=true`.
+- [ ] Species = existing `active_plant_type` (reuse `set_active_plant_type`).
+- [ ] Tests: `set_plant_physiological_age` drives `plant_preview_stage_projection`; switching active plant type re-develops.
+
+## Piece 4 — Plant workspace + species gallery (Solid UI)
+
+Mirror the Module workspace; reuse the native `Viewport` (one adapter, both workspaces).
+
+- [ ] Lift shared structure from the Module workspace; add `PlantWorkspace` pane in `src/mainview/` (plant type selector, plant development slider, growth summary, reused `Viewport`).
+- [ ] Add `SpeciesGallery` iterating the 16 preset keys `a`–`p` (`PlantTypePresetKey`), previewing each via `plant.preview_preset`.
+- [ ] Wire slider → `appClient.command("plant.set_age", {age})`; native viewport re-renders on the changes-preview predicate (no pixel fetching).
+- [ ] Unlock the plant workspace preview in `TopBar` once piece 3 marks it implemented.
+- [ ] Use solidcn Select/Slider (ADR-0009).
+- [ ] Tests: slider issues `plant.set_age`; gallery renders 16 entries; workspace switch works.
+
+---
+
+## Validation (run the relevant subset per piece; all from repo root)
+
+- [ ] `bun run typecheck`
+- [ ] `bun run build:ui`
+- [ ] `cmake --preset core && ctest --preset core` (pieces 1–3)
+- [ ] `bun run build:native` (pieces 2–3, ovrtx path)
+- [ ] `bun run verify:shell`
+- [ ] Manual: pick each of the 16 species, scrub the slider full range, confirm a bounded plant grows with no flicker.
+
+## Definition of done
+
+- [ ] All four pieces merged; `toi::plant` tested through `develop_plant`.
+- [ ] Every built-in species (`a`–`p`) previews as a full plant across the age range without explosion or crash.
+- [ ] `CONTEXT.md` updated with any new deepened-module term; an ADR recorded for any load-bearing decision made during build.

@@ -45,6 +45,7 @@ How to apply:
 - Bulk/mechanical work (clear-spec implementation, data analysis, migrations): gpt-5.5 - it's effectively free.
 - Anything user-facing (UI, copy, API design) needs taste >= 7.
 - Reviews of plans/implementations: fable-5 or opus-4.8; use the `review` skill (`/review`) for a gpt-5.5 independent perspective.
+- Code-review merge gate: never merge code until gpt-5.5 (Pi) has reviewed and approved. Run Pi **from the repo/worktree directory** so it sees the diff: `cd <worktree> && pi -p --provider openai-codex --model gpt-5.5 --thinking high "review this branch vs main: <what to check>; end with APPROVE or REQUEST_CHANGES"`.
 - Never use Haiku.
 - Mechanics: gpt-5.5 is available in Pi as `openai-codex/gpt-5.5`; use the `review` skill (`/review`) for review work. For non-review one-off work, use `pi -p --provider openai-codex --model gpt-5.5 --thinking high "<prompt>"`, or `pi --mode json --provider openai-codex --model gpt-5.5 "<prompt>"` when a script needs machine-readable events.
 - In pi, switch models with `/model` or Ctrl+L; for CLI runs, use `--provider` and `--model`.
