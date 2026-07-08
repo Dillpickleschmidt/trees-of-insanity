@@ -19,6 +19,8 @@ export function TopBar(props: {
 	tone: StatusTone;
 	busy: boolean;
 	previews: { workspace: string; implemented: boolean }[];
+	activeWorkspace: string;
+	onSelectWorkspace: (workspace: string) => void;
 	uiTheme: UiTheme;
 	colorTheme: ColorTheme;
 	onUiTheme: (value: UiTheme) => void;
@@ -46,12 +48,14 @@ export function TopBar(props: {
 					{(tab) => (
 						<button
 							type="button"
-							disabled={!tab.implemented}
+							disabled={!tab.implemented || props.busy}
 							title={tab.implemented ? `${tab.workspace} workspace` : `${tab.workspace} workspace — placeholder`}
+							onClick={() => tab.implemented && props.onSelectWorkspace(tab.workspace)}
 							class="rounded-md px-2 py-1 text-[12px] font-medium capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed"
 							classList={{
-								"bg-secondary text-foreground": tab.workspace === "module",
-								"text-muted-foreground hover:text-foreground": tab.implemented && tab.workspace !== "module",
+								"bg-secondary text-foreground": tab.workspace === props.activeWorkspace,
+								"text-muted-foreground hover:text-foreground":
+									tab.implemented && tab.workspace !== props.activeWorkspace,
 								"text-muted-foreground/40": !tab.implemented,
 							}}
 						>
