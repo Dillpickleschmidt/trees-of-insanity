@@ -25,18 +25,18 @@ below distill them. Honor ADRs 0006, 0007, 0008, 0009, 0012, 0013 — do not re-
 
 The deep core. Interface: `develop_plant(plant_type, prototype_library, plant_age) → PlantArchitecture`.
 
-- [ ] Create `src/toi/plant/include/toi/plant/plant.hpp` + `src/toi/plant/src/plant.cpp`; add to CMake `core` preset (no ovrtx/Vulkan).
-- [ ] Define `PlantArchitecture` = placed modules `{prototype id, world transform, module physiological age, per-module GrowthSnapshot, vigor}` (vigor feeds piece 3's summary).
-- [ ] Prepare prototypes internally via `prepare_branch_module_prototype(raw, plant_type)` (reuse `toi::growth`).
-- [ ] Light: `Q(u) = exp(−f_collisions(u))`, self-collision only over own module bounding spheres (`B_u` = centroid, diameter = tip-to-tip extent). (ADR-0012)
-- [ ] Vigor: basipetal `Q(u)=Q(u_m)+Q(u_l)`; acropetal eq2 split by `λ`, `v̄(u_l)=v̄(u)−v̄(u_m)`; root gets constant `v̄_rootmax`.
-- [ ] Growth rate eq5 + age eq6 per module by reusing `make_growth_snapshot`.
-- [ ] Attach: for `a_u > a_mature`, `q(n_i)=Q(u)/#n`, per-terminal-node BH, attach child where `v > v̄_min`.
-- [ ] Internal seam `select_prototype` — nearest-seed on the 3×3 morphospace grid, `D' = v̄(parent)·D/v̄_max` (root: `D'=D`). Keep private (hypothetical seam). (ADR-0013)
-- [ ] Internal seam `orient_module` — coordinate descent over `{±φ, ±ψ}` minimizing `f_distribution = ω₁·f_collisions + ω₂·f_tropism`. Keep private.
-- [ ] Shedding (`v̄ < v̄_min`) and senescence (`p_t ≥ p_max` → ramp `v̄_rootmax → 0`).
-- [ ] Maturation: swap to `mature_apical_control` / `mature_determinacy` at `p_t ≥ flowering_age`.
-- [ ] Tests through `develop_plant`: determinism; **all 16 presets develop to a bounded plant (no explosion)**; shedding + senescence fire; vigor conserved at splits.
+- [x] Create `src/toi/plant/include/toi/plant/plant.hpp` + `src/toi/plant/src/plant.cpp`; add to CMake `core` preset (no ovrtx/Vulkan).
+- [x] Define `PlantArchitecture` = placed modules `{prototype id, world transform, module physiological age, per-module GrowthSnapshot, vigor}` (vigor feeds piece 3's summary).
+- [x] Prepare prototypes internally via `prepare_branch_module_prototype(raw, plant_type)` (reuse `toi::growth`).
+- [x] Light: `Q(u) = exp(−f_collisions(u))`, self-collision only over own module bounding spheres (`B_u` = centroid, diameter = tip-to-tip extent). (ADR-0012)
+- [x] Vigor: basipetal `Q(u)=Q(u_m)+Q(u_l)`; acropetal eq2 split by `λ`, `v̄(u_l)=v̄(u)−v̄(u_m)`; root gets constant `v̄_rootmax`.
+- [x] Growth rate eq5 + age eq6 per module by reusing `make_growth_snapshot`.
+- [x] Attach: for `a_u > a_mature`, `q(n_i)=Q(u)/#n`, per-terminal-node BH, attach child where `v > v̄_min`.
+- [x] Internal seam `select_prototype` — nearest-seed on the 3×3 morphospace grid, `D' = v̄(parent)·D/v̄_max` (root: `D'=D`). Keep private (hypothetical seam). (ADR-0013)
+- [x] Internal seam `orient_module` — coordinate descent over `{±φ, ±ψ}` minimizing `f_distribution = ω₁·f_collisions + ω₂·f_tropism`. Keep private.
+- [x] Shedding (`v̄ < v̄_min`) and senescence (`p_t ≥ p_max` → ramp `v̄_rootmax → 0`).
+- [x] Maturation: swap to `mature_apical_control` / `mature_determinacy` at `p_t ≥ flowering_age`.
+- [x] Tests through `develop_plant`: determinism; **all 16 presets develop to a bounded plant (no explosion)**; shedding + senescence fire; vigor conserved at splits.
 
 ## Piece 2 — Plant preview projection (`toi::render`)
 

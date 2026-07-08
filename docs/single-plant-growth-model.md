@@ -129,8 +129,9 @@ Every unspecified item has an explicit rule so no academic decision is needed mi
 - **`v̄_max = v̄_rootmax`** — the root holds the maximum (matches `VigorInputs::max_for`).
 - **Shedding** — module removed when `v̄ < v̄_min`.
 - **Senescence** — at `p_t ≥ p_max`, interpolate `v̄_rootmax → 0` at constant step until all modules shed.
-- **`B_u`** — sphere centered at module-geometry centroid; diameter = module tip-to-tip extent
-  (max pairwise node distance).
+- **`B_u`** — sphere centered at the module-geometry centroid with radius = the maximum distance from
+  that centroid to any node (an enclosing sphere). `f_collisions` divides each pairwise overlap by the
+  module's own sphere volume, so the measure is scale-invariant.
 - **Node age `a_n`** — provisional path-length / `β` until authored into prototypes. (ADR-0006)
 - **Borchert-Honda beyond binary** — eq2 is main + one lateral; for a node with >2 children, apply
   eq2 recursively (main vs. the combined rest). Our interpretation of an unstated case.
