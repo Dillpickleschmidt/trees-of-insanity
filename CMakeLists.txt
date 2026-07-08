@@ -198,6 +198,7 @@ if(TOI_BUILD_TESTS)
         tests/core_smoke_tests.cpp
         tests/plant_tests.cpp
         tests/plant_render_tests.cpp
+        tests/plant_controller_tests.cpp
     )
     target_link_libraries(toi_core_tests PRIVATE
         toi_app

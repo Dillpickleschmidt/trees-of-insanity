@@ -136,6 +136,11 @@ void save_viewport_preferences(const std::filesystem::path& project_path, const 
     return make_error(ApplicationError::Code::Growth, error.message);
 }
 
+[[nodiscard]] ApplicationError from_plant_error(const plant::PlantError& error)
+{
+    return make_error(ApplicationError::Code::Growth, error.message);
+}
+
 [[nodiscard]] const growth::BranchModulePrototype* prototype_by_id(const import::BranchModulePrototypeLibrary& library,
                                                                    std::size_t prototype_id)
 {
@@ -282,15 +287,18 @@ Result<AppStateView> ApplicationController::state() const
     }
 
     AppStateView view;
-    view.active_workspace = "module";
+    view.active_workspace = active_workspace_;
     view.workspace_previews = {
-        {.workspace = "plant", .implemented = false},
+        {.workspace = "plant", .implemented = true},
         {.workspace = "ecosystem", .implemented = false},
     };
     view.active_prototype_id = project_.active_branch_module_prototype_id;
     view.active_plant_type_id = project_.plant_type_library.active_plant_type_id;
     view.module_physiological_age = module_physiological_age_;
     view.fully_grown_age = facts->fully_grown_age;
+    view.plant_physiological_age = plant_physiological_age_;
+    const auto* active_plant = project::active_plant_type(project_);
+    view.plant_fully_grown_age = active_plant != nullptr ? active_plant->parameters.plant_max_age : 0.0F;
 
     view.prototypes.reserve(prototype_library_.prototypes.size());
     for (const auto& prototype : prototype_library_.prototypes) {
@@ -379,6 +387,114 @@ ApplicationController::growth_preview_stage_projection(render::GrowthPreviewStag
     options.hdri_texture_path = hdri_relative_path(viewport_preferences_.active_hdri_environment_id);
     return render::make_growth_preview_stage_projection(*snapshot, *camera_snapshot, facts->prepared_prototype,
                                                         options);
+}
+
+Result<plant::PlantArchitecture> ApplicationController::plant_architecture() const
+{
+    const auto* active_plant = project::active_plant_type(project_);
+    if (active_plant == nullptr) {
+        return std::unexpected(make_error(ApplicationError::Code::NotFound, "active plant type does not exist"));
+    }
+    auto architecture = plant::develop_plant(active_plant->parameters, prototype_library_, plant_physiological_age_);
+    if (!architecture) {
+        return std::unexpected(from_plant_error(architecture.error()));
+    }
+    return std::move(*architecture);
+}
+
+Result<PlantGrowthSummary> ApplicationController::plant_growth_summary() const
+{
+    const auto* active_plant = project::active_plant_type(project_);
+    if (active_plant == nullptr) {
+        return std::unexpected(make_error(ApplicationError::Code::NotFound, "active plant type does not exist"));
+    }
+    auto architecture = plant::develop_plant(active_plant->parameters, prototype_library_, plant_physiological_age_);
+    if (!architecture) {
+        return std::unexpected(from_plant_error(architecture.error()));
+    }
+    const auto summary = plant::summarize(*architecture);
+    return PlantGrowthSummary{
+        .plant_physiological_age = architecture->plant_age,
+        .plant_fully_grown_age = active_plant->parameters.plant_max_age,
+        .module_count = summary.module_count,
+        .visible_segment_count = summary.visible_segment_count,
+        .max_diameter = summary.max_diameter,
+        .senescent = summary.senescent,
+    };
+}
+
+Result<render::GrowthPreviewStageProjection>
+ApplicationController::plant_preview_stage_projection(render::GrowthPreviewStageOptions options) const
+{
+    auto architecture = plant_architecture();
+    if (!architecture) {
+        return std::unexpected(architecture.error());
+    }
+    options.asset_search_path = options_.asset_root_path;
+    options.hdri_visible = viewport_preferences_.hdri_backdrop_visible;
+    options.hdri_texture_path = hdri_relative_path(viewport_preferences_.active_hdri_environment_id);
+    return render::make_plant_preview_stage_projection(*architecture, options);
+}
+
+Result<render::GrowthPreviewStageProjection>
+ApplicationController::plant_preset_preview_stage_projection(char preset_key, std::optional<float> plant_age,
+                                                            render::GrowthPreviewStageOptions options) const
+{
+    const auto preset = growth::plant_type_preset_by_key(preset_key);
+    if (!preset) {
+        return std::unexpected(make_error(ApplicationError::Code::NotFound,
+                                          std::string("unknown plant type preset '") + preset_key + "'"));
+    }
+    if (plant_age && (!std::isfinite(*plant_age) || *plant_age < 0.0F)) {
+        return std::unexpected(
+            make_error(ApplicationError::Code::InvalidCommand, "plant age must be finite and non-negative"));
+    }
+    // Omitted age previews the fully-grown plant; a provided age (including 0) is used as-is.
+    const float requested = plant_age ? *plant_age : preset->plant_max_age;
+    const float clamped = std::clamp(requested, 0.0F, preset->plant_max_age);
+    auto architecture = plant::develop_plant(*preset, prototype_library_, clamped);
+    if (!architecture) {
+        return std::unexpected(from_plant_error(architecture.error()));
+    }
+    options.asset_search_path = options_.asset_root_path;
+    options.hdri_visible = viewport_preferences_.hdri_backdrop_visible;
+    options.hdri_texture_path = hdri_relative_path(viewport_preferences_.active_hdri_environment_id);
+    return render::make_plant_preview_stage_projection(*architecture, options);
+}
+
+Result<render::GrowthPreviewStageProjection>
+ApplicationController::active_preview_stage_projection(render::GrowthPreviewStageOptions options) const
+{
+    if (active_workspace_ == "plant") {
+        return plant_preview_stage_projection(options);
+    }
+    if (active_workspace_ == "module") {
+        return growth_preview_stage_projection(options);
+    }
+    return std::unexpected(
+        make_error(ApplicationError::Code::InvalidCommand, "no preview for workspace " + active_workspace_));
+}
+
+Result<void> ApplicationController::set_plant_physiological_age(float plant_physiological_age)
+{
+    if (!std::isfinite(plant_physiological_age) || plant_physiological_age < 0.0F) {
+        return std::unexpected(make_error(ApplicationError::Code::InvalidCommand,
+                                          "plant physiological age must be finite and non-negative"));
+    }
+    const auto* active_plant = project::active_plant_type(project_);
+    const float max_age = active_plant != nullptr ? active_plant->parameters.plant_max_age : plant_physiological_age;
+    plant_physiological_age_ = std::clamp(plant_physiological_age, 0.0F, max_age);
+    return {};
+}
+
+Result<void> ApplicationController::set_active_workspace(std::string_view workspace)
+{
+    if (workspace != "module" && workspace != "plant" && workspace != "ecosystem") {
+        return std::unexpected(
+            make_error(ApplicationError::Code::InvalidCommand, "unknown workspace " + std::string(workspace)));
+    }
+    active_workspace_ = std::string(workspace);
+    return {};
 }
 
 Result<project::PlantType> ApplicationController::plant_type(std::string_view plant_type_id) const

@@ -2,11 +2,13 @@
 
 #include "toi/growth/growth.hpp"
 #include "toi/import/obj_importer.hpp"
+#include "toi/plant/plant.hpp"
 #include "toi/project/project.hpp"
 #include "toi/render/render_projection.hpp"
 
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -60,6 +62,8 @@ struct AppStateView {
     std::string active_plant_type_id;
     float module_physiological_age = 0.0F;
     float fully_grown_age = 0.0F;
+    float plant_physiological_age = 0.0F;
+    float plant_fully_grown_age = 0.0F;
 };
 
 struct PrototypeTreeItem {
@@ -85,6 +89,15 @@ struct GrowthSnapshotSummary {
     std::size_t growing_segment_count = 0;
     std::size_t mature_segment_count = 0;
     float max_diameter = 0.0F;
+};
+
+struct PlantGrowthSummary {
+    float plant_physiological_age = 0.0F;
+    float plant_fully_grown_age = 0.0F;
+    std::size_t module_count = 0;
+    std::size_t visible_segment_count = 0;
+    float max_diameter = 0.0F;
+    bool senescent = false;
 };
 
 struct HdriEnvironment {
@@ -117,6 +130,22 @@ public:
     [[nodiscard]] Result<void> set_active_plant_type(std::string_view plant_type_id);
     [[nodiscard]] Result<void> set_module_physiological_age(float module_physiological_age);
 
+    // Plant workspace: develop the active plant type at the plant physiological age.
+    [[nodiscard]] Result<plant::PlantArchitecture> plant_architecture() const;
+    [[nodiscard]] Result<PlantGrowthSummary> plant_growth_summary() const;
+    [[nodiscard]] Result<render::GrowthPreviewStageProjection>
+    plant_preview_stage_projection(render::GrowthPreviewStageOptions options = {}) const;
+    // Transient preview of a built-in plant type preset (species gallery); no state change.
+    // A nullopt age previews the fully-grown plant; a provided age is validated and clamped.
+    [[nodiscard]] Result<render::GrowthPreviewStageProjection>
+    plant_preset_preview_stage_projection(char preset_key, std::optional<float> plant_age,
+                                          render::GrowthPreviewStageOptions options = {}) const;
+    // Dispatch to the module or plant preview based on the active workspace.
+    [[nodiscard]] Result<render::GrowthPreviewStageProjection>
+    active_preview_stage_projection(render::GrowthPreviewStageOptions options = {}) const;
+    [[nodiscard]] Result<void> set_plant_physiological_age(float plant_physiological_age);
+    [[nodiscard]] Result<void> set_active_workspace(std::string_view workspace);
+
     [[nodiscard]] Result<project::PlantType> create_plant_type(std::string name, char preset_key);
     [[nodiscard]] Result<void> delete_plant_type(std::string_view plant_type_id);
     [[nodiscard]] Result<void> update_plant_type(project::PlantType plant_type);
@@ -135,6 +164,8 @@ private:
     import::BranchModulePrototypeLibrary prototype_library_;
     project::Project project_;
     float module_physiological_age_ = 0.0F;
+    float plant_physiological_age_ = 0.0F;
+    std::string active_workspace_ = "module";
     ViewportPreferences viewport_preferences_;
 };
 

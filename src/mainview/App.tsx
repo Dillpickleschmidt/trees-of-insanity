@@ -47,6 +47,8 @@ const initialState: AppState = {
 	active_plant_type_id: "",
 	module_physiological_age: 0,
 	fully_grown_age: 0,
+	plant_physiological_age: 0,
+	plant_fully_grown_age: 0,
 	plant_type_parameter_descriptors: [],
 };
 

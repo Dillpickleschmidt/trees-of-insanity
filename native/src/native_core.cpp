@@ -120,7 +120,8 @@ void push_growth_stage(ToiNativeCore* core)
     if (!core->viewport) {
         return;
     }
-    auto stage = core->controller.growth_preview_stage_projection();
+    // Dispatches to the module or plant preview based on the active workspace.
+    auto stage = core->controller.active_preview_stage_projection();
     if (stage) {
         core->viewport->set_pending_stage(std::move(*stage));
     }
