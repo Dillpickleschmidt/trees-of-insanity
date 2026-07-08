@@ -243,3 +243,31 @@ _Avoid_: Bloom time, maturity age
 **Root max vigor**:
 A plant-type parameter for the maximum vigor allocated to the root module.
 _Avoid_: Root energy, starting health
+
+**Module architecture**:
+The ordered tree of connected branch modules that forms one plant, rooted at the root module.
+_Avoid_: Plant graph, module tree, scene graph
+
+**Root module**:
+The base branch module of a plant's module architecture; it receives the plant's root max vigor.
+_Avoid_: Trunk module, base module
+
+**Morphospace**:
+The 2D parameter space spanned by apical control and determinacy in which branch module prototypes are positioned; Voronoi regions over prototype positions select which prototype a new branch module instantiates.
+_Avoid_: Prototype space, parameter grid
+
+**Module orientation**:
+The Euler-angle orientation chosen for a newly attached branch module by minimizing an orientation quality function over available space and tropism.
+_Avoid_: Branch angle, rotation
+
+**Shedding threshold**:
+The minimum vigor a branch module must retain to stay in the module architecture; below it the module is shed. The paper denotes this as `v̄_min`.
+_Avoid_: Cull threshold, death value
+
+**Plant age**:
+A per-plant developmental counter; the paper denotes this as `p_t`. On reaching plant max age it triggers plant senescence.
+_Avoid_: Plant time, calendar age
+
+**Plant senescence**:
+The end-of-life phase (plant age ≥ plant max age) in which root max vigor interpolates to zero and all branch modules are gradually shed.
+_Avoid_: Death, decay, wilting
