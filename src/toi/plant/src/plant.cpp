@@ -641,6 +641,10 @@ Result<PlantArchitecture> develop_plant(const PlantTypeParameters& plant_type,
     PlantArchitecture architecture;
     architecture.plant_age = plant_clock;
     architecture.senescent = plant_clock >= plant_type.plant_max_age;
+    architecture.prototypes.reserve(prototypes->size());
+    for (const Prototype& prototype : *prototypes) {
+        architecture.prototypes.push_back(prototype.prepared);
+    }
     architecture.modules.reserve(modules.size());
     for (const SimModule& module : modules) {
         const Prototype& prototype = (*prototypes)[module.prototype_index];

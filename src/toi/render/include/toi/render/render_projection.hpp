@@ -1,6 +1,7 @@
 #pragma once
 
 #include "toi/growth/growth.hpp"
+#include "toi/plant/plant.hpp"
 
 #include <array>
 #include <cstddef>
@@ -67,6 +68,13 @@ struct GrowthPreviewStageProjection {
 [[nodiscard]] GrowthPreviewStageProjection make_growth_preview_stage_projection(
     const growth::GrowthSnapshot& snapshot, const growth::GrowthSnapshot& camera_snapshot,
     const growth::BranchModulePrototype& prepared_prototype, GrowthPreviewStageOptions options = {});
+// Project a whole plant architecture into the same stage projection type, so the ovrtx
+// viewport seam is unchanged. Each placed module's geometry is transformed into world
+// space, meshed with the shared chain builder, and accumulated; the camera frames the
+// whole plant.
+[[nodiscard]] GrowthPreviewStageProjection
+make_plant_preview_stage_projection(const plant::PlantArchitecture& architecture,
+                                    GrowthPreviewStageOptions options = {});
 [[nodiscard]] std::array<double, 16> growth_preview_camera_transform_matrix(const GrowthPreviewCamera& camera);
 
 } // namespace toi::render
