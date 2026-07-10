@@ -22,6 +22,19 @@ export type ViewportReadyResult = {
 	nativeHandle: string | null;
 };
 
+export type ViewportResizeParams = {
+	id: number;
+	rect: Rect;
+};
+
+export type ViewportResizeResult = {
+	ok: boolean;
+	id: number;
+	width: number;
+	height: number;
+	error?: string;
+};
+
 export type UiEventParams = {
 	type: string;
 	data?: Record<string, unknown>;
@@ -40,6 +53,10 @@ export type ShellRpcSchema = {
 			viewportReady: {
 				params: ViewportReadyParams;
 				response: ViewportReadyResult;
+			};
+			viewportResize: {
+				params: ViewportResizeParams;
+				response: ViewportResizeResult;
 			};
 			uiEvent: {
 				params: UiEventParams;

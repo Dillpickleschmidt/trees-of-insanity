@@ -32,6 +32,14 @@ export type ViewportAttachResult = {
 	height?: number;
 };
 
+export type ViewportResizeResult = {
+	ok: boolean;
+	error?: string;
+	changed?: boolean;
+	width?: number;
+	height?: number;
+};
+
 export class NativeCoreCommandError extends Error {
 	readonly code: string | undefined;
 
@@ -91,8 +99,16 @@ export class NativeCore {
 		if (this.#closed) {
 			throw new Error("native core is closed");
 		}
-		const resultPtr = lib().symbols.toi_attach_x11_viewport(this.#handle, xWindow, Math.round(width), Math.round(height));
+		const resultPtr = lib().symbols.toi_attach_x11_viewport(this.#handle, xWindow, Math.trunc(width), Math.trunc(height));
 		return JSON.parse(readCoreString(resultPtr)) as ViewportAttachResult;
+	}
+
+	resizeViewport(width: number, height: number): ViewportResizeResult {
+		if (this.#closed) {
+			throw new Error("native core is closed");
+		}
+		const resultPtr = lib().symbols.toi_resize_x11_viewport(this.#handle, Math.trunc(width), Math.trunc(height));
+		return JSON.parse(readCoreString(resultPtr)) as ViewportResizeResult;
 	}
 
 	detachViewport(): void {
@@ -129,6 +145,7 @@ function openLibrary() {
 		toi_last_error_json: { args: [], returns: FFIType.ptr },
 		toi_free_string: { args: [FFIType.ptr], returns: FFIType.void },
 		toi_attach_x11_viewport: { args: [FFIType.ptr, FFIType.u64, FFIType.i32, FFIType.i32], returns: FFIType.ptr },
+		toi_resize_x11_viewport: { args: [FFIType.ptr, FFIType.i32, FFIType.i32], returns: FFIType.ptr },
 		toi_detach_viewport: { args: [FFIType.ptr], returns: FFIType.ptr },
 	});
 }

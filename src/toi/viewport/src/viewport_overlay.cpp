@@ -31,7 +31,8 @@ struct OverlayPushConstants {
     float up[4];
     float negative_forward[4];
     float projection[4]; // focal_length, horizontal_aperture, vertical_aperture, near_clip
-    float depth[4];      // far_clip, depth_bias, framebuffer_width, framebuffer_height
+    float depth[4];      // far_clip, depth_bias, unused, unused
+    float viewport[4];   // x, y, width, height of the contained rendered image
 };
 
 [[nodiscard]] Result<void> require_vk(VkResult result, std::string_view context)
@@ -402,7 +403,8 @@ Result<void> ViewportOverlay::set_scene_distance(std::uint32_t distance_slot, Vk
 }
 
 Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, std::uint32_t image_index, VkExtent2D extent,
-                                     const OverlayCamera& camera, std::span<const OverlayLine> lines, float depth_bias,
+                                     VkRect2D content_rect, const OverlayCamera& camera,
+                                     std::span<const OverlayLine> lines, float depth_bias,
                                      std::uint32_t distance_slot)
 {
     if (distance_slot >= kDistanceSlotCount) {
@@ -434,10 +436,11 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, std::uint32
     vkCmdBeginRenderPass(command_buffer, &begin, VK_SUBPASS_CONTENTS_INLINE);
 
     if (line_count > 0) {
-        VkViewport viewport{0.0F, 0.0F, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0F, 1.0F};
-        VkRect2D scissor{{0, 0}, extent};
+        VkViewport viewport{static_cast<float>(content_rect.offset.x), static_cast<float>(content_rect.offset.y),
+                            static_cast<float>(content_rect.extent.width),
+                            static_cast<float>(content_rect.extent.height), 0.0F, 1.0F};
         vkCmdSetViewport(command_buffer, 0, 1, &viewport);
-        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+        vkCmdSetScissor(command_buffer, 0, 1, &content_rect);
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1,
                                 &descriptor_sets_[distance_slot], 0, nullptr);
@@ -453,8 +456,10 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, std::uint32
         push.projection[3] = camera.near_clip;
         push.depth[0] = camera.far_clip;
         push.depth[1] = depth_bias;
-        push.depth[2] = static_cast<float>(extent.width);
-        push.depth[3] = static_cast<float>(extent.height);
+        push.viewport[0] = static_cast<float>(content_rect.offset.x);
+        push.viewport[1] = static_cast<float>(content_rect.offset.y);
+        push.viewport[2] = static_cast<float>(content_rect.extent.width);
+        push.viewport[3] = static_cast<float>(content_rect.extent.height);
         vkCmdPushConstants(command_buffer, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(push), &push);
 

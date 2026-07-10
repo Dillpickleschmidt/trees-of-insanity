@@ -51,11 +51,27 @@ const started = Date.now();
 let result: VerifyResult | undefined;
 while (Date.now() - started < timeoutMs) {
 	const events = readEvents(reportPath);
-	const viewport = events.find((event) => event.type === "viewport-ready") as AutomationEvent | undefined;
-	if (viewport?.ok === true) {
+	const ready = events.find((event) => event.type === "viewport-ready") as AutomationEvent | undefined;
+	const attached = events.find((event) => event.type === "viewport-attached") as AutomationEvent | undefined;
+	if (ready?.ok === true && attached?.ok === true) {
+		const rect = ready.rect as { width?: number; height?: number } | undefined;
+		const expectedWidth = Math.max(1, Math.trunc(rect?.width ?? 0));
+		const expectedHeight = Math.max(1, Math.trunc(rect?.height ?? 0));
+		if (attached.width !== expectedWidth || attached.height !== expectedHeight) {
+			result = {
+				ok: false,
+				reason: `native viewport resolution mismatch: DOM ${expectedWidth}x${expectedHeight}, native ${attached.width}x${attached.height}`,
+				reportPath,
+				logPath,
+				screenshotPath: captureScreenshot(screenshotPath),
+				events,
+				exitCode,
+			};
+			break;
+		}
 		result = {
 			ok: true,
-			reason: "native viewport reported handle",
+			reason: `native viewport attached at ${expectedWidth}x${expectedHeight}`,
 			reportPath,
 			logPath,
 			screenshotPath: captureScreenshot(screenshotPath),

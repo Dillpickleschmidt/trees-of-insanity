@@ -99,6 +99,7 @@ private:
     };
 
     [[nodiscard]] bool ensure_growth_renderer();
+    [[nodiscard]] Result<void> resize_growth_slot(int slot_index, int width, int height);
     // Kicks an ovrtx render + async copies into the produce slot when something
     // changed (new stage, camera move, guide toggle). Returns whether it kicked.
     [[nodiscard]] bool produce_growth_frame();
@@ -122,6 +123,7 @@ private:
     cudaEvent_t copy_done_ = nullptr;
     bool produce_pending_ = false;
     ViewportOverlay overlay_;
+    bool overlay_ready_ = false;
     bool growth_ready_ = false;
     bool growth_failed_ = false;
     bool last_draw_guides_ = false;

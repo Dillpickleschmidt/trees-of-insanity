@@ -4,6 +4,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <string>
+#include <string_view>
 #include <utility>
 
 #ifdef TOI_ENABLE_OVRTX
@@ -20,6 +23,35 @@ namespace {
 [[nodiscard]] VkImageSubresourceRange whole_color_image()
 {
     return VkImageSubresourceRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+}
+
+[[nodiscard]] Result<void> require_vk(VkResult result, std::string_view operation)
+{
+    if (result == VK_SUCCESS) {
+        return {};
+    }
+    return std::unexpected(make_error(std::string(operation) + " failed: VkResult " + std::to_string(result)));
+}
+
+[[nodiscard]] VkRect2D contained_rect(int source_width, int source_height, VkExtent2D destination)
+{
+    const std::int64_t source_w = std::max(1, source_width);
+    const std::int64_t source_h = std::max(1, source_height);
+    const std::int64_t destination_w = std::max<std::uint32_t>(1, destination.width);
+    const std::int64_t destination_h = std::max<std::uint32_t>(1, destination.height);
+
+    std::int64_t width = destination_w;
+    std::int64_t height = destination_h;
+    if (destination_w * source_h > destination_h * source_w) {
+        width = std::max<std::int64_t>(1, (destination_h * source_w + source_h / 2) / source_h);
+    } else {
+        height = std::max<std::int64_t>(1, (destination_w * source_h + source_w / 2) / source_w);
+    }
+    return VkRect2D{
+        .offset = {static_cast<std::int32_t>((destination_w - width) / 2),
+                   static_cast<std::int32_t>((destination_h - height) / 2)},
+        .extent = {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)},
+    };
 }
 
 void transition(VkCommandBuffer command_buffer, VkImage image, VkImageLayout old_layout, VkImageLayout new_layout,
@@ -119,14 +151,16 @@ Result<std::unique_ptr<ViewportSession>> ViewportSession::attach(unsigned long x
         return std::unexpected(context.error());
     }
 
-    auto swapchain = VulkanSwapchain::create(*context, initial_width, initial_height);
-    if (!swapchain) {
-        return std::unexpected(swapchain.error());
-    }
-
     auto session = std::unique_ptr<ViewportSession>(new ViewportSession());
     session->connection_ = std::move(*connection);
     session->context_ = std::move(*context);
+
+    // VulkanSwapchain retains its owning context address, so construct it only
+    // after the context has reached its stable lifetime inside the session.
+    auto swapchain = VulkanSwapchain::create(session->context_, initial_width, initial_height);
+    if (!swapchain) {
+        return std::unexpected(swapchain.error());
+    }
     session->swapchain_ = std::move(*swapchain);
     session->x_window_ = x_window;
 
@@ -242,8 +276,9 @@ void ViewportSession::destroy_swapchain_resources()
 
 Result<void> ViewportSession::recreate_swapchain()
 {
-    vkDeviceWaitIdle(context_.device());
-    destroy_swapchain_resources();
+    if (auto idle = require_vk(vkDeviceWaitIdle(context_.device()), "vkDeviceWaitIdle"); !idle) {
+        return std::unexpected(idle.error());
+    }
 
     int width = static_cast<int>(swapchain_.extent().width);
     int height = static_cast<int>(swapchain_.extent().height);
@@ -252,19 +287,27 @@ Result<void> ViewportSession::recreate_swapchain()
         height = handle->height;
     }
 
-    auto swapchain = VulkanSwapchain::create(context_, width, height);
-    if (!swapchain) {
-        return std::unexpected(swapchain.error());
+#ifdef TOI_ENABLE_OVRTX
+    // Framebuffers and image views must die before their swapchain images.
+    overlay_.reset_swapchain();
+#endif
+    destroy_swapchain_resources();
+    swapchain_.reset();
+    auto replacement = VulkanSwapchain::create(context_, width, height);
+    if (!replacement) {
+        return std::unexpected(replacement.error());
     }
-    swapchain_ = std::move(*swapchain);
+    swapchain_ = std::move(*replacement);
 
     info_.width = static_cast<int>(swapchain_.extent().width);
     info_.height = static_cast<int>(swapchain_.extent().height);
+    std::fprintf(stdout, "native viewport swapchain resized: %dx%d\n", info_.width, info_.height);
+    std::fflush(stdout);
     if (auto resources = create_swapchain_resources(); !resources) {
         return std::unexpected(resources.error());
     }
 #ifdef TOI_ENABLE_OVRTX
-    if (growth_ready_) {
+    if (overlay_ready_) {
         if (auto targets = overlay_.set_swapchain(context_, swapchain_); !targets) {
             return std::unexpected(targets.error());
         }
@@ -317,7 +360,12 @@ void ViewportSession::render_loop()
         }
         idle_skip_ticks = 0;
 #endif
-        vkWaitForFences(device, 1, &in_flight_[frame], VK_TRUE, UINT64_MAX);
+        if (auto waited = require_vk(vkWaitForFences(device, 1, &in_flight_[frame], VK_TRUE, UINT64_MAX),
+                                     "vkWaitForFences");
+            !waited) {
+            std::fprintf(stderr, "native viewport failed: %s\n", waited.error().message.c_str());
+            break;
+        }
 
 #ifdef TOI_ENABLE_OVRTX
         // Kick the next ovrtx render + copies after the fence wait: with one
@@ -329,28 +377,40 @@ void ViewportSession::render_loop()
 #endif
 
         std::uint32_t image_index = 0;
-        VkResult acquired = vkAcquireNextImageKHR(device, swapchain_.get(), UINT64_MAX, image_available_[frame],
-                                                  VK_NULL_HANDLE, &image_index);
+        const VkResult acquired = vkAcquireNextImageKHR(device, swapchain_.get(), UINT64_MAX,
+                                                        image_available_[frame], VK_NULL_HANDLE, &image_index);
         if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
-            if (!recreate_swapchain()) {
+            if (auto recreated = recreate_swapchain(); !recreated) {
+                std::fprintf(stderr, "native viewport resize failed: %s\n", recreated.error().message.c_str());
                 break;
             }
             continue;
         }
         if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
+            std::fprintf(stderr, "native viewport failed: vkAcquireNextImageKHR returned %d\n", acquired);
             break;
         }
 
-        vkResetFences(device, 1, &in_flight_[frame]);
+        if (auto reset = require_vk(vkResetFences(device, 1, &in_flight_[frame]), "vkResetFences"); !reset) {
+            std::fprintf(stderr, "native viewport failed: %s\n", reset.error().message.c_str());
+            break;
+        }
 
         VkCommandBuffer command_buffer = command_buffers_[image_index];
         VkImage image = swapchain_.images()[image_index];
-        vkResetCommandBuffer(command_buffer, 0);
+        if (auto reset = require_vk(vkResetCommandBuffer(command_buffer, 0), "vkResetCommandBuffer"); !reset) {
+            std::fprintf(stderr, "native viewport failed: %s\n", reset.error().message.c_str());
+            break;
+        }
 
         VkCommandBufferBeginInfo begin_info{};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkBeginCommandBuffer(command_buffer, &begin_info);
+        if (auto begun = require_vk(vkBeginCommandBuffer(command_buffer, &begin_info), "vkBeginCommandBuffer");
+            !begun) {
+            std::fprintf(stderr, "native viewport failed: %s\n", begun.error().message.c_str());
+            break;
+        }
 
 #ifdef TOI_ENABLE_OVRTX
         const bool drew_growth = record_growth_present(command_buffer, image_index);
@@ -361,7 +421,10 @@ void ViewportSession::render_loop()
             record_test_pattern(command_buffer, image, counter);
         }
 
-        vkEndCommandBuffer(command_buffer);
+        if (auto ended = require_vk(vkEndCommandBuffer(command_buffer), "vkEndCommandBuffer"); !ended) {
+            std::fprintf(stderr, "native viewport failed: %s\n", ended.error().message.c_str());
+            break;
+        }
 
         VkSemaphore wait_semaphores[2] = {image_available_[frame], VK_NULL_HANDLE};
         // Acquisition must complete before ANY access to the swapchain image: the
@@ -403,7 +466,9 @@ void ViewportSession::render_loop()
         submit.pCommandBuffers = &command_buffer;
         submit.signalSemaphoreCount = 1;
         submit.pSignalSemaphores = &render_finished_[image_index];
-        if (vkQueueSubmit(queue, 1, &submit, in_flight_[frame]) != VK_SUCCESS) {
+        if (auto submitted = require_vk(vkQueueSubmit(queue, 1, &submit, in_flight_[frame]), "vkQueueSubmit");
+            !submitted) {
+            std::fprintf(stderr, "native viewport failed: %s\n", submitted.error().message.c_str());
             break;
         }
 
@@ -416,9 +481,15 @@ void ViewportSession::render_loop()
         present.pSwapchains = &swapchain;
         present.pImageIndices = &image_index;
 
-        VkResult presented = vkQueuePresentKHR(queue, &present);
-        if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
-            if (!recreate_swapchain()) {
+        const VkResult presented = vkQueuePresentKHR(queue, &present);
+        if (presented != VK_SUCCESS && presented != VK_ERROR_OUT_OF_DATE_KHR && presented != VK_SUBOPTIMAL_KHR) {
+            std::fprintf(stderr, "native viewport failed: vkQueuePresentKHR returned %d\n", presented);
+            break;
+        }
+        if (acquired == VK_SUBOPTIMAL_KHR || presented == VK_ERROR_OUT_OF_DATE_KHR ||
+            presented == VK_SUBOPTIMAL_KHR) {
+            if (auto recreated = recreate_swapchain(); !recreated) {
+                std::fprintf(stderr, "native viewport resize failed: %s\n", recreated.error().message.c_str());
                 break;
             }
         }
@@ -448,6 +519,7 @@ void ViewportSession::render_loop()
         produce_pending_ = false;
     }
     overlay_.reset();
+    overlay_ready_ = false;
     for (auto& slot : slots_) {
         slot.distance.reset();
         slot.color.reset();
@@ -574,7 +646,10 @@ bool ViewportSession::ensure_growth_renderer()
     auto fail = [this] {
         for (auto& slot : slots_) {
             slot.color.reset();
+            slot.distance.reset();
         }
+        overlay_.reset();
+        overlay_ready_ = false;
         frames_ready_.reset();
         renderer_.reset();
         growth_failed_ = true;
@@ -610,10 +685,10 @@ bool ViewportSession::ensure_growth_renderer()
         slots_[0].distance = std::move(*distance_a);
         slots_[1].distance = std::move(*distance_b);
         overlay_ = std::move(*overlay);
-        const bool wired = overlay_.set_swapchain(context_, swapchain_).has_value() &&
-                           overlay_.set_scene_distance(0, slots_[0].distance.view()).has_value() &&
-                           overlay_.set_scene_distance(1, slots_[1].distance.view()).has_value();
-        if (!wired) {
+        overlay_ready_ = overlay_.set_swapchain(context_, swapchain_).has_value() &&
+                         overlay_.set_scene_distance(0, slots_[0].distance.view()).has_value() &&
+                         overlay_.set_scene_distance(1, slots_[1].distance.view()).has_value();
+        if (!overlay_ready_) {
             overlay_.reset();
             slots_[0].distance.reset();
             slots_[1].distance.reset();
@@ -622,6 +697,43 @@ bool ViewportSession::ensure_growth_renderer()
 
     growth_ready_ = true;
     return true;
+}
+
+Result<void> ViewportSession::resize_growth_slot(int slot_index, int width, int height)
+{
+    if (produce_pending_) {
+        return std::unexpected(make_error("cannot resize a Growth preview slot while a frame copy is pending"));
+    }
+
+    auto color = CudaInteropImage::create(context_, width, height);
+    if (!color) {
+        return std::unexpected(color.error());
+    }
+    CudaInteropFloatImage distance;
+    if (overlay_ready_) {
+        auto created = CudaInteropFloatImage::create(context_, width, height);
+        if (!created) {
+            return std::unexpected(created.error());
+        }
+        distance = std::move(*created);
+    }
+
+    if (auto idle = require_vk(vkDeviceWaitIdle(context_.device()), "vkDeviceWaitIdle"); !idle) {
+        return std::unexpected(idle.error());
+    }
+    if (overlay_ready_) {
+        if (auto wired = overlay_.set_scene_distance(static_cast<std::uint32_t>(slot_index), distance.view()); !wired) {
+            return std::unexpected(wired.error());
+        }
+    }
+
+    GrowthSlot& slot = slots_[slot_index];
+    slot.color = std::move(*color);
+    slot.distance = std::move(distance);
+    slot.timeline_value = 0;
+    slot.has_distance = false;
+    needs_present_ = true;
+    return {};
 }
 
 bool ViewportSession::produce_growth_frame()
@@ -668,8 +780,8 @@ bool ViewportSession::produce_growth_frame()
     GrowthSlot& slot = slots_[produce_slot_];
     // Sample the scene distance for depth-aware guide occlusion only when the
     // guides are actually drawn; a color-only frame skips the extra output.
-    const bool want_distance =
-        guides_visible_ && world_origin_axes_visible_ && slot.distance.view() != VK_NULL_HANDLE;
+    const bool want_distance = overlay_ready_ && guides_visible_ && world_origin_axes_visible_ &&
+                               slot.distance.view() != VK_NULL_HANDLE;
 
     // Re-render ovrtx only when something changed; idle frames re-present the
     // present slot. The path tracer flickers (and pegs the GPU) if it is stepped
@@ -696,7 +808,10 @@ bool ViewportSession::produce_growth_frame()
         return false;
     }
     if (rendered->width != slot.color.width() || rendered->height != slot.color.height()) {
-        return false;
+        if (auto resized = resize_growth_slot(produce_slot_, rendered->width, rendered->height); !resized) {
+            std::fprintf(stderr, "native viewport render resize failed: %s\n", resized.error().message.c_str());
+            return false;
+        }
     }
 
     // The copies are stream-ordered after ovrtx's render completion. copy_done_
@@ -746,6 +861,17 @@ void ViewportSession::complete_pending_produce()
         return; // Keep presenting the old slot; the next change retries.
     }
     std::swap(present_slot_, produce_slot_);
+    const GrowthSlot& present = slots_[present_slot_];
+    const GrowthSlot& standby = slots_[produce_slot_];
+    if (standby.color.width() != present.color.width() || standby.color.height() != present.color.height()) {
+        if (auto resized = resize_growth_slot(produce_slot_, present.color.width(), present.color.height()); !resized) {
+            std::fprintf(stderr, "native viewport standby resize failed: %s\n", resized.error().message.c_str());
+        } else {
+            std::fprintf(stdout, "Growth preview render resized: %dx%d\n", present.color.width(),
+                         present.color.height());
+            std::fflush(stdout);
+        }
+    }
     needs_present_ = true;
 }
 
@@ -764,12 +890,18 @@ bool ViewportSession::record_growth_present(VkCommandBuffer command_buffer, std:
     transition(command_buffer, swapchain_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
 
+    const VkClearColorValue black{{0.0F, 0.0F, 0.0F, 1.0F}};
+    const VkImageSubresourceRange range = whole_color_image();
+    vkCmdClearColorImage(command_buffer, swapchain_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
+
+    const VkRect2D content = contained_rect(slot.color.width(), slot.color.height(), swapchain_.extent());
     VkImageBlit blit{};
     blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     blit.srcOffsets[1] = {slot.color.width(), slot.color.height(), 1};
     blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    blit.dstOffsets[1] = {static_cast<std::int32_t>(swapchain_.extent().width),
-                          static_cast<std::int32_t>(swapchain_.extent().height), 1};
+    blit.dstOffsets[0] = {content.offset.x, content.offset.y, 0};
+    blit.dstOffsets[1] = {content.offset.x + static_cast<std::int32_t>(content.extent.width),
+                          content.offset.y + static_cast<std::int32_t>(content.extent.height), 1};
     vkCmdBlitImage(command_buffer, slot.color.image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchain_image,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
 
@@ -782,12 +914,12 @@ bool ViewportSession::record_growth_present(VkCommandBuffer command_buffer, std:
     // image, so occlusion matches the frame on screen; the overlay render pass
     // also moves the swapchain image to PRESENT_SRC. Otherwise transition it
     // directly.
-    if (guides_visible_ && world_origin_axes_visible_ && slot.has_distance) {
+    if (overlay_ready_ && guides_visible_ && world_origin_axes_visible_ && slot.has_distance) {
         const auto lines = build_overlay_lines(slot.camera);
         const auto overlay_camera = to_overlay_camera(slot.camera);
         const float depth_bias = overlay_depth_bias(slot.camera);
-        if (overlay_.record(command_buffer, image_index, swapchain_.extent(), overlay_camera, lines, depth_bias,
-                            static_cast<std::uint32_t>(present_slot_))) {
+        if (overlay_.record(command_buffer, image_index, swapchain_.extent(), content, overlay_camera, lines,
+                            depth_bias, static_cast<std::uint32_t>(present_slot_))) {
             return true;
         }
     }

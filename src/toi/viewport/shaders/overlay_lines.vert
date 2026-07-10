@@ -12,7 +12,8 @@ layout(push_constant) uniform PushConstants {
     vec4 up;
     vec4 negative_forward;
     vec4 projection; // focal_length, horizontal_aperture, vertical_aperture, near_clip
-    vec4 depth;      // far_clip, depth_bias, framebuffer_width, framebuffer_height
+    vec4 depth;      // far_clip, depth_bias, unused, unused
+    vec4 viewport;   // x, y, width, height of the contained rendered image
 } pc;
 
 layout(location = 0) out vec3 fragment_world_position;

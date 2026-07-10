@@ -58,7 +58,8 @@ public:
     // must be in TRANSFER_DST_OPTIMAL); leaves it in PRESENT_SRC_KHR. Samples
     // the given slot's scene-distance image for occlusion.
     [[nodiscard]] Result<void> record(VkCommandBuffer command_buffer, std::uint32_t image_index, VkExtent2D extent,
-                                      const OverlayCamera& camera, std::span<const OverlayLine> lines, float depth_bias,
+                                      VkRect2D content_rect, const OverlayCamera& camera,
+                                      std::span<const OverlayLine> lines, float depth_bias,
                                       std::uint32_t distance_slot);
 
     void reset();

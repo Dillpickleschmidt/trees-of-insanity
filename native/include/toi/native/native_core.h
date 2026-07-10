@@ -18,6 +18,9 @@ void toi_free_string(char* value);
  * ({ok:true, ...} or {ok:false, error}). Only functional when the core is built
  * with viewport support; otherwise returns an error. */
 char* toi_attach_x11_viewport(ToiNativeCore* core, unsigned long x_window, int width, int height);
+/* Rebuild the active Growth preview at the native viewport's physical pixel
+ * resolution after its resize has settled. */
+char* toi_resize_x11_viewport(ToiNativeCore* core, int width, int height);
 char* toi_detach_viewport(ToiNativeCore* core);
 
 #ifdef __cplusplus

@@ -8,6 +8,8 @@ import type {
 	UiEventResult,
 	ViewportReadyParams,
 	ViewportReadyResult,
+	ViewportResizeParams,
+	ViewportResizeResult,
 } from "../shared/shellRpc";
 import { defaultNativeCoreOptions, NativeCore } from "./nativeCore";
 
@@ -74,6 +76,25 @@ const rpc = BrowserView.defineRPC<ShellRpcSchema>({
 					);
 					writeAutomationEvent("viewport-attached", attach);
 				}
+				return result;
+			},
+			viewportResize: ({ id, rect }: ViewportResizeParams): ViewportResizeResult => {
+				const requestedWidth = Math.max(1, Math.trunc(rect.width));
+				const requestedHeight = Math.max(1, Math.trunc(rect.height));
+				const resized = core?.resizeViewport(requestedWidth, requestedHeight);
+				const result: ViewportResizeResult = {
+					ok: resized?.ok === true,
+					id,
+					width: resized?.width ?? requestedWidth,
+					height: resized?.height ?? requestedHeight,
+					...(resized?.error ? { error: resized.error } : {}),
+				};
+				console.log(
+					result.ok
+						? `viewport resized: ${result.width}x${result.height}`
+						: `viewport resize failed: ${result.error ?? "native core unavailable"}`,
+				);
+				writeAutomationEvent("viewport-resized", { ...result, rect });
 				return result;
 			},
 		},
