@@ -4,6 +4,8 @@
 #include "toi/app/application_controller.hpp"
 
 #include <algorithm>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
@@ -17,7 +19,7 @@
 
 #include <nlohmann/json.hpp>
 
-#ifdef TOI_ENABLE_VIEWPORT
+#ifdef TOI_ENABLE_OVRTX
 #include "toi/viewport/viewport_session.hpp"
 #endif
 
@@ -28,7 +30,7 @@ struct ToiNativeCore {
     }
 
     toi::app::ApplicationController controller;
-#ifdef TOI_ENABLE_VIEWPORT
+#ifdef TOI_ENABLE_OVRTX
     std::unique_ptr<toi::viewport::ViewportSession> viewport;
     int viewport_width = 0;
     int viewport_height = 0;
@@ -116,10 +118,61 @@ void set_last_error(const toi::app::ApplicationError& error)
 }
 
 #ifdef TOI_ENABLE_OVRTX
+[[nodiscard]] std::string_view viewport_phase_name(toi::viewport::ViewportPhase phase)
+{
+    using enum toi::viewport::ViewportPhase;
+    switch (phase) {
+    case Starting:
+        return "starting";
+    case Warming:
+        return "warming";
+    case Rendering:
+        return "rendering";
+    case Ready:
+        return "ready";
+    case Resizing:
+        return "resizing";
+    case Error:
+        return "error";
+    }
+    return "error";
+}
+
+[[nodiscard]] json viewport_extent_json(const toi::viewport::ViewportExtent& extent)
+{
+    return json{{"width", extent.width}, {"height", extent.height}};
+}
+
+[[nodiscard]] json viewport_status_json(const toi::viewport::ViewportStatus& status)
+{
+    return json{
+        {"phase", viewport_phase_name(status.phase)},
+        {"message", status.message},
+        {"swapchain", viewport_extent_json(status.swapchain)},
+        {"color", viewport_extent_json(status.color)},
+        {"depth", status.depth ? viewport_extent_json(*status.depth) : json(nullptr)},
+        {"frame_generation", status.frame_generation},
+    };
+}
+#endif
+
+#ifdef TOI_ENABLE_OVRTX
 // Rebuild the Growth preview at the native viewport's physical pixel size and
 // hand it to the render thread. The command thread remains the sole controller
 // owner; the render thread only consumes immutable stage projections.
-[[nodiscard]] std::expected<void, std::string> push_growth_stage(ToiNativeCore* core)
+[[nodiscard]] toi::viewport::ViewportCameraFraming viewport_framing_for_command(std::string_view method)
+{
+    using enum toi::viewport::ViewportCameraFraming;
+    return method == "module.set_active_prototype" || method == "module.set_active_plant_type" ||
+                   method == "plant.set_active_plant_type" || method == "workspace.set" ||
+                   method == "plant_types.delete"
+               ? AutoFrame
+               : PreserveOrbit;
+}
+
+[[nodiscard]] std::expected<void, std::string>
+push_growth_stage(ToiNativeCore* core,
+                  toi::viewport::ViewportCameraFraming framing = toi::viewport::ViewportCameraFraming::PreserveOrbit)
 {
     if (!core->viewport) {
         return {};
@@ -131,7 +184,7 @@ void set_last_error(const toi::app::ApplicationError& error)
     if (!stage) {
         return std::unexpected(stage.error().message);
     }
-    core->viewport->set_pending_stage(std::move(*stage));
+    core->viewport->set_pending_stage(std::move(*stage), framing);
     const auto preferences = core->controller.viewport_preferences();
     core->viewport->set_guide_options(preferences.guides_visible, preferences.world_origin_axes_visible);
     return {};
@@ -174,10 +227,12 @@ extern "C" char* toi_handle_command(ToiNativeCore* core, const char* request_jso
         const json request = json::parse(request_json);
         auto response = toi::app::handle_application_command(core->controller, request);
 #ifdef TOI_ENABLE_OVRTX
-        if (request.contains("method") && request.at("method").is_string() &&
+        if (response.value("ok", false) && request.contains("method") && request.at("method").is_string() &&
             toi::app::application_command_changes_preview(request.at("method").get<std::string>())) {
-            if (auto pushed = push_growth_stage(core); !pushed) {
-                return copy_json_string(command_error_response(pushed.error()));
+            const auto method = request.at("method").get<std::string>();
+            if (auto pushed = push_growth_stage(core, viewport_framing_for_command(method)); !pushed) {
+                core->viewport->report_error(pushed.error());
+                std::fprintf(stderr, "Failed to update native viewport: %s\n", pushed.error().c_str());
             }
         }
 #endif
@@ -197,51 +252,53 @@ extern "C" void toi_free_string(char* value)
     std::free(value);
 }
 
-extern "C" char* toi_attach_x11_viewport(ToiNativeCore* core, unsigned long x_window, int width, int height)
+extern "C" char* toi_attach_viewport(ToiNativeCore* core, void* native_window, int width, int height)
 {
     if (core == nullptr) {
         return copy_json_string(json{{"ok", false}, {"error", "native core handle is null"}}.dump());
     }
-#ifdef TOI_ENABLE_VIEWPORT
+    if (native_window == nullptr) {
+        return copy_json_string(json{{"ok", false}, {"error", "native viewport handle is null"}}.dump());
+    }
+#ifdef TOI_ENABLE_OVRTX
     try {
-        auto session = toi::viewport::ViewportSession::attach(x_window, width, height);
+        auto session = toi::viewport::ViewportSession::attach(reinterpret_cast<std::uintptr_t>(native_window), width,
+                                                               height);
         if (!session) {
             return copy_json_string(json{{"ok", false}, {"error", session.error().message}}.dump());
         }
         core->viewport = std::move(*session);
         const auto& info = core->viewport->info();
-        core->viewport_width = info.width;
-        core->viewport_height = info.height;
-#ifdef TOI_ENABLE_OVRTX
-        if (auto pushed = push_growth_stage(core); !pushed) {
+        core->viewport_width = info.extent.width;
+        core->viewport_height = info.extent.height;
+        if (auto pushed = push_growth_stage(core, toi::viewport::ViewportCameraFraming::AutoFrame); !pushed) {
             core->viewport.reset();
             core->viewport_width = 0;
             core->viewport_height = 0;
             return copy_json_string(json{{"ok", false}, {"error", pushed.error()}}.dump());
         }
-#endif
         return copy_json_string(json{{"ok", true},
                                      {"device", info.device_name},
-                                     {"width", info.width},
-                                     {"height", info.height}}
+                                     {"width", info.extent.width},
+                                     {"height", info.extent.height}}
                                     .dump());
     } catch (const std::exception& error) {
         return copy_json_string(json{{"ok", false}, {"error", error.what()}}.dump());
     }
 #else
-    (void)x_window;
+    (void)native_window;
     (void)width;
     (void)height;
     return copy_json_string(json{{"ok", false}, {"error", "viewport support not built in this core"}}.dump());
 #endif
 }
 
-extern "C" char* toi_resize_x11_viewport(ToiNativeCore* core, int width, int height)
+extern "C" char* toi_resize_viewport(ToiNativeCore* core, int width, int height)
 {
     if (core == nullptr) {
         return copy_json_string(json{{"ok", false}, {"error", "native core handle is null"}}.dump());
     }
-#ifdef TOI_ENABLE_VIEWPORT
+#ifdef TOI_ENABLE_OVRTX
     if (!core->viewport) {
         return copy_json_string(json{{"ok", false}, {"error", "native viewport is not attached"}}.dump());
     }
@@ -249,21 +306,19 @@ extern "C" char* toi_resize_x11_viewport(ToiNativeCore* core, int width, int hei
         return copy_json_string(json{{"ok", false}, {"error", "native viewport size must be positive"}}.dump());
     }
     if (width == core->viewport_width && height == core->viewport_height) {
-        return copy_json_string(json{{"ok", true}, {"changed", false}, {"width", width}, {"height", height}}.dump());
+        return copy_json_string(json{{"ok", true}}.dump());
     }
 
     const int previous_width = core->viewport_width;
     const int previous_height = core->viewport_height;
     core->viewport_width = width;
     core->viewport_height = height;
-#ifdef TOI_ENABLE_OVRTX
     if (auto pushed = push_growth_stage(core); !pushed) {
         core->viewport_width = previous_width;
         core->viewport_height = previous_height;
         return copy_json_string(json{{"ok", false}, {"error", pushed.error()}}.dump());
     }
-#endif
-    return copy_json_string(json{{"ok", true}, {"changed", true}, {"width", width}, {"height", height}}.dump());
+    return copy_json_string(json{{"ok", true}}.dump());
 #else
     (void)width;
     (void)height;
@@ -271,17 +326,68 @@ extern "C" char* toi_resize_x11_viewport(ToiNativeCore* core, int width, int hei
 #endif
 }
 
-extern "C" char* toi_detach_viewport(ToiNativeCore* core)
+extern "C" void toi_viewport_surface_changed(ToiNativeCore* core)
+{
+#ifdef TOI_ENABLE_OVRTX
+    if (core != nullptr && core->viewport) {
+        core->viewport->surface_changed();
+    }
+#else
+    (void)core;
+#endif
+}
+
+extern "C" void toi_viewport_camera_input(ToiNativeCore* core, int kind, float dx, float dy, int viewport_height)
+{
+#ifdef TOI_ENABLE_OVRTX
+    if (core != nullptr && core->viewport && kind >= 0 &&
+        kind <= static_cast<int>(toi::viewport::ViewportCameraInputKind::Wheel)) {
+        (void)core->viewport->apply_camera_input({
+            .kind = static_cast<toi::viewport::ViewportCameraInputKind>(kind),
+            .dx = dx,
+            .dy = dy,
+            .viewport_height = std::max(1, viewport_height),
+        });
+    }
+#else
+    (void)core;
+    (void)kind;
+    (void)dx;
+    (void)dy;
+    (void)viewport_height;
+#endif
+}
+
+extern "C" char* toi_viewport_status(ToiNativeCore* core)
 {
     if (core == nullptr) {
-        return copy_json_string(json{{"ok", false}, {"error", "native core handle is null"}}.dump());
+        return copy_json_string(json{{"error", "native core handle is null"}}.dump());
     }
-#ifdef TOI_ENABLE_VIEWPORT
-    core->viewport.reset();
-    core->viewport_width = 0;
-    core->viewport_height = 0;
-    return copy_json_string(json{{"ok", true}}.dump());
+#ifdef TOI_ENABLE_OVRTX
+    if (!core->viewport) {
+        return copy_json_string(json{{"phase", "detached"},
+                                     {"message", "Native viewport detached"},
+                                     {"swapchain", viewport_extent_json({})},
+                                     {"color", viewport_extent_json({})},
+                                     {"depth", nullptr},
+                                     {"frame_generation", 0}}
+                                    .dump());
+    }
+    return copy_json_string(viewport_status_json(core->viewport->status()).dump());
 #else
     return copy_json_string(json{{"ok", false}, {"error", "viewport support not built in this core"}}.dump());
+#endif
+}
+
+extern "C" void toi_detach_viewport(ToiNativeCore* core)
+{
+#ifdef TOI_ENABLE_OVRTX
+    if (core != nullptr) {
+        core->viewport.reset();
+        core->viewport_width = 0;
+        core->viewport_height = 0;
+    }
+#else
+    (void)core;
 #endif
 }

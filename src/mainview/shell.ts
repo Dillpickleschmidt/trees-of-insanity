@@ -3,7 +3,7 @@
 // Created once and shared by every component.
 
 import { Electroview } from "electrobun/view";
-import type { Rect, ShellRpcSchema } from "../shared/shellRpc";
+import type { Rect, ShellRpcSchema, ViewportCameraInput, ViewportStatus } from "../shared/shellRpc";
 import { createAppClient } from "./appClient";
 
 const rpc = Electroview.defineRPC<ShellRpcSchema>({
@@ -19,7 +19,7 @@ new Electroview({ rpc });
 export const appClient = createAppClient((request) => rpc.request.appCommand(request));
 
 export function reportUiEvent(type: string, data?: Record<string, unknown>) {
-	void rpc.request.uiEvent({ type, data }).catch(() => {});
+	rpc.send.uiEvent({ type, data });
 }
 
 export function notifyViewportReady(id: number, rect: Rect) {
@@ -28,4 +28,21 @@ export function notifyViewportReady(id: number, rect: Rect) {
 
 export function notifyViewportResize(id: number, rect: Rect) {
 	return rpc.request.viewportResize({ id, rect });
+}
+
+export function notifyViewportDetach(id: number) {
+	rpc.send.viewportDetach({ id });
+}
+
+export function notifyViewportSurfaceChanged(id: number) {
+	rpc.send.viewportSurfaceChanged({ id });
+}
+
+export function sendViewportCameraInput(id: number, input: ViewportCameraInput) {
+	rpc.send.viewportCameraInput({ id, input });
+}
+
+export function onViewportStatus(listener: (status: ViewportStatus) => void) {
+	rpc.addMessageListener("viewportStatus", listener);
+	return () => rpc.removeMessageListener("viewportStatus", listener);
 }

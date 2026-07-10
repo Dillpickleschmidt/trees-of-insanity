@@ -60,7 +60,7 @@ public:
     void reset();
 
 private:
-    VulkanContext* context_ = nullptr;
+    VkDevice device_ = VK_NULL_HANDLE;
     VkImage image_ = VK_NULL_HANDLE;
     VkDeviceMemory memory_ = VK_NULL_HANDLE;
     cudaExternalMemory_t cuda_memory_ = nullptr;
@@ -92,7 +92,7 @@ public:
     void reset();
 
 private:
-    VulkanContext* context_ = nullptr;
+    VkDevice device_ = VK_NULL_HANDLE;
     VkImage image_ = VK_NULL_HANDLE;
     VkDeviceMemory memory_ = VK_NULL_HANDLE;
     VkImageView view_ = VK_NULL_HANDLE;

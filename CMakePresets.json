@@ -12,27 +12,6 @@
       }
     },
     {
-      "name": "release-core",
-      "displayName": "Native core release",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/release-core",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "TOI_BUILD_TESTS": "ON"
-      }
-    },
-    {
-      "name": "desktop",
-      "displayName": "Desktop (native viewport)",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/desktop",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "TOI_BUILD_TESTS": "ON",
-        "TOI_ENABLE_VIEWPORT": "ON"
-      }
-    },
-    {
       "name": "ovrtx",
       "displayName": "ovrtx growth preview",
       "generator": "Ninja",
@@ -40,7 +19,6 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "TOI_BUILD_TESTS": "ON",
-        "TOI_ENABLE_VIEWPORT": "ON",
         "TOI_ENABLE_OVRTX": "ON",
         "CMAKE_PREFIX_PATH": "${sourceDir}/.cache/ovrtx/current"
       }
@@ -50,14 +28,6 @@
     {
       "name": "core",
       "configurePreset": "core"
-    },
-    {
-      "name": "release-core",
-      "configurePreset": "release-core"
-    },
-    {
-      "name": "desktop",
-      "configurePreset": "desktop"
     },
     {
       "name": "ovrtx",

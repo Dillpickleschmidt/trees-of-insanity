@@ -58,7 +58,7 @@ Using gpt-5.5 from pi:
 ## Repo Automation
 
 - `bun run verify:shell` writes JSONL/log/screenshot artifacts and fails if the native viewport handle is not reported.
-- Inspect `artifacts/automation/*.jsonl` and `.log` before screenshots; custom runs can set `TOI_AUTOMATION=1` and `TOI_AUTOMATION_REPORT=<path>`.
+- Inspect `artifacts/automation/*.jsonl` and `.log` before screenshots; custom runs can set `TOI_AUTOMATION_REPORT=<path>`.
 - App state/commands go through `src/shared/appCommands.ts` and `src/shared/shellRpc.ts`; use `scripts/agent screenshot|move|click|down|up|drag|scroll|key|type` only for real UI/viewport interaction. Coordinates are screenshot pixels.
 
 ## Domain Language

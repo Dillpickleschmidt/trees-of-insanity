@@ -13,18 +13,10 @@ export default {
 		copy: {
 			"dist/index.html": "views/mainview/index.html",
 			"dist/assets": "views/mainview/assets",
+			assets: "assets",
 		},
 		watchIgnore: ["dist/**"],
-		mac: {
-			bundleCEF: false,
-			bundleWGPU: false,
-		},
 		linux: {
-			bundleCEF: false,
-			bundleWGPU: false,
-			defaultRenderer: "native",
-		},
-		win: {
 			bundleCEF: false,
 			bundleWGPU: false,
 			defaultRenderer: "native",

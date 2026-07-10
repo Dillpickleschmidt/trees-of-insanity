@@ -81,10 +81,18 @@ namespace {
         return result;
     }
 
+    auto free_command_buffer = [&] {
+        vkFreeCommandBuffers(context.device(), context.command_pool(), 1, &command_buffer);
+    };
+
     VkCommandBufferBeginInfo begin_info{};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(command_buffer, &begin_info);
+    if (auto result = require_vk_success(vkBeginCommandBuffer(command_buffer, &begin_info), "vkBeginCommandBuffer");
+        !result) {
+        free_command_buffer();
+        return result;
+    }
 
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -98,24 +106,34 @@ namespace {
     barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
     vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0,
                          nullptr, 0, nullptr, 1, &barrier);
-    vkEndCommandBuffer(command_buffer);
+    if (auto result = require_vk_success(vkEndCommandBuffer(command_buffer), "vkEndCommandBuffer"); !result) {
+        free_command_buffer();
+        return result;
+    }
 
     VkFenceCreateInfo fence_info{};
     fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     VkFence fence = VK_NULL_HANDLE;
-    vkCreateFence(context.device(), &fence_info, nullptr, &fence);
+    if (auto result = require_vk_success(vkCreateFence(context.device(), &fence_info, nullptr, &fence),
+                                         "vkCreateFence");
+        !result) {
+        free_command_buffer();
+        return result;
+    }
 
     VkSubmitInfo submit{};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &command_buffer;
-    const auto submitted = vkQueueSubmit(context.graphics_queue(), 1, &submit, fence);
-    if (submitted == VK_SUCCESS) {
-        vkWaitForFences(context.device(), 1, &fence, VK_TRUE, UINT64_MAX);
+    auto result = require_vk_success(vkQueueSubmit(context.graphics_queue(), 1, &submit, fence),
+                                     "vkQueueSubmit interop layout");
+    if (result) {
+        result = require_vk_success(vkWaitForFences(context.device(), 1, &fence, VK_TRUE, UINT64_MAX),
+                                    "vkWaitForFences interop layout");
     }
     vkDestroyFence(context.device(), fence, nullptr);
-    vkFreeCommandBuffers(context.device(), context.command_pool(), 1, &command_buffer);
-    return require_vk_success(submitted, "vkQueueSubmit interop layout");
+    free_command_buffer();
+    return result;
 }
 
 } // namespace
@@ -234,7 +252,7 @@ void CudaInteropTimelineSemaphore::reset()
 }
 
 CudaInteropImage::CudaInteropImage(CudaInteropImage&& other) noexcept
-    : context_(std::exchange(other.context_, nullptr))
+    : device_(std::exchange(other.device_, VK_NULL_HANDLE))
     , image_(std::exchange(other.image_, VK_NULL_HANDLE))
     , memory_(std::exchange(other.memory_, VK_NULL_HANDLE))
     , cuda_memory_(std::exchange(other.cuda_memory_, nullptr))
@@ -249,7 +267,7 @@ CudaInteropImage& CudaInteropImage::operator=(CudaInteropImage&& other) noexcept
 {
     if (this != &other) {
         reset();
-        context_ = std::exchange(other.context_, nullptr);
+        device_ = std::exchange(other.device_, VK_NULL_HANDLE);
         image_ = std::exchange(other.image_, VK_NULL_HANDLE);
         memory_ = std::exchange(other.memory_, VK_NULL_HANDLE);
         cuda_memory_ = std::exchange(other.cuda_memory_, nullptr);
@@ -400,7 +418,7 @@ Result<CudaInteropImage> CudaInteropImage::create(VulkanContext& context, int wi
     }
 
     CudaInteropImage out;
-    out.context_ = &context;
+    out.device_ = context.device();
     out.image_ = image;
     out.memory_ = memory;
     out.cuda_memory_ = cuda_memory;
@@ -447,8 +465,8 @@ int CudaInteropImage::height() const
 
 void CudaInteropImage::reset()
 {
-    if (context_ != nullptr && context_->device() != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(context_->device());
+    if (device_ != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(device_);
     }
     if (mipmapped_array_ != nullptr) {
         cudaFreeMipmappedArray(mipmapped_array_);
@@ -459,18 +477,19 @@ void CudaInteropImage::reset()
         cudaDestroyExternalMemory(cuda_memory_);
         cuda_memory_ = nullptr;
     }
-    if (context_ != nullptr && image_ != VK_NULL_HANDLE) {
-        vkDestroyImage(context_->device(), image_, nullptr);
+    if (device_ != VK_NULL_HANDLE && image_ != VK_NULL_HANDLE) {
+        vkDestroyImage(device_, image_, nullptr);
         image_ = VK_NULL_HANDLE;
     }
-    if (context_ != nullptr && memory_ != VK_NULL_HANDLE) {
-        vkFreeMemory(context_->device(), memory_, nullptr);
+    if (device_ != VK_NULL_HANDLE && memory_ != VK_NULL_HANDLE) {
+        vkFreeMemory(device_, memory_, nullptr);
         memory_ = VK_NULL_HANDLE;
     }
+    device_ = VK_NULL_HANDLE;
 }
 
 CudaInteropFloatImage::CudaInteropFloatImage(CudaInteropFloatImage&& other) noexcept
-    : context_(std::exchange(other.context_, nullptr))
+    : device_(std::exchange(other.device_, VK_NULL_HANDLE))
     , image_(std::exchange(other.image_, VK_NULL_HANDLE))
     , memory_(std::exchange(other.memory_, VK_NULL_HANDLE))
     , view_(std::exchange(other.view_, VK_NULL_HANDLE))
@@ -486,7 +505,7 @@ CudaInteropFloatImage& CudaInteropFloatImage::operator=(CudaInteropFloatImage&& 
 {
     if (this != &other) {
         reset();
-        context_ = std::exchange(other.context_, nullptr);
+        device_ = std::exchange(other.device_, VK_NULL_HANDLE);
         image_ = std::exchange(other.image_, VK_NULL_HANDLE);
         memory_ = std::exchange(other.memory_, VK_NULL_HANDLE);
         view_ = std::exchange(other.view_, VK_NULL_HANDLE);
@@ -652,7 +671,7 @@ Result<CudaInteropFloatImage> CudaInteropFloatImage::create(VulkanContext& conte
     }
 
     CudaInteropFloatImage out;
-    out.context_ = &context;
+    out.device_ = context.device();
     out.image_ = image;
     out.memory_ = memory;
     out.view_ = view;
@@ -697,8 +716,8 @@ int CudaInteropFloatImage::height() const
 
 void CudaInteropFloatImage::reset()
 {
-    if (context_ != nullptr && context_->device() != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(context_->device());
+    if (device_ != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(device_);
     }
     if (mipmapped_array_ != nullptr) {
         cudaFreeMipmappedArray(mipmapped_array_);
@@ -709,18 +728,19 @@ void CudaInteropFloatImage::reset()
         cudaDestroyExternalMemory(cuda_memory_);
         cuda_memory_ = nullptr;
     }
-    if (context_ != nullptr && view_ != VK_NULL_HANDLE) {
-        vkDestroyImageView(context_->device(), view_, nullptr);
+    if (device_ != VK_NULL_HANDLE && view_ != VK_NULL_HANDLE) {
+        vkDestroyImageView(device_, view_, nullptr);
         view_ = VK_NULL_HANDLE;
     }
-    if (context_ != nullptr && image_ != VK_NULL_HANDLE) {
-        vkDestroyImage(context_->device(), image_, nullptr);
+    if (device_ != VK_NULL_HANDLE && image_ != VK_NULL_HANDLE) {
+        vkDestroyImage(device_, image_, nullptr);
         image_ = VK_NULL_HANDLE;
     }
-    if (context_ != nullptr && memory_ != VK_NULL_HANDLE) {
-        vkFreeMemory(context_->device(), memory_, nullptr);
+    if (device_ != VK_NULL_HANDLE && memory_ != VK_NULL_HANDLE) {
+        vkFreeMemory(device_, memory_, nullptr);
         memory_ = VK_NULL_HANDLE;
     }
+    device_ = VK_NULL_HANDLE;
 }
 
 } // namespace toi::viewport

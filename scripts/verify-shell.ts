@@ -24,7 +24,7 @@ const stamp = new Date().toISOString().replaceAll(":", "-");
 const reportPath = join(outputDir, `shell-${stamp}.jsonl`);
 const logPath = join(outputDir, `shell-${stamp}.log`);
 const screenshotPath = join(outputDir, `shell-${stamp}.png`);
-const timeoutMs = Number(process.env.TOI_VERIFY_TIMEOUT_MS ?? 20_000);
+const timeoutMs = Number(process.env.TOI_VERIFY_TIMEOUT_MS ?? 300_000);
 
 mkdirSync(outputDir, { recursive: true });
 writeFileSync(logPath, "");
@@ -34,7 +34,6 @@ const child = spawn("bun", ["run", "dev"], {
 	detached: true,
 	env: {
 		...process.env,
-		TOI_AUTOMATION: "1",
 		TOI_AUTOMATION_REPORT: reportPath,
 	},
 	stdio: ["ignore", "pipe", "pipe"],
@@ -53,14 +52,43 @@ while (Date.now() - started < timeoutMs) {
 	const events = readEvents(reportPath);
 	const ready = events.find((event) => event.type === "viewport-ready") as AutomationEvent | undefined;
 	const attached = events.find((event) => event.type === "viewport-attached") as AutomationEvent | undefined;
-	if (ready?.ok === true && attached?.ok === true) {
+	const viewportStatus = events.findLast((event) => event.type === "viewport-status") as AutomationEvent | undefined;
+	if (attached?.ok === false || viewportStatus?.phase === "error") {
+		result = {
+			ok: false,
+			reason: String(attached?.error ?? viewportStatus?.message ?? "native viewport failed"),
+			reportPath,
+			logPath,
+			screenshotPath: captureScreenshot(screenshotPath),
+			events,
+			exitCode,
+		};
+		break;
+	}
+	if (ready?.ok === true && attached?.ok === true && viewportStatus?.phase === "ready") {
 		const rect = ready.rect as { width?: number; height?: number } | undefined;
 		const expectedWidth = Math.max(1, Math.trunc(rect?.width ?? 0));
 		const expectedHeight = Math.max(1, Math.trunc(rect?.height ?? 0));
-		if (attached.width !== expectedWidth || attached.height !== expectedHeight) {
+		const swapchain = viewportStatus.swapchain as { width?: number; height?: number } | undefined;
+		const color = viewportStatus.color as { width?: number; height?: number } | undefined;
+		const depth = viewportStatus.depth as { width?: number; height?: number } | null | undefined;
+		const dimensions = [
+			attached.width,
+			attached.height,
+			swapchain?.width,
+			swapchain?.height,
+			color?.width,
+			color?.height,
+			depth?.width,
+			depth?.height,
+		];
+		const expected = Array.from({ length: dimensions.length }, (_, index) =>
+			index % 2 === 0 ? expectedWidth : expectedHeight,
+		);
+		if (dimensions.some((dimension, index) => dimension !== expected[index])) {
 			result = {
 				ok: false,
-				reason: `native viewport resolution mismatch: DOM ${expectedWidth}x${expectedHeight}, native ${attached.width}x${attached.height}`,
+				reason: `native viewport resolution mismatch: expected ${expectedWidth}x${expectedHeight}, got ${dimensions.join("/")}`,
 				reportPath,
 				logPath,
 				screenshotPath: captureScreenshot(screenshotPath),
@@ -70,8 +98,8 @@ while (Date.now() - started < timeoutMs) {
 			break;
 		}
 		result = {
-			ok: true,
-			reason: `native viewport attached at ${expectedWidth}x${expectedHeight}`,
+			ok: Number(viewportStatus.frame_generation) > 0,
+			reason: `native growth frame presented at ${expectedWidth}x${expectedHeight}`,
 			reportPath,
 			logPath,
 			screenshotPath: captureScreenshot(screenshotPath),
@@ -121,8 +149,7 @@ if (result === undefined) {
 	};
 }
 
-stopProcessGroup(child.pid);
-stopProjectProcesses(root);
+await stopProcessGroup(child.pid);
 console.log(JSON.stringify(result, null, 2));
 process.exit(result.ok ? 0 : 1);
 
@@ -178,24 +205,20 @@ function captureScreenshot(path: string): string | undefined {
 	}
 }
 
-function stopProcessGroup(pid: number | undefined) {
+async function stopProcessGroup(pid: number | undefined) {
 	if (pid === undefined) {
 		return;
 	}
 	try {
 		process.kill(-pid, "SIGTERM");
-	} catch {}
-	setTimeout(() => {
+	} catch {
+		return;
+	}
+	await sleep(1_000);
+	if (exitCode === null) {
 		try {
 			process.kill(-pid, "SIGKILL");
 		} catch {}
-	}, 1_000).unref();
-}
-
-function stopProjectProcesses(projectRoot: string) {
-	const pattern = join(projectRoot, "build", "dev-linux-x64", "TreesofInsanity-dev", "bin");
-	for (const signal of ["TERM", "KILL"] as const) {
-		Bun.spawnSync(["pkill", `-${signal}`, "-f", pattern], { stdout: "ignore", stderr: "ignore" });
 	}
 }
 

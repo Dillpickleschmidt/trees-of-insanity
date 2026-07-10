@@ -27,7 +27,7 @@ public:
     void reset();
 
 private:
-    VulkanContext* context_ = nullptr;
+    VkDevice device_ = VK_NULL_HANDLE;
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
     VkExtent2D extent_{};
     VkFormat format_ = VK_FORMAT_UNDEFINED;

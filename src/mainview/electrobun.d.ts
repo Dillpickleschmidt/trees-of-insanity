@@ -24,6 +24,7 @@ declare module "solid-js" {
 			"electrobun-wgpu": SolidJSX.HTMLAttributes<WgpuTagElement> & {
 				id?: string;
 				class?: string;
+				passthrough?: boolean;
 			};
 		}
 	}

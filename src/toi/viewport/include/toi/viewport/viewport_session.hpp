@@ -1,42 +1,74 @@
 #pragma once
 
+#include "toi/ovrtx/renderer_session.hpp"
+#include "toi/render/orbit_view.hpp"
+#include "toi/viewport/cuda_vulkan_interop.hpp"
 #include "toi/viewport/error.hpp"
-#include "toi/viewport/vulkan_context.hpp"
-#include "toi/viewport/vulkan_swapchain.hpp"
-#include "toi/viewport/x11_vulkan_surface.hpp"
+#include "toi/viewport/viewport_overlay.hpp"
 
 #include <atomic>
 #include <cstdint>
 #include <memory>
-#include <string>
-#include <thread>
-#include <vector>
-
-#ifdef TOI_ENABLE_OVRTX
-#include "toi/ovrtx/renderer_session.hpp"
-#include "toi/render/orbit_view.hpp"
-#include "toi/viewport/cuda_vulkan_interop.hpp"
-#include "toi/viewport/viewport_overlay.hpp"
-
 #include <mutex>
 #include <optional>
-#endif
+#include <string>
+#include <thread>
 
 namespace toi::viewport {
 
-struct ViewportInfo {
-    std::string device_name;
+class VulkanPresenter;
+
+struct ViewportExtent {
     int width = 0;
     int height = 0;
 };
 
-// Owns a Vulkan presentation loop targeting the shell's native X11 window.
-// Without ovrtx it presents an animated clear color (a viewport test pattern).
-// With ovrtx it presents the growth preview: each frame the ovrtx CUDA color
-// output is copied into a shared Vulkan image and blitted to the swapchain.
+struct ViewportInfo {
+    std::string device_name;
+    ViewportExtent extent;
+};
+
+enum class ViewportPhase {
+    Starting,
+    Warming,
+    Rendering,
+    Ready,
+    Resizing,
+    Error,
+};
+
+struct ViewportStatus {
+    ViewportPhase phase = ViewportPhase::Starting;
+    std::string message;
+    ViewportExtent swapchain;
+    ViewportExtent color;
+    std::optional<ViewportExtent> depth;
+    std::uint64_t frame_generation = 0;
+};
+
+enum class ViewportCameraFraming {
+    PreserveOrbit,
+    AutoFrame,
+};
+
+enum class ViewportCameraInputKind {
+    Orbit,
+    Pan,
+    Dolly,
+    Wheel,
+};
+
+struct ViewportCameraInput {
+    ViewportCameraInputKind kind = ViewportCameraInputKind::Orbit;
+    float dx = 0.0F;
+    float dy = 0.0F;
+    int viewport_height = 1;
+};
+
+// Owns one ovrtx Growth preview render loop and its Vulkan presentation module.
 class ViewportSession {
 public:
-    [[nodiscard]] static Result<std::unique_ptr<ViewportSession>> attach(unsigned long x_window, int width,
+    [[nodiscard]] static Result<std::unique_ptr<ViewportSession>> attach(std::uintptr_t native_window, int width,
                                                                          int height);
 
     ViewportSession(const ViewportSession&) = delete;
@@ -44,74 +76,50 @@ public:
     ~ViewportSession();
 
     [[nodiscard]] const ViewportInfo& info() const;
-
-#ifdef TOI_ENABLE_OVRTX
-    // Hand the render thread the latest growth-preview stage (built by the
-    // command thread when a preview-changing command runs).
-    void set_pending_stage(render::GrowthPreviewStageProjection stage);
+    [[nodiscard]] ViewportStatus status() const;
+    void report_error(std::string message);
+    void set_pending_stage(render::GrowthPreviewStageProjection stage,
+                           ViewportCameraFraming framing = ViewportCameraFraming::PreserveOrbit);
     void set_guide_options(bool guides_visible, bool world_origin_axes_visible);
-#endif
+    [[nodiscard]] bool apply_camera_input(ViewportCameraInput input);
+    void surface_changed();
 
 private:
-    // One Vulkan frame in flight: the fence wait before a produce kick then
-    // guarantees no in-flight Vulkan work still reads the slot CUDA is about to
-    // overwrite. Frame throughput comes from the CUDA/Vulkan double buffering,
-    // not Vulkan pipelining — the ovrtx render dominates frame time.
-    static constexpr int kFramesInFlight = 1;
+    struct GrowthSlot;
 
     ViewportSession() = default;
 
-    [[nodiscard]] Result<void> create_sync_objects();
-    [[nodiscard]] Result<void> create_swapchain_resources();
-    void destroy_swapchain_resources();
     [[nodiscard]] Result<void> recreate_swapchain();
     void render_loop();
-    void record_test_pattern(VkCommandBuffer command_buffer, VkImage image, std::uint64_t frame);
+    void set_status_phase(ViewportPhase phase, std::string message = {});
+    void set_status_error(std::string message);
+    void update_swapchain_status();
+    void mark_frame_presented(const GrowthSlot& slot);
 
-    X11Connection connection_;
-    VulkanContext context_;
-    VulkanSwapchain swapchain_;
-    unsigned long x_window_ = 0;
+    [[nodiscard]] bool ensure_growth_renderer();
+    [[nodiscard]] Result<void> resize_growth_slot(int slot_index, int width, int height);
+    [[nodiscard]] bool produce_growth_frame();
+    void complete_pending_produce();
+    void record_growth_present(VkCommandBuffer command_buffer, std::uint32_t image_index);
 
-    VkSemaphore image_available_[kFramesInFlight]{};
-    VkFence in_flight_[kFramesInFlight]{};
-    std::vector<VkSemaphore> render_finished_;
-    std::vector<VkCommandBuffer> command_buffers_;
-
-    std::atomic<bool> running_{false};
-    std::thread thread_;
-    ViewportInfo info_;
-
-#ifdef TOI_ENABLE_OVRTX
-    // One double-buffered CUDA→Vulkan frame: CUDA renders + copies into the
-    // produce slot while Vulkan blits/samples the present slot, so continuous
-    // growth playback overlaps the two engines with no device-wide sync. The
-    // camera is stored per slot so the guide overlay always matches the frame
-    // actually on screen.
     struct GrowthSlot {
         CudaInteropImage color;
-        // Shared scene-distance image (ovrtx DistanceToCameraSD), sampled by the
-        // overlay so guide lines are occluded by the plant/ground geometry.
         CudaInteropFloatImage distance;
         render::GrowthPreviewCamera camera{};
         std::uint64_t timeline_value = 0;
         bool has_distance = false;
     };
 
-    [[nodiscard]] bool ensure_growth_renderer();
-    [[nodiscard]] Result<void> resize_growth_slot(int slot_index, int width, int height);
-    // Kicks an ovrtx render + async copies into the produce slot when something
-    // changed (new stage, camera move, guide toggle). Returns whether it kicked.
-    [[nodiscard]] bool produce_growth_frame();
-    // Polls the produce slot's copy-completion event; on completion swaps the
-    // slots so the new frame is presented.
-    void complete_pending_produce();
-    // Records the present slot's frame into the swapchain image; returns false
-    // to fall back to the test pattern (no completed frame yet).
-    [[nodiscard]] bool record_growth_present(VkCommandBuffer command_buffer, std::uint32_t image_index);
+    std::unique_ptr<VulkanPresenter> presenter_;
+    std::atomic<bool> running_{false};
+    std::thread thread_;
+    ViewportInfo info_;
+    mutable std::mutex status_mutex_;
+    ViewportStatus status_;
 
     std::mutex stage_mutex_;
     std::optional<render::GrowthPreviewStageProjection> pending_stage_;
+    ViewportCameraFraming pending_stage_framing_ = ViewportCameraFraming::AutoFrame;
     bool stage_dirty_ = false;
 
     std::unique_ptr<ovrtx::RendererSession> renderer_;
@@ -123,30 +131,17 @@ private:
     cudaEvent_t copy_done_ = nullptr;
     bool produce_pending_ = false;
     ViewportOverlay overlay_;
-    bool overlay_ready_ = false;
     bool growth_ready_ = false;
     bool growth_failed_ = false;
     bool last_draw_guides_ = false;
-    // Set whenever the presented image should change (new stage, camera move,
-    // guide toggle). The render loop keeps polling input every tick for
-    // responsiveness but only runs the GPU present when this is set, so a static
-    // preview stops re-presenting and the GPU/compositor go idle.
     std::atomic<bool> needs_present_{true};
     std::atomic<bool> guides_visible_{true};
     std::atomic<bool> world_origin_axes_visible_{true};
 
-    void poll_pointer();
-
     std::mutex camera_mutex_;
-    render::OrbitView orbit_;
-    render::GrowthPreviewCamera base_camera_;
-    bool orbit_initialized_ = false;
+    std::optional<render::OrbitView> orbit_;
+    std::optional<render::GrowthPreviewCamera> base_camera_;
     bool orbit_dirty_ = false;
-    bool has_base_camera_ = false;
-    int last_pointer_x_ = 0;
-    int last_pointer_y_ = 0;
-    bool last_dragging_ = false;
-#endif
 };
 
 } // namespace toi::viewport

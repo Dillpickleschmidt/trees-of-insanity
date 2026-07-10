@@ -18,8 +18,23 @@ export type ViewportReadyParams = {
 
 export type ViewportReadyResult = {
 	ok: boolean;
-	id: number;
-	nativeHandle: string | null;
+	error?: string;
+};
+
+export type ViewportPhase = "detached" | "starting" | "warming" | "rendering" | "ready" | "resizing" | "error";
+
+export type ViewportExtent = {
+	width: number;
+	height: number;
+};
+
+export type ViewportStatus = {
+	phase: ViewportPhase;
+	message: string;
+	swapchain: ViewportExtent;
+	color: ViewportExtent;
+	depth: ViewportExtent | null;
+	frame_generation: number;
 };
 
 export type ViewportResizeParams = {
@@ -27,11 +42,15 @@ export type ViewportResizeParams = {
 	rect: Rect;
 };
 
+export type ViewportCameraInput = {
+	kind: "orbit" | "pan" | "dolly" | "wheel";
+	dx: number;
+	dy: number;
+	viewportHeight: number;
+};
+
 export type ViewportResizeResult = {
 	ok: boolean;
-	id: number;
-	width: number;
-	height: number;
 	error?: string;
 };
 
@@ -40,12 +59,7 @@ export type UiEventParams = {
 	data?: Record<string, unknown>;
 };
 
-export type UiEventResult = {
-	ok: true;
-};
-
 type EmptyRequests = Record<never, { params: never; response: never }>;
-type EmptyMessages = Record<never, never>;
 
 export type ShellRpcSchema = {
 	bun: RPCSchema<{
@@ -58,19 +72,22 @@ export type ShellRpcSchema = {
 				params: ViewportResizeParams;
 				response: ViewportResizeResult;
 			};
-			uiEvent: {
-				params: UiEventParams;
-				response: UiEventResult;
-			};
 			appCommand: {
 				params: AppCommandParams;
 				response: AppCommandResult;
 			};
 		};
-		messages: EmptyMessages;
+		messages: {
+			uiEvent: UiEventParams;
+			viewportDetach: { id: number };
+			viewportSurfaceChanged: { id: number };
+			viewportCameraInput: { id: number; input: ViewportCameraInput };
+		};
 	}>;
 	webview: RPCSchema<{
 		requests: EmptyRequests;
-		messages: EmptyMessages;
+		messages: {
+			viewportStatus: ViewportStatus;
+		};
 	}>;
 };

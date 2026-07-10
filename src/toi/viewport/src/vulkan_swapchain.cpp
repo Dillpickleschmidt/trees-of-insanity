@@ -131,7 +131,7 @@ Result<VulkanSwapchain> VulkanSwapchain::create(VulkanContext& context, int widt
     vkGetSwapchainImagesKHR(context.device(), swapchain, &actual_image_count, images.data());
 
     VulkanSwapchain out;
-    out.context_ = &context;
+    out.device_ = context.device();
     out.swapchain_ = swapchain;
     out.extent_ = extent;
     out.format_ = surface_format.format;
@@ -140,7 +140,7 @@ Result<VulkanSwapchain> VulkanSwapchain::create(VulkanContext& context, int widt
 }
 
 VulkanSwapchain::VulkanSwapchain(VulkanSwapchain&& other) noexcept
-    : context_(std::exchange(other.context_, nullptr))
+    : device_(std::exchange(other.device_, VK_NULL_HANDLE))
     , swapchain_(std::exchange(other.swapchain_, VK_NULL_HANDLE))
     , extent_(std::exchange(other.extent_, {}))
     , format_(std::exchange(other.format_, VK_FORMAT_UNDEFINED))
@@ -152,7 +152,7 @@ VulkanSwapchain& VulkanSwapchain::operator=(VulkanSwapchain&& other) noexcept
 {
     if (this != &other) {
         reset();
-        context_ = std::exchange(other.context_, nullptr);
+        device_ = std::exchange(other.device_, VK_NULL_HANDLE);
         swapchain_ = std::exchange(other.swapchain_, VK_NULL_HANDLE);
         extent_ = std::exchange(other.extent_, {});
         format_ = std::exchange(other.format_, VK_FORMAT_UNDEFINED);
@@ -185,11 +185,14 @@ const std::vector<VkImage>& VulkanSwapchain::images() const
 
 void VulkanSwapchain::reset()
 {
-    if (context_ != nullptr && swapchain_ != VK_NULL_HANDLE) {
-        vkDestroySwapchainKHR(context_->device(), swapchain_, nullptr);
+    if (device_ != VK_NULL_HANDLE && swapchain_ != VK_NULL_HANDLE) {
+        vkDestroySwapchainKHR(device_, swapchain_, nullptr);
         swapchain_ = VK_NULL_HANDLE;
     }
+    device_ = VK_NULL_HANDLE;
+    extent_ = {};
     format_ = VK_FORMAT_UNDEFINED;
+    images_.clear();
 }
 
 } // namespace toi::viewport

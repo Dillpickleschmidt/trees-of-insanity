@@ -1,11 +1,8 @@
 #pragma once
 
 #include "toi/viewport/error.hpp"
-#include "toi/viewport/x11_vulkan_surface.hpp"
+#include "toi/viewport/native_surface.hpp"
 
-#ifndef VK_USE_PLATFORM_XLIB_KHR
-#define VK_USE_PLATFORM_XLIB_KHR
-#endif
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
@@ -17,14 +14,14 @@ struct VulkanContextInfo {
     std::string physical_device_name;
     std::uint32_t vendor_id = 0;
     std::uint32_t device_id = 0;
+    int cuda_device = -1;
 };
 
-// Vulkan instance + X11 surface + presentation-capable device. Kept to the
-// surface/present essentials; CUDA/Vulkan interop extensions are layered on in
-// the growth-preview work, not here.
+// Vulkan instance + native surface + presentation-capable device. ovrtx builds
+// require the Vulkan physical device to match the selected CUDA device.
 class VulkanContext {
 public:
-    [[nodiscard]] static Result<VulkanContext> create(const NativeSurfaceHandle& surface_handle);
+    [[nodiscard]] static Result<VulkanContext> create(const NativeSurface& surface, int cuda_device);
 
     VulkanContext() = default;
     VulkanContext(const VulkanContext&) = delete;

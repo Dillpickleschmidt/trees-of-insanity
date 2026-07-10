@@ -1,8 +1,6 @@
 #include "toi/viewport/vulkan_context.hpp"
 
-#include <vulkan/vulkan_xlib.h>
-
-#include <X11/Xlib.h>
+#include <cuda_runtime_api.h>
 
 #include <algorithm>
 #include <array>
@@ -52,16 +50,12 @@ namespace {
 {
     const auto available_extensions = instance_extensions();
     std::vector<const char*> required_extensions = {
-        VK_KHR_SURFACE_EXTENSION_NAME,
-        VK_KHR_XLIB_SURFACE_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES_EXTENSION_NAME,
+        VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
     };
-#ifdef TOI_ENABLE_OVRTX
-    // Needed to import Vulkan device memory and semaphores into CUDA for the
-    // growth preview.
-    required_extensions.push_back(VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME);
-    required_extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES_EXTENSION_NAME);
-    required_extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
-#endif
+    const auto surface_extensions = NativeSurface::required_vulkan_instance_extensions();
+    required_extensions.insert(required_extensions.end(), surface_extensions.begin(), surface_extensions.end());
     for (const char* extension : required_extensions) {
         if (!has_extension(available_extensions, extension)) {
             return std::unexpected(make_error(std::string("missing Vulkan instance extension ") + extension));
@@ -90,23 +84,84 @@ namespace {
     return instance;
 }
 
-[[nodiscard]] Result<VkSurfaceKHR> create_x11_surface(VkInstance instance, const NativeSurfaceHandle& handle)
+[[nodiscard]] Result<std::array<unsigned char, VK_UUID_SIZE>> cuda_device_uuid(int cuda_device)
 {
-    if (handle.x_display == nullptr || handle.x_window == 0) {
-        return std::unexpected(make_error("invalid X11 surface handle"));
+    cudaDeviceProp properties{};
+    if (const auto result = cudaGetDeviceProperties(&properties, cuda_device); result != cudaSuccess) {
+        return std::unexpected(make_error(std::string("cudaGetDeviceProperties failed: ") + cudaGetErrorString(result)));
+    }
+    static_assert(sizeof(properties.uuid.bytes) == VK_UUID_SIZE);
+    std::array<unsigned char, VK_UUID_SIZE> uuid{};
+    std::memcpy(uuid.data(), properties.uuid.bytes, uuid.size());
+    return uuid;
+}
+
+[[nodiscard]] bool supports_external_image(VkPhysicalDevice physical_device, VkFormat format,
+                                           VkImageUsageFlags usage)
+{
+    VkPhysicalDeviceExternalImageFormatInfo external_info{};
+    external_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO;
+    external_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    VkPhysicalDeviceImageFormatInfo2 image_info{};
+    image_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2;
+    image_info.pNext = &external_info;
+    image_info.format = format;
+    image_info.type = VK_IMAGE_TYPE_2D;
+    image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_info.usage = usage;
+    image_info.flags = 0;
+
+    VkExternalImageFormatProperties external_properties{};
+    external_properties.sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES;
+    VkImageFormatProperties2 properties{};
+    properties.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2;
+    properties.pNext = &external_properties;
+    if (vkGetPhysicalDeviceImageFormatProperties2(physical_device, &image_info, &properties) != VK_SUCCESS) {
+        return false;
+    }
+    return (external_properties.externalMemoryProperties.externalMemoryFeatures &
+            VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) != 0;
+}
+
+[[nodiscard]] bool supports_external_timeline_semaphore(VkPhysicalDevice physical_device)
+{
+    VkPhysicalDeviceExternalSemaphoreInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO;
+    info.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+    VkExternalSemaphoreProperties properties{};
+    properties.sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES;
+    vkGetPhysicalDeviceExternalSemaphoreProperties(physical_device, &info, &properties);
+    return (properties.externalSemaphoreFeatures & VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT) != 0;
+}
+
+[[nodiscard]] bool supports_cuda_interop(VkPhysicalDevice physical_device)
+{
+    const auto extensions = device_extensions(physical_device);
+    const std::array required_extensions = {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
+        VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,
+        VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
+    };
+    if (!std::ranges::all_of(required_extensions,
+                             [&extensions](const char* name) { return has_extension(extensions, name); })) {
+        return false;
     }
 
-    VkXlibSurfaceCreateInfoKHR create_info{};
-    create_info.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
-    create_info.dpy = static_cast<Display*>(handle.x_display);
-    create_info.window = static_cast<Window>(handle.x_window);
-
-    VkSurfaceKHR surface = VK_NULL_HANDLE;
-    const auto result = vkCreateXlibSurfaceKHR(instance, &create_info, nullptr, &surface);
-    if (result != VK_SUCCESS) {
-        return std::unexpected(make_error(vk_error("vkCreateXlibSurfaceKHR", result)));
-    }
-    return surface;
+    VkPhysicalDeviceVulkan12Features features12{};
+    features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    VkPhysicalDeviceFeatures2 features{};
+    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features.pNext = &features12;
+    vkGetPhysicalDeviceFeatures2(physical_device, &features);
+    return features12.timelineSemaphore == VK_TRUE &&
+           supports_external_image(physical_device, VK_FORMAT_R8G8B8A8_UNORM,
+                                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT) &&
+           supports_external_image(physical_device, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT) &&
+           supports_external_timeline_semaphore(physical_device);
 }
 
 [[nodiscard]] std::optional<std::uint32_t> graphics_present_queue_family(VkPhysicalDevice physical_device,
@@ -131,10 +186,10 @@ struct PhysicalDeviceChoice {
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     std::uint32_t queue_family = 0;
     VulkanContextInfo info;
-    int score = -1;
 };
 
-[[nodiscard]] Result<PhysicalDeviceChoice> choose_physical_device(VkInstance instance, VkSurfaceKHR surface)
+[[nodiscard]] Result<PhysicalDeviceChoice> choose_physical_device(VkInstance instance, VkSurfaceKHR surface,
+                                                                  int cuda_device)
 {
     std::uint32_t device_count = 0;
     auto result = vkEnumeratePhysicalDevices(instance, &device_count, nullptr);
@@ -142,11 +197,19 @@ struct PhysicalDeviceChoice {
         return std::unexpected(make_error(vk_error("vkEnumeratePhysicalDevices", result)));
     }
     std::vector<VkPhysicalDevice> physical_devices(device_count);
-    vkEnumeratePhysicalDevices(instance, &device_count, physical_devices.data());
+    if (const auto enumerated = vkEnumeratePhysicalDevices(instance, &device_count, physical_devices.data());
+        enumerated != VK_SUCCESS) {
+        return std::unexpected(make_error(vk_error("vkEnumeratePhysicalDevices", enumerated)));
+    }
+
+    auto cuda_uuid = cuda_device_uuid(cuda_device);
+    if (!cuda_uuid) {
+        return std::unexpected(cuda_uuid.error());
+    }
 
     PhysicalDeviceChoice best;
     for (VkPhysicalDevice physical_device : physical_devices) {
-        if (!has_extension(device_extensions(physical_device), VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+        if (!supports_cuda_interop(physical_device)) {
             continue;
         }
         auto queue_family = graphics_present_queue_family(physical_device, surface);
@@ -154,34 +217,33 @@ struct PhysicalDeviceChoice {
             continue;
         }
 
-        VkPhysicalDeviceProperties properties{};
-        vkGetPhysicalDeviceProperties(physical_device, &properties);
-
-        int score = 0;
-        if (properties.vendorID == 0x10DE) { // Prefer NVIDIA for the eventual CUDA interop path.
-            score += 1000;
+        VkPhysicalDeviceIDProperties id{};
+        id.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+        VkPhysicalDeviceProperties2 properties2{};
+        properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        properties2.pNext = &id;
+        vkGetPhysicalDeviceProperties2(physical_device, &properties2);
+        if (!std::equal(cuda_uuid->begin(), cuda_uuid->end(), std::begin(id.deviceUUID))) {
+            continue;
         }
-        if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
-            score += 100;
-        }
-
-        if (score > best.score) {
-            best = PhysicalDeviceChoice{
-                .physical_device = physical_device,
-                .queue_family = *queue_family,
-                .info =
-                    VulkanContextInfo{
-                        .physical_device_name = properties.deviceName,
-                        .vendor_id = properties.vendorID,
-                        .device_id = properties.deviceID,
-                    },
-                .score = score,
-            };
-        }
+        const auto& properties = properties2.properties;
+        best = PhysicalDeviceChoice{
+            .physical_device = physical_device,
+            .queue_family = *queue_family,
+            .info =
+                VulkanContextInfo{
+                    .physical_device_name = properties.deviceName,
+                    .vendor_id = properties.vendorID,
+                    .device_id = properties.deviceID,
+                    .cuda_device = cuda_device,
+                },
+        };
+        break;
     }
 
     if (best.physical_device == VK_NULL_HANDLE) {
-        return std::unexpected(make_error("no Vulkan physical device supports presentation to this surface"));
+        return std::unexpected(
+            make_error("no presentation-capable Vulkan device matches CUDA device " + std::to_string(cuda_device)));
     }
     return best;
 }
@@ -195,15 +257,15 @@ struct PhysicalDeviceChoice {
     queue_info.queueCount = 1;
     queue_info.pQueuePriorities = &priority;
 
-    std::vector<const char*> device_extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
-#ifdef TOI_ENABLE_OVRTX
-    device_extensions.push_back(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
-    device_extensions.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
-    device_extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME);
-    device_extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
-    device_extensions.push_back(VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME);
-    device_extensions.push_back(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);
-#endif
+    const std::array device_extensions = {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
+        VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,
+        VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
+    };
 
     VkPhysicalDeviceFeatures features{};
     VkDeviceCreateInfo create_info{};
@@ -214,14 +276,10 @@ struct PhysicalDeviceChoice {
     create_info.ppEnabledExtensionNames = device_extensions.data();
     create_info.pEnabledFeatures = &features;
 
-#ifdef TOI_ENABLE_OVRTX
-    // Timeline semaphores (Vulkan 1.2 core) order the CUDA frame copies against
-    // the Vulkan present work without a device-wide sync.
     VkPhysicalDeviceVulkan12Features features12{};
     features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     features12.timelineSemaphore = VK_TRUE;
     create_info.pNext = &features12;
-#endif
 
     VkDevice device = VK_NULL_HANDLE;
     const auto result = vkCreateDevice(physical_device, &create_info, nullptr, &device);
@@ -248,20 +306,20 @@ struct PhysicalDeviceChoice {
 
 } // namespace
 
-Result<VulkanContext> VulkanContext::create(const NativeSurfaceHandle& surface_handle)
+Result<VulkanContext> VulkanContext::create(const NativeSurface& surface_handle, int cuda_device)
 {
     auto instance = create_instance();
     if (!instance) {
         return std::unexpected(instance.error());
     }
 
-    auto surface = create_x11_surface(*instance, surface_handle);
+    auto surface = surface_handle.create_vulkan_surface(*instance);
     if (!surface) {
         vkDestroyInstance(*instance, nullptr);
         return std::unexpected(surface.error());
     }
 
-    auto choice = choose_physical_device(*instance, *surface);
+    auto choice = choose_physical_device(*instance, *surface, cuda_device);
     if (!choice) {
         vkDestroySurfaceKHR(*instance, *surface, nullptr);
         vkDestroyInstance(*instance, nullptr);

@@ -10,7 +10,8 @@ import { ViewportControls } from "~/components/ViewportControls";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "~/components/ui/select";
 import { Slider } from "~/components/ui/slider";
 import { Viewport } from "~/components/Viewport";
-import { appClient, reportUiEvent } from "~/shell";
+import { appClient, onViewportStatus, reportUiEvent } from "~/shell";
+import type { ViewportStatus } from "../shared/shellRpc";
 import type {
 	AppState,
 	GrowthSnapshotSummary,
@@ -73,6 +74,15 @@ const initialPlantSummary: PlantGrowthSummary = {
 	senescent: false,
 };
 
+const initialViewportStatus: ViewportStatus = {
+	phase: "detached",
+	message: "Native viewport detached",
+	swapchain: { width: 0, height: 0 },
+	color: { width: 0, height: 0 },
+	depth: null,
+	frame_generation: 0,
+};
+
 function formatNumber(value: number, digits = 3) {
 	if (!Number.isFinite(value)) return "—";
 	return value.toFixed(digits);
@@ -95,6 +105,8 @@ export function App() {
 	const [dragSliderValue, setDragSliderValue] = createSignal<number | null>(null);
 	const [plantSummary, setPlantSummary] = createSignal(initialPlantSummary);
 	const [plantDragValue, setPlantDragValue] = createSignal<number | null>(null);
+	const [nativeViewportStatus, setNativeViewportStatus] = createSignal(initialViewportStatus);
+	let disposeViewportStatus = () => {};
 	let latestAgeGeneration = 0;
 	let pendingAgeUpdate: { age: number; generation: number } | null = null;
 	let ageRequestInFlight = false;
@@ -316,6 +328,7 @@ export function App() {
 	});
 
 	onCleanup(() => {
+		disposeViewportStatus();
 		if (ageSubmitTimer !== undefined) {
 			window.clearTimeout(ageSubmitTimer);
 		}
@@ -331,6 +344,7 @@ export function App() {
 		window.addEventListener("unhandledrejection", (event) =>
 			reportUiEvent("js-rejection", { message: String((event.reason as Error)?.stack ?? event.reason) }),
 		);
+		disposeViewportStatus = onViewportStatus(setNativeViewportStatus);
 		reportUiEvent("app-mounted");
 		void refreshAll();
 	});
@@ -613,7 +627,12 @@ export function App() {
 						{/* VIEWPORT — shared across workspaces */}
 						<Show when={viewport()}>
 							{(view) => (
-								<ViewportControls view={view()} busy={busy()} onChange={setViewportPreference} />
+								<ViewportControls
+									view={view()}
+									status={nativeViewportStatus()}
+									busy={busy()}
+									onChange={setViewportPreference}
+								/>
 							)}
 						</Show>
 					</div>

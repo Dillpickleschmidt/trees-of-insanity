@@ -9,7 +9,7 @@
 		"ui:watch": "vite --host 127.0.0.1 --port 5173",
 		"build:ui": "vite build",
 		"build:native": "cmake --preset ovrtx && cmake --build --preset ovrtx",
-		"build": "bun run build:native && bun run build:ui && electrobun build --env=canary",
+		"build": "bun run build:native && bun run build:ui",
 		"typecheck": "tsc --noEmit",
 		"test:ffi": "bun test tests/nativeCore.test.ts",
 		"verify:shell": "bun scripts/verify-shell.ts"

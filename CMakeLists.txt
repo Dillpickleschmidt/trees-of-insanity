@@ -3,8 +3,7 @@ cmake_minimum_required(VERSION 3.25)
 project(trees_of_insanity VERSION 0.1.0 LANGUAGES CXX)
 
 option(TOI_BUILD_TESTS "Build native core tests" ON)
-option(TOI_ENABLE_VIEWPORT "Build the Vulkan/X11 native viewport into the core" OFF)
-option(TOI_ENABLE_OVRTX "Build the ovrtx CUDA growth-preview renderer" OFF)
+option(TOI_ENABLE_OVRTX "Build the ovrtx CUDA growth-preview renderer and native viewport" OFF)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -83,49 +82,6 @@ target_compile_definitions(toi_app PUBLIC
     TOI_DEFAULT_PROTOTYPE_ASSET_PATH="${CMAKE_SOURCE_DIR}/assets/prototypes/TOI_Module_Prototypes.obj"
 )
 
-if(TOI_ENABLE_VIEWPORT)
-    find_package(Vulkan REQUIRED)
-    find_package(X11 REQUIRED)
-    find_program(GLSLC_EXECUTABLE glslc REQUIRED)
-    find_program(XXD_EXECUTABLE xxd REQUIRED)
-
-    set(TOI_SHADER_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/toi/viewport/shaders)
-    file(MAKE_DIRECTORY ${TOI_SHADER_GEN_DIR})
-    function(toi_compile_shader out_var source symbol)
-        get_filename_component(name ${source} NAME)
-        set(spv ${TOI_SHADER_GEN_DIR}/${name}.spv)
-        set(cpp ${TOI_SHADER_GEN_DIR}/${name}.spv.cpp)
-        add_custom_command(
-            OUTPUT ${cpp}
-            COMMAND ${GLSLC_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/${source} -o ${spv}
-            COMMAND ${XXD_EXECUTABLE} -i -n ${symbol} ${spv} ${cpp}
-            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${source}
-            VERBATIM
-        )
-        set_source_files_properties(${cpp} PROPERTIES GENERATED TRUE)
-        set(${out_var} ${cpp} PARENT_SCOPE)
-    endfunction()
-    toi_compile_shader(TOI_OVERLAY_VERT_SPV_CPP src/toi/viewport/shaders/overlay_lines.vert overlay_lines_vert_spv)
-    toi_compile_shader(TOI_OVERLAY_FRAG_SPV_CPP src/toi/viewport/shaders/overlay_lines.frag overlay_lines_frag_spv)
-
-    add_library(toi_viewport
-        src/toi/viewport/src/error.cpp
-        src/toi/viewport/src/x11_vulkan_surface.cpp
-        src/toi/viewport/src/vulkan_context.cpp
-        src/toi/viewport/src/vulkan_swapchain.cpp
-        src/toi/viewport/src/viewport_overlay.cpp
-        src/toi/viewport/src/viewport_session.cpp
-        ${TOI_OVERLAY_VERT_SPV_CPP}
-        ${TOI_OVERLAY_FRAG_SPV_CPP}
-    )
-    target_include_directories(toi_viewport PUBLIC
-        src/toi/viewport/include
-    )
-    target_link_libraries(toi_viewport PUBLIC Vulkan::Vulkan X11::X11 toi_render)
-    target_compile_features(toi_viewport PUBLIC cxx_std_23)
-    target_compile_definitions(toi_viewport PUBLIC VK_USE_PLATFORM_XLIB_KHR)
-endif()
-
 if(TOI_ENABLE_OVRTX)
     find_package(ovrtx CONFIG REQUIRED)
     find_package(CUDAToolkit REQUIRED)
@@ -153,13 +109,46 @@ if(TOI_ENABLE_OVRTX)
     )
     target_compile_features(toi_ovrtx PUBLIC cxx_std_23)
 
-    # Present the ovrtx CUDA frame through the native viewport: add the
-    # CUDA/Vulkan interop to toi_viewport and switch on its ovrtx path.
-    if(TOI_ENABLE_VIEWPORT)
-        target_sources(toi_viewport PRIVATE src/toi/viewport/src/cuda_vulkan_interop.cpp)
-        target_link_libraries(toi_viewport PUBLIC toi_ovrtx CUDA::cudart)
-        target_compile_definitions(toi_viewport PUBLIC TOI_ENABLE_OVRTX)
-    endif()
+    find_package(Vulkan REQUIRED)
+    find_package(X11 REQUIRED)
+    find_program(GLSLC_EXECUTABLE glslc REQUIRED)
+    find_program(XXD_EXECUTABLE xxd REQUIRED)
+
+    set(TOI_SHADER_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/toi/viewport/shaders)
+    file(MAKE_DIRECTORY ${TOI_SHADER_GEN_DIR})
+    function(toi_compile_shader out_var source symbol)
+        get_filename_component(name ${source} NAME)
+        set(spv ${TOI_SHADER_GEN_DIR}/${name}.spv)
+        set(cpp ${TOI_SHADER_GEN_DIR}/${name}.spv.cpp)
+        add_custom_command(
+            OUTPUT ${cpp}
+            COMMAND ${GLSLC_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/${source} -o ${spv}
+            COMMAND ${XXD_EXECUTABLE} -i -n ${symbol} ${spv} ${cpp}
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${source}
+            VERBATIM
+        )
+        set_source_files_properties(${cpp} PROPERTIES GENERATED TRUE)
+        set(${out_var} ${cpp} PARENT_SCOPE)
+    endfunction()
+    toi_compile_shader(TOI_OVERLAY_VERT_SPV_CPP src/toi/viewport/shaders/overlay_lines.vert overlay_lines_vert_spv)
+    toi_compile_shader(TOI_OVERLAY_FRAG_SPV_CPP src/toi/viewport/shaders/overlay_lines.frag overlay_lines_frag_spv)
+
+    add_library(toi_viewport
+        src/toi/viewport/src/error.cpp
+        src/toi/viewport/src/x11_native_surface.cpp
+        src/toi/viewport/src/vulkan_context.cpp
+        src/toi/viewport/src/vulkan_swapchain.cpp
+        src/toi/viewport/src/vulkan_presenter.cpp
+        src/toi/viewport/src/cuda_vulkan_interop.cpp
+        src/toi/viewport/src/viewport_overlay.cpp
+        src/toi/viewport/src/viewport_session.cpp
+        ${TOI_OVERLAY_VERT_SPV_CPP}
+        ${TOI_OVERLAY_FRAG_SPV_CPP}
+    )
+    target_include_directories(toi_viewport PUBLIC src/toi/viewport/include)
+    target_link_libraries(toi_viewport PUBLIC Vulkan::Vulkan X11::X11 toi_render toi_ovrtx CUDA::cudart)
+    target_compile_features(toi_viewport PUBLIC cxx_std_23)
+    target_compile_definitions(toi_viewport PUBLIC VK_USE_PLATFORM_XLIB_KHR)
 endif()
 
 add_library(toi_native_core SHARED
@@ -172,15 +161,16 @@ target_link_libraries(toi_native_core PRIVATE toi_app nlohmann_json::nlohmann_js
 target_compile_features(toi_native_core PUBLIC cxx_std_23)
 set_target_properties(toi_native_core PROPERTIES OUTPUT_NAME toi_native_core)
 
-if(TOI_ENABLE_VIEWPORT)
-    target_link_libraries(toi_native_core PRIVATE toi_viewport)
-    target_compile_definitions(toi_native_core PRIVATE TOI_ENABLE_VIEWPORT)
-endif()
-
 if(TOI_ENABLE_OVRTX)
-    # Bake the ovrtx runtime directory into the RPATH so the shell loads it (and
-    # its RTX/USD plugins) without a manual LD_LIBRARY_PATH.
-    set_target_properties(toi_native_core PROPERTIES BUILD_RPATH "${TOI_OVRTX_RUNTIME_DIR}")
+    target_link_libraries(toi_native_core PRIVATE toi_viewport)
+    target_compile_definitions(toi_native_core PRIVATE TOI_ENABLE_OVRTX)
+
+
+    # Resolve ovrtx from the checkout without embedding a developer-machine path.
+    set_target_properties(toi_native_core PROPERTIES
+        BUILD_WITH_INSTALL_RPATH TRUE
+        INSTALL_RPATH "$ORIGIN/../../.cache/ovrtx/current/bin;/opt/cuda/targets/x86_64-linux/lib"
+    )
 endif()
 
 if(TOI_BUILD_TESTS)

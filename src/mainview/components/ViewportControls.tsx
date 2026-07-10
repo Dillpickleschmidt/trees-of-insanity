@@ -1,10 +1,13 @@
+import { Show } from "solid-js";
 import { Field, Section } from "~/components/panelPrimitives";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "~/components/ui/select";
 import { Switch, SwitchControl, SwitchThumb } from "~/components/ui/switch";
 import type { HdriEnvironment, ViewportPreferences, ViewportPreferencesView } from "~/types";
+import type { ViewportStatus } from "../../shared/shellRpc";
 
 export function ViewportControls(props: {
 	view: ViewportPreferencesView;
+	status: ViewportStatus;
 	busy: boolean;
 	onChange: (patch: Partial<ViewportPreferences>) => void;
 }) {
@@ -14,12 +17,14 @@ export function ViewportControls(props: {
 
 	return (
 		<Section eyebrow="Viewport">
-			<Field label="Render mode">
-				<div class="inline-flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1 text-[12px] font-medium">
-					<span class="h-1.5 w-1.5 rounded-full bg-grow" />
-					RTX
-				</div>
-			</Field>
+			<Show when={props.status.phase !== "ready"}>
+				<Field label="Native viewport">
+					<div class="text-right text-[12px]" classList={{ "text-destructive": props.status.phase === "error" }}>
+						<div class="font-medium capitalize">{props.status.phase}</div>
+						<div class="text-muted-foreground">{props.status.message}</div>
+					</div>
+				</Field>
+			</Show>
 
 			<Field label="HDRI environment">
 				<Select<HdriEnvironment>
@@ -64,6 +69,7 @@ export function ViewportControls(props: {
 		</Section>
 	);
 }
+
 
 function Toggle(props: { label: string; checked: boolean; disabled?: boolean; onChange: (value: boolean) => void }) {
 	return (

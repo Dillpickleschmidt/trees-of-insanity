@@ -17,6 +17,7 @@ import { CString, dlopen, FFIType, type Pointer, suffix } from "bun:ffi";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { CommandMethod, CommandParams, CommandRequest, CommandResponse, CommandResult } from "../shared/appCommands";
+import type { ViewportCameraInput, ViewportStatus } from "../shared/shellRpc";
 
 export type NativeCoreOptions = {
 	projectPath?: string;
@@ -35,9 +36,6 @@ export type ViewportAttachResult = {
 export type ViewportResizeResult = {
 	ok: boolean;
 	error?: string;
-	changed?: boolean;
-	width?: number;
-	height?: number;
 };
 
 export class NativeCoreCommandError extends Error {
@@ -92,14 +90,17 @@ export class NativeCore {
 		return response.result;
 	}
 
-	// Attach the Vulkan viewport to the shell's native X11 window (XID) and start
-	// its present loop. Only functional when the core is built with viewport
-	// support (desktop preset); otherwise the result reports ok:false.
-	attachX11Viewport(xWindow: number, width: number, height: number): ViewportAttachResult {
+	// Attach the ovrtx/Vulkan viewport to Electrobun's native child window.
+	attachViewport(nativeWindow: Pointer, width: number, height: number): ViewportAttachResult {
 		if (this.#closed) {
 			throw new Error("native core is closed");
 		}
-		const resultPtr = lib().symbols.toi_attach_x11_viewport(this.#handle, xWindow, Math.trunc(width), Math.trunc(height));
+		const resultPtr = lib().symbols.toi_attach_viewport(
+			this.#handle,
+			nativeWindow,
+			Math.trunc(width),
+			Math.trunc(height),
+		);
 		return JSON.parse(readCoreString(resultPtr)) as ViewportAttachResult;
 	}
 
@@ -107,16 +108,46 @@ export class NativeCore {
 		if (this.#closed) {
 			throw new Error("native core is closed");
 		}
-		const resultPtr = lib().symbols.toi_resize_x11_viewport(this.#handle, Math.trunc(width), Math.trunc(height));
+		const resultPtr = lib().symbols.toi_resize_viewport(this.#handle, Math.trunc(width), Math.trunc(height));
 		return JSON.parse(readCoreString(resultPtr)) as ViewportResizeResult;
 	}
 
-	detachViewport(): void {
+	viewportSurfaceChanged(): void {
+		if (!this.#closed) {
+			lib().symbols.toi_viewport_surface_changed(this.#handle);
+		}
+	}
+
+	viewportCameraInput(input: ViewportCameraInput): void {
 		if (this.#closed) {
 			return;
 		}
-		const resultPtr = lib().symbols.toi_detach_viewport(this.#handle);
-		readCoreString(resultPtr);
+		const kinds = { orbit: 0, pan: 1, dolly: 2, wheel: 3 } as const;
+		lib().symbols.toi_viewport_camera_input(
+			this.#handle,
+			kinds[input.kind],
+			input.dx,
+			input.dy,
+			Math.max(1, Math.trunc(input.viewportHeight)),
+		);
+	}
+
+	viewportStatus(): ViewportStatus {
+		if (this.#closed) {
+			throw new Error("native core is closed");
+		}
+		const resultPtr = lib().symbols.toi_viewport_status(this.#handle);
+		const result = JSON.parse(readCoreString(resultPtr)) as ViewportStatus | { error: string };
+		if ("error" in result) {
+			throw new Error(result.error);
+		}
+		return result;
+	}
+
+	detachViewport(): void {
+		if (!this.#closed) {
+			lib().symbols.toi_detach_viewport(this.#handle);
+		}
 	}
 
 	close(): void {
@@ -144,9 +175,15 @@ function openLibrary() {
 		toi_handle_command: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
 		toi_last_error_json: { args: [], returns: FFIType.ptr },
 		toi_free_string: { args: [FFIType.ptr], returns: FFIType.void },
-		toi_attach_x11_viewport: { args: [FFIType.ptr, FFIType.u64, FFIType.i32, FFIType.i32], returns: FFIType.ptr },
-		toi_resize_x11_viewport: { args: [FFIType.ptr, FFIType.i32, FFIType.i32], returns: FFIType.ptr },
-		toi_detach_viewport: { args: [FFIType.ptr], returns: FFIType.ptr },
+		toi_attach_viewport: { args: [FFIType.ptr, FFIType.ptr, FFIType.i32, FFIType.i32], returns: FFIType.ptr },
+		toi_resize_viewport: { args: [FFIType.ptr, FFIType.i32, FFIType.i32], returns: FFIType.ptr },
+		toi_viewport_surface_changed: { args: [FFIType.ptr], returns: FFIType.void },
+		toi_viewport_camera_input: {
+			args: [FFIType.ptr, FFIType.i32, FFIType.f32, FFIType.f32, FFIType.i32],
+			returns: FFIType.void,
+		},
+		toi_viewport_status: { args: [FFIType.ptr], returns: FFIType.ptr },
+		toi_detach_viewport: { args: [FFIType.ptr], returns: FFIType.void },
 	});
 }
 
@@ -171,35 +208,24 @@ function cString(value: string): Uint8Array {
 	return new TextEncoder().encode(`${value}\0`);
 }
 
-// Default core options for dev/run: writable project file at the repo root and
-// bundled assets from the repo tree. Overridable via env for packaging.
-export function defaultNativeCoreOptions(): NativeCoreOptions {
-	const root = findRepoRoot(process.cwd()) ?? findRepoRoot(import.meta.dir) ?? process.cwd();
+// Keep project data under Electrobun user data; resolve read-only assets from
+// Electrobun resources or the checkout.
+export function defaultNativeCoreOptions(userDataPath: string): NativeCoreOptions {
+	const root = findRepoRoot(process.cwd()) ?? findRepoRoot(import.meta.dir);
+	const packagedAssets = join(dirname(import.meta.dir), "assets");
+	const assetRoot = existsSync(packagedAssets) ? packagedAssets : join(root ?? process.cwd(), "assets");
 	return {
-		projectPath: process.env.TOI_PROJECT_PATH ?? join(root, "toi.project.json"),
-		assetRootPath: process.env.TOI_ASSET_ROOT ?? join(root, "assets"),
-		prototypeAssetPath:
-			process.env.TOI_PROTOTYPE_ASSET ?? join(root, "assets", "prototypes", "TOI_Module_Prototypes.obj"),
+		projectPath: join(userDataPath, "toi.project.json"),
+		assetRootPath: assetRoot,
+		prototypeAssetPath: join(assetRoot, "prototypes", "TOI_Module_Prototypes.obj"),
 	};
 }
 
 export function resolveNativeCorePath(): string {
-	const override = process.env.TOI_NATIVE_CORE_LIB;
-	if (override) {
-		if (!existsSync(override)) {
-			throw new Error(`TOI_NATIVE_CORE_LIB does not point at an existing file: ${override}`);
-		}
-		return override;
-	}
-
 	const fileName = `libtoi_native_core.${suffix}`;
 	const relative = [
-		join("build", "ovrtx", fileName), // dev/run: viewport + ovrtx growth preview
-		join("build", "desktop", fileName), // viewport only (test pattern)
-		join("build", "release-desktop", fileName),
-		join("build", "release-core", fileName),
-		join("build", "core", fileName),
-		fileName, // packaged: next to the bun executable
+		join("build", "ovrtx", fileName), // desktop app
+		join("build", "core", fileName), // FFI tests
 	];
 
 	const roots = candidateRoots();
@@ -212,14 +238,11 @@ export function resolveNativeCorePath(): string {
 		}
 	}
 
-	throw new Error(
-		`could not locate ${fileName}; searched ${roots.join(", ")}. ` +
-			"Build it with `cmake --build --preset core`, or set TOI_NATIVE_CORE_LIB.",
-	);
+	throw new Error(`could not locate ${fileName}; searched ${roots.join(", ")}. Build the native core first.`);
 }
 
 function candidateRoots(): string[] {
-	const starts = [process.cwd(), import.meta.dir];
+	const starts = [process.cwd(), import.meta.dir, dirname(import.meta.dir)];
 	const roots = new Set<string>();
 	for (const start of starts) {
 		roots.add(start);
