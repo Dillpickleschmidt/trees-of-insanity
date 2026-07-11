@@ -657,7 +657,7 @@ export function App() {
 				/>
 			</div>
 
-			<Viewport />
+			<Viewport hidden={showPlantTypes()} />
 		</div>
 	);
 }

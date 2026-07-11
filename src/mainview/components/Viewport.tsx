@@ -8,7 +8,7 @@
 // style reliably makes the view fill its pane. Electrobun's own sync controller
 // then tracks this element's box and resizes the native window to match.
 
-import { onCleanup, onMount } from "solid-js";
+import { createEffect, on, onCleanup, onMount } from "solid-js";
 import type { Rect } from "../../shared/shellRpc";
 import {
 	notifyViewportDetach,
@@ -22,7 +22,7 @@ import {
 const FILL_STYLE = { position: "absolute", top: "0", left: "0", width: "100%", height: "100%" } as const;
 const RESIZE_SETTLE_MS = 150;
 
-export function Viewport() {
+export function Viewport(props: { hidden: boolean }) {
 	let host: HTMLDivElement | undefined;
 	let element: WgpuTagElement | undefined;
 
@@ -41,6 +41,14 @@ export function Viewport() {
 		let pendingPointerDx = 0;
 		let pendingPointerDy = 0;
 		let cameraInputFrame: number | undefined;
+
+		createEffect(on(() => props.hidden, () => {
+			element?.syncDimensions(true);
+			if (attachedId !== undefined) {
+				notifyViewportSurfaceChanged(attachedId);
+			}
+		}));
+
 		const handleReady = (event: CustomEvent<{ id: number }>) => {
 			void announce(event.detail.id);
 		};
@@ -250,7 +258,7 @@ export function Viewport() {
 			<electrobun-wgpu
 				id="native-viewport"
 				passthrough
-				style={FILL_STYLE}
+				style={{ ...FILL_STYLE, transform: props.hidden ? "translateX(-200vw)" : "none" }}
 				ref={(el) => (element = el as WgpuTagElement)}
 			/>
 		</div>
