@@ -1,16 +1,12 @@
 dev:
 	bun run dev
 
-watch:
-	bun run dev:watch
-
 check:
 	bun run typecheck
 	bun run build:ui
 	cmake --preset core
 	cmake --build --preset core
 	ctest --preset core
-	bun run test:ffi
 
 core-config:
 	cmake --preset core
@@ -21,5 +17,5 @@ core-build:
 core-test:
 	ctest --preset core
 
-verify-shell:
-	bun run verify:shell
+desktop-build:
+	bun run build

@@ -1,10 +1,11 @@
 // Headless ovrtx smoke test: render one growth-preview frame to a CUDA buffer.
 // Exercises the full ovrtx path (renderer create -> open USD stage -> write mesh
 // points -> step -> map LdrColor + DistanceToCameraSD) without a window or Vulkan
-// swapchain. Requires an NVIDIA GPU and the ovrtx runtime on the library path.
+// viewport. Requires an NVIDIA GPU and the ovrtx runtime on the library path.
 
-#include "toi/app/application_controller.hpp"
+#include "toi/model/desktop_session.hpp"
 #include "toi/ovrtx/renderer_session.hpp"
+#include "toi/render/render_projection.hpp"
 
 #include <cuda_runtime_api.h>
 
@@ -41,33 +42,36 @@ std::filesystem::path fresh_project_path(std::string_view name)
 
 TEST_CASE("ovrtx renders a growth-preview frame to a CUDA buffer")
 {
-    auto controller = toi::app::ApplicationController::create({
+    auto session = toi::model::DesktopSession::create({
         .project_path = fresh_project_path("ovrtx-growth-preview"),
         .asset_root_path = asset_root_path(),
         .prototype_asset_path = prototype_path(),
     });
-    REQUIRE(controller.has_value());
-
-    auto stage = controller->growth_preview_stage_projection();
-    REQUIRE(stage.has_value());
-    CHECK(stage->mesh.vertex_count > 0);
-
-    auto session = toi::ovrtx::RendererSession::create({.asset_search_path = asset_root_path()});
-    INFO((session.has_value() ? std::string{} : session.error().message));
     REQUIRE(session.has_value());
 
-    auto submitted = session->submit_growth_preview(*stage);
+    auto snapshot = session->module_preview_snapshot();
+    REQUIRE(snapshot.has_value());
+    const auto stage = toi::render::make_growth_preview_stage_projection(
+        snapshot->snapshot, snapshot->camera_snapshot, snapshot->prepared_prototype,
+        {.asset_search_path = asset_root_path()});
+    CHECK(stage.mesh.vertex_count > 0);
+
+    auto renderer = toi::ovrtx::RendererSession::create({.asset_search_path = asset_root_path()});
+    INFO((renderer.has_value() ? std::string{} : renderer.error().message));
+    REQUIRE(renderer.has_value());
+
+    auto submitted = renderer->submit_growth_preview(stage);
     INFO((submitted.has_value() ? std::string{} : submitted.error().message));
     REQUIRE(submitted.has_value());
 
     // Render color + DistanceToCameraSD together, as the depth-aware guide
     // overlay does; requesting distance must not disturb the color output.
-    auto frame = session->render_cuda_frame(toi::ovrtx::RenderFrameOutputs::ColorAndDistance);
+    auto frame = renderer->render_cuda_frame(toi::ovrtx::RenderFrameOutputs::ColorAndDistance);
     INFO((frame.has_value() ? std::string{} : frame.error().message));
     REQUIRE(frame.has_value());
 
-    CHECK(frame->width == stage->usd_stage.width);
-    CHECK(frame->height == stage->usd_stage.height);
+    CHECK(frame->width == stage.usd_stage.width);
+    CHECK(frame->height == stage.usd_stage.height);
     CHECK(frame->channel_count >= 4);
     REQUIRE(frame->color_cuda_array != nullptr);
 

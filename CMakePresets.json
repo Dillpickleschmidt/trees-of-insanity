@@ -3,12 +3,30 @@
   "configurePresets": [
     {
       "name": "core",
-      "displayName": "Native core",
+      "displayName": "Headless desktop model",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/core",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "TOI_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "desktop",
+      "displayName": "Qt desktop shell",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/desktop",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "TOI_BUILD_TESTS": "ON",
+        "TOI_BUILD_DESKTOP": "ON",
+        "TOI_ENABLE_OVRTX": "ON",
+        "CMAKE_PREFIX_PATH": "${sourceDir}/.cache/ovrtx/current",
+        "CUDAToolkit_ROOT": "/opt/cuda",
+        "Qt6WebChannel_DIR": "${sourceDir}/.cache/qt-root/usr/lib/cmake/Qt6WebChannel",
+        "Qt6WebEngineCore_DIR": "${sourceDir}/.cache/qt-root/usr/lib/cmake/Qt6WebEngineCore",
+        "Qt6WebEngineQuick_DIR": "${sourceDir}/.cache/qt-root/usr/lib/cmake/Qt6WebEngineQuick",
+        "Qt6Positioning_DIR": "${sourceDir}/.cache/qt-root/usr/lib/cmake/Qt6Positioning"
       }
     },
     {
@@ -29,6 +47,10 @@
     {
       "name": "core",
       "configurePreset": "core"
+    },
+    {
+      "name": "desktop",
+      "configurePreset": "desktop"
     },
     {
       "name": "ovrtx",

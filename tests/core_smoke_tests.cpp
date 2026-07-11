@@ -1,13 +1,11 @@
-#include "toi/app/application_controller.hpp"
+#include "toi/model/desktop_session.hpp"
 #include "toi/import/obj_importer.hpp"
-#include "toi/native/native_core.h"
+#include "toi/render/render_projection.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 
@@ -27,14 +25,6 @@ std::filesystem::path fresh_project_path(std::string_view name)
     return path;
 }
 
-std::string take_string(char* value)
-{
-    REQUIRE(value != nullptr);
-    std::string result(value);
-    toi_free_string(value);
-    return result;
-}
-
 } // namespace
 
 TEST_CASE("bundled OBJ imports branch module prototypes")
@@ -49,17 +39,17 @@ TEST_CASE("bundled OBJ imports branch module prototypes")
     CHECK(library->prototypes[*cube_008].segments.size() == 25);
 }
 
-TEST_CASE("application controller opens default module workspace")
+TEST_CASE("application session opens default module workspace")
 {
-    const auto project_path = fresh_project_path("controller-default-state");
-    auto controller = toi::app::ApplicationController::create({
+    const auto project_path = fresh_project_path("session-default-state");
+    auto session = toi::model::DesktopSession::create({
         .project_path = project_path,
         .asset_root_path = prototype_path().parent_path().parent_path(),
         .prototype_asset_path = prototype_path(),
     });
-    REQUIRE(controller.has_value());
+    REQUIRE(session.has_value());
 
-    auto state = controller->state();
+    auto state = session->state();
     REQUIRE(state.has_value());
     CHECK(state->active_workspace == "module");
     CHECK(state->active_prototype_id == 8);
@@ -69,50 +59,32 @@ TEST_CASE("application controller opens default module workspace")
 
 TEST_CASE("age scrubbing keeps the growth-preview stage topology stable")
 {
-    auto controller = toi::app::ApplicationController::create({
+    auto session = toi::model::DesktopSession::create({
         .project_path = fresh_project_path("age-scrub-stage-stability"),
         .asset_root_path = prototype_path().parent_path().parent_path(),
         .prototype_asset_path = prototype_path(),
     });
-    REQUIRE(controller.has_value());
+    REQUIRE(session.has_value());
 
-    auto state = controller->state();
+    auto state = session->state();
     REQUIRE(state.has_value());
 
-    REQUIRE(controller->set_module_physiological_age(0.0F).has_value());
-    auto young = controller->growth_preview_stage_projection();
-    REQUIRE(young.has_value());
+    REQUIRE(session->set_module_physiological_age(0.0F).has_value());
+    auto young_snapshot = session->module_preview_snapshot();
+    REQUIRE(young_snapshot.has_value());
+    const auto young = toi::render::make_growth_preview_stage_projection(
+        young_snapshot->snapshot, young_snapshot->camera_snapshot, young_snapshot->prepared_prototype);
 
-    REQUIRE(controller->set_module_physiological_age(state->fully_grown_age).has_value());
-    auto mature = controller->growth_preview_stage_projection();
-    REQUIRE(mature.has_value());
+    REQUIRE(session->set_module_physiological_age(state->fully_grown_age).has_value());
+    auto mature_snapshot = session->module_preview_snapshot();
+    REQUIRE(mature_snapshot.has_value());
+    const auto mature = toi::render::make_growth_preview_stage_projection(
+        mature_snapshot->snapshot, mature_snapshot->camera_snapshot, mature_snapshot->prepared_prototype);
 
     // The USD stage text (topology, lights, camera product) is identical across
     // ages; only the mesh point attributes change. That lets the renderer skip a
     // stage reload on age scrub — the "no blink" property.
-    CHECK(young->usd_stage.text == mature->usd_stage.text);
+    CHECK(young.usd_stage.text == mature.usd_stage.text);
     // The visible geometry still changes with age.
-    CHECK(young->mesh.vertex_count != mature->mesh.vertex_count);
-}
-
-TEST_CASE("C ABI creates core and handles app.get_state")
-{
-    const auto project_path = fresh_project_path("c-abi-app-state");
-    const auto options = nlohmann::json{
-        {"project_path", project_path.string()},
-        {"asset_root_path", prototype_path().parent_path().parent_path().string()},
-        {"prototype_asset_path", prototype_path().string()},
-    };
-
-    ToiNativeCore* core = toi_create(options.dump().c_str());
-    INFO(take_string(toi_last_error_json()));
-    REQUIRE(core != nullptr);
-
-    const auto request = nlohmann::json{{"id", 1}, {"method", "app.get_state"}, {"params", nlohmann::json::object()}};
-    const auto response = nlohmann::json::parse(take_string(toi_handle_command(core, request.dump().c_str())));
-    toi_destroy(core);
-
-    REQUIRE(response.at("ok").get<bool>());
-    CHECK(response.at("result").at("active_prototype_id").get<std::size_t>() == 8);
-    CHECK(response.at("result").at("active_workspace").get<std::string>() == "module");
+    CHECK(young.mesh.vertex_count != mature.mesh.vertex_count);
 }
