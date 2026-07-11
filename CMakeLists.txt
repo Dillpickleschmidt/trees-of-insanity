@@ -200,10 +200,10 @@ if(TOI_BUILD_TESTS)
     endif()
 
     add_executable(toi_core_tests
-        tests/core_smoke_tests.cpp
-        tests/plant_tests.cpp
-        tests/plant_render_tests.cpp
-        tests/plant_session_tests.cpp
+        desktop/tests/model/model_smoke_tests.cpp
+        desktop/tests/model/imported_growth_tests.cpp
+        desktop/tests/graphics/render_projection_tests.cpp
+        desktop/tests/model/plant_session_tests.cpp
     )
     target_link_libraries(toi_core_tests PRIVATE
         toi_desktop_model
@@ -219,7 +219,7 @@ if(TOI_BUILD_TESTS)
 
     if(TOI_ENABLE_OVRTX)
         add_executable(toi_ovrtx_tests
-            tests/ovrtx_smoke_tests.cpp
+            desktop/tests/graphics/ovrtx_smoke_tests.cpp
         )
         target_link_libraries(toi_ovrtx_tests PRIVATE
             toi_desktop_model
