@@ -139,9 +139,6 @@ endif()
 if(TOI_BUILD_DESKTOP)
     find_package(CUDAToolkit REQUIRED)
     find_package(Vulkan REQUIRED)
-    # Device adoption requires QRhi's private Vulkan API. Exact Qt pinning makes
-    # that intentional coupling safe; suppress Qt's generic private-module warning.
-    set(QT_NO_PRIVATE_MODULE_WARNING ON)
     find_package(Qt6 6.11.1 EXACT REQUIRED COMPONENTS Core Gui GuiPrivate Qml Quick WebChannel WebEngineQuick)
     qt_standard_project_setup()
 
