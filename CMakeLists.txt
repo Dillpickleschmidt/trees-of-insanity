@@ -112,7 +112,6 @@ if(TOI_ENABLE_OVRTX)
     find_package(Vulkan REQUIRED)
     find_package(X11 REQUIRED)
     find_program(GLSLC_EXECUTABLE glslc REQUIRED)
-    find_program(XXD_EXECUTABLE xxd REQUIRED)
 
     set(TOI_SHADER_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/toi/viewport/shaders)
     file(MAKE_DIRECTORY ${TOI_SHADER_GEN_DIR})
@@ -123,8 +122,12 @@ if(TOI_ENABLE_OVRTX)
         add_custom_command(
             OUTPUT ${cpp}
             COMMAND ${GLSLC_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/${source} -o ${spv}
-            COMMAND ${XXD_EXECUTABLE} -i -n ${symbol} ${spv} ${cpp}
-            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${source}
+            COMMAND ${CMAKE_COMMAND}
+                -DINPUT=${spv}
+                -DOUTPUT=${cpp}
+                -DSYMBOL=${symbol}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_binary.cmake
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${source} cmake/embed_binary.cmake
             VERBATIM
         )
         set_source_files_properties(${cpp} PROPERTIES GENERATED TRUE)

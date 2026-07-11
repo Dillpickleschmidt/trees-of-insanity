@@ -13,7 +13,6 @@ type VerifyResult = {
 	reason: string;
 	reportPath: string;
 	logPath: string;
-	screenshotPath?: string;
 	events: AutomationEvent[];
 	exitCode: number | null;
 };
@@ -23,7 +22,6 @@ const outputDir = join(root, "artifacts", "automation");
 const stamp = new Date().toISOString().replaceAll(":", "-");
 const reportPath = join(outputDir, `shell-${stamp}.jsonl`);
 const logPath = join(outputDir, `shell-${stamp}.log`);
-const screenshotPath = join(outputDir, `shell-${stamp}.png`);
 const timeoutMs = Number(process.env.TOI_VERIFY_TIMEOUT_MS ?? 300_000);
 
 mkdirSync(outputDir, { recursive: true });
@@ -59,7 +57,6 @@ while (Date.now() - started < timeoutMs) {
 			reason: String(attached?.error ?? viewportStatus?.message ?? "native viewport failed"),
 			reportPath,
 			logPath,
-			screenshotPath: captureScreenshot(screenshotPath),
 			events,
 			exitCode,
 		};
@@ -91,7 +88,6 @@ while (Date.now() - started < timeoutMs) {
 				reason: `native viewport resolution mismatch: expected ${expectedWidth}x${expectedHeight}, got ${dimensions.join("/")}`,
 				reportPath,
 				logPath,
-				screenshotPath: captureScreenshot(screenshotPath),
 				events,
 				exitCode,
 			};
@@ -102,7 +98,6 @@ while (Date.now() - started < timeoutMs) {
 			reason: `native growth frame presented at ${expectedWidth}x${expectedHeight}`,
 			reportPath,
 			logPath,
-			screenshotPath: captureScreenshot(screenshotPath),
 			events,
 			exitCode,
 		};
@@ -115,7 +110,6 @@ while (Date.now() - started < timeoutMs) {
 			reason: fatal,
 			reportPath,
 			logPath,
-			screenshotPath: captureScreenshot(screenshotPath),
 			events,
 			exitCode,
 		};
@@ -127,7 +121,6 @@ while (Date.now() - started < timeoutMs) {
 			reason: `process exited before viewport ready (${exitCode})`,
 			reportPath,
 			logPath,
-			screenshotPath: captureScreenshot(screenshotPath),
 			events,
 			exitCode,
 		};
@@ -143,7 +136,6 @@ if (result === undefined) {
 		reason: `timeout after ${timeoutMs}ms`,
 		reportPath,
 		logPath,
-		screenshotPath: captureScreenshot(screenshotPath),
 		events,
 		exitCode,
 	};
@@ -188,21 +180,6 @@ function firstFatalLogLine(path: string): string | undefined {
 	];
 	const lines = readFileSync(path, "utf8").split("\n");
 	return lines.find((line) => fatalPatterns.some((pattern) => line.includes(pattern)));
-}
-
-function captureScreenshot(path: string): string | undefined {
-	if (!process.env.DISPLAY) {
-		return undefined;
-	}
-	try {
-		Bun.spawnSync(["ffmpeg", "-y", "-f", "x11grab", "-i", process.env.DISPLAY, "-frames:v", "1", path], {
-			stdout: "ignore",
-			stderr: "ignore",
-		});
-		return existsSync(path) ? path : undefined;
-	} catch {
-		return undefined;
-	}
 }
 
 async function stopProcessGroup(pid: number | undefined) {

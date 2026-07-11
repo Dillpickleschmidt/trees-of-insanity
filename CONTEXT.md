@@ -32,10 +32,6 @@ _Avoid_: Ecosystem level, ecosystem view, ecosystem editor
 A small live preview of an inactive workspace that can be selected to make that workspace active.
 _Avoid_: Tab, thumbnail, workspace button
 
-**Agent-control mode**:
-A human-input automation seam for the running desktop shell, using screenshots and screenshot-coordinate mouse and keyboard events.
-_Avoid_: Widget scripting, DOM automation, viewport-specific automation, semantic app commands
-
 **Plant**:
 An individual simulated organism in an ecosystem, governed by one plant type.
 _Avoid_: Tree, instance, actor

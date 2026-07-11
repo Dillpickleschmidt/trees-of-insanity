@@ -20,7 +20,8 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "TOI_BUILD_TESTS": "ON",
         "TOI_ENABLE_OVRTX": "ON",
-        "CMAKE_PREFIX_PATH": "${sourceDir}/.cache/ovrtx/current"
+        "CMAKE_PREFIX_PATH": "${sourceDir}/.cache/ovrtx/current",
+        "CUDAToolkit_ROOT": "/opt/cuda"
       }
     }
   ],

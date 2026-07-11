@@ -7,8 +7,7 @@
 #include <string_view>
 #include <utility>
 
-// SPIR-V embedded by the build (glslc + xxd); see CMakeLists. xxd emits
-// non-const `unsigned char[]` / `unsigned int` symbols.
+// SPIR-V compiled and embedded as byte arrays by the build.
 extern unsigned char overlay_lines_vert_spv[];
 extern unsigned int overlay_lines_vert_spv_len;
 extern unsigned char overlay_lines_frag_spv[];
