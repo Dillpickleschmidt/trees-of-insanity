@@ -1,17 +1,9 @@
-# Domain Docs
+# Domain-context routing
 
-This repo uses a single-context domain-doc layout:
+Use one context at a time:
 
-```
-/
-├── CONTEXT.md
-├── docs/adr/
-└── src/
-```
+- Repository structure/build boundaries: `/CONTEXT.md` and `/docs/architecture.md`.
+- Growth model/API/numerics: `/packages/growth/CONTEXT.md` and its `docs/`.
+- Desktop model/graphics/shell/UI: `/desktop/CONTEXT.md` and its `docs/`.
 
-Before exploring, read:
-
-- `CONTEXT.md`
-- ADRs in `docs/adr/` touching the area being changed
-
-Use glossary terms from `CONTEXT.md`. Flag ADR conflicts explicitly.
+For cross-boundary work, read each affected context and preserve the dependency direction documented at repository root.
