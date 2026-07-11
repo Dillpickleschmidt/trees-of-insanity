@@ -25,9 +25,7 @@ struct ImportError {
 
 template <class T> using Result = std::expected<T, ImportError>;
 
-struct BranchModulePrototypeLibrary {
-    std::vector<growth::BranchModulePrototype> prototypes;
-};
+using BranchModulePrototypeLibrary = growth::BranchModulePrototypeLibrary;
 
 [[nodiscard]] Result<growth::BranchModulePrototype>
 load_branch_module_prototype_from_obj(const std::filesystem::path& path, std::string_view object_name,

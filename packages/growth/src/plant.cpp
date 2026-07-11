@@ -1,4 +1,4 @@
-#include "toi/plant/plant.hpp"
+#include "toi/growth/growth.hpp"
 
 #include <array>
 #include <algorithm>
@@ -8,17 +8,8 @@
 #include <utility>
 #include <vector>
 
-namespace toi::plant {
+namespace toi::growth {
 namespace {
-
-using growth::add;
-using growth::BranchModulePrototype;
-using growth::distance;
-using growth::GrowthSnapshot;
-using growth::normalize;
-using growth::PlantTypeParameters;
-using growth::scale;
-using growth::subtract;
 
 // Fixed simulation step. Plant age p_t and each module age a_u are integrated with
 // forward Euler at this step. Fixed (not adaptive) so develop_plant(age) trajectories
@@ -167,7 +158,7 @@ struct SimModule {
 {
     std::vector<Vec3> points;
     const Vec3 root = prototype.prepared.nodes[prototype.prepared.root_node].position;
-    auto snapshot = growth::make_growth_snapshot(prototype.prepared, plant_type, age);
+    auto snapshot = make_growth_snapshot(prototype.prepared, plant_type, age);
     if (!snapshot) {
         return points;
     }
@@ -205,7 +196,7 @@ struct SimModule {
                                       const std::vector<SimModule>& modules, const std::vector<Sphere>& spheres)
 {
     const float own_volume = sphere_volume(sphere.radius);
-    if (own_volume <= growth::kEpsilon) {
+    if (own_volume <= kEpsilon) {
         return 0.0F;
     }
     float total = 0.0F;
@@ -316,7 +307,7 @@ void distribute_vigor(std::vector<SimModule>& modules, const std::vector<Prototy
             }
             const float denominator = lambda * main_light + (1.0F - lambda) * rest_light;
             const float main_vigor =
-                denominator <= growth::kEpsilon ? available : available * lambda * main_light / denominator;
+                denominator <= kEpsilon ? available : available * lambda * main_light / denominator;
             modules[ordered[i]].vigor = main_vigor;
             available -= main_vigor;
         }
@@ -347,7 +338,7 @@ void rebuild_children(std::vector<SimModule>& modules)
     float collisions = 0.0F;
     if (bounds.valid) {
         const float own_volume = sphere_volume(bounds.sphere.radius);
-        if (own_volume > growth::kEpsilon) {
+        if (own_volume > kEpsilon) {
             for (std::size_t other = 0; other < modules.size(); ++other) {
                 if (other == parent_index) {
                     continue;
@@ -385,7 +376,7 @@ void rebuild_children(std::vector<SimModule>& modules)
         for (const auto& [axis, angle] : candidates) {
             const Frame candidate = rotate_frame(frame, axis, angle);
             const float cost = orientation_cost(prototype, plant_type, candidate, spheres, modules, parent_index);
-            if (cost + growth::kEpsilon < best_cost) {
+            if (cost + kEpsilon < best_cost) {
                 best_cost = cost;
                 best_frame = candidate;
                 improved = true;
@@ -399,16 +390,16 @@ void rebuild_children(std::vector<SimModule>& modules)
     return frame;
 }
 
-[[nodiscard]] Result<std::vector<Prototype>> prepare_prototypes(const import::BranchModulePrototypeLibrary& library,
+[[nodiscard]] PlantResult<std::vector<Prototype>> prepare_prototypes(const BranchModulePrototypeLibrary& library,
                                                                 const PlantTypeParameters& plant_type)
 {
     std::vector<Prototype> prototypes;
     for (const auto& raw : library.prototypes) {
-        auto prepared = growth::prepare_branch_module_prototype(raw, plant_type);
+        auto prepared = prepare_branch_module_prototype(raw, plant_type);
         if (!prepared) {
-            continue; // skip non-branch objects (e.g. leaf quads without valid segments)
+            continue;
         }
-        auto mature = growth::fully_grown_age(*prepared, plant_type);
+        auto mature = fully_grown_age(*prepared, plant_type);
         prototypes.push_back({.prepared = std::move(*prepared),
                               .seed_lambda = 0.0F,
                               .seed_determinacy = 0.0F,
@@ -450,7 +441,7 @@ void step_geometry(const std::vector<SimModule>& modules, const std::vector<Prot
         if (bounds.valid) {
             spheres[index] = bounds.sphere;
         } else {
-            spheres[index] = {.center = modules[index].frame.origin, .radius = growth::kEpsilon};
+            spheres[index] = {.center = modules[index].frame.origin, .radius = kEpsilon};
         }
     }
 }
@@ -547,7 +538,7 @@ void attach_modules(std::vector<SimModule>& modules, const std::vector<Prototype
         if (terminal_vigor <= threshold) {
             continue;
         }
-        const float determinacy_prime = plant_type.root_max_vigor <= growth::kEpsilon
+        const float determinacy_prime = plant_type.root_max_vigor <= kEpsilon
                                             ? determinacy
                                             : modules[index].vigor * determinacy / plant_type.root_max_vigor;
         const Vec3 root_local = prototype.prepared.nodes[prototype.prepared.root_node].position;
@@ -578,13 +569,13 @@ void attach_modules(std::vector<SimModule>& modules, const std::vector<Prototype
 
 } // namespace
 
-Result<PlantArchitecture> develop_plant(const PlantTypeParameters& plant_type,
-                                        const import::BranchModulePrototypeLibrary& library, float plant_age)
+PlantResult<PlantArchitecture> develop_plant(const PlantTypeParameters& plant_type,
+                                        const BranchModulePrototypeLibrary& library, float plant_age)
 {
     if (!std::isfinite(plant_age) || plant_age < 0.0F) {
         return std::unexpected(invalid_input("plant age must be finite and non-negative"));
     }
-    if (!growth::plant_type_parameters_are_valid(plant_type)) {
+    if (!plant_type_parameters_are_valid(plant_type)) {
         return std::unexpected(invalid_input("plant type parameters are invalid"));
     }
     auto prototypes = prepare_prototypes(library, plant_type);
@@ -597,8 +588,8 @@ Result<PlantArchitecture> develop_plant(const PlantTypeParameters& plant_type,
     modules.push_back(make_root(*prototypes, plant_type));
 
     const float root_mature = (*prototypes)[modules.front().prototype_index].mature_age;
-    const float lifespan = std::max(growth::kEpsilon, plant_type.plant_growth_rate * plant_type.plant_max_age);
-    const float age_scale = kLifespanMaturities * std::max(root_mature, growth::kEpsilon) / lifespan;
+    const float lifespan = std::max(kEpsilon, plant_type.plant_growth_rate * plant_type.plant_max_age);
+    const float age_scale = kLifespanMaturities * std::max(root_mature, kEpsilon) / lifespan;
 
     std::vector<Sphere> spheres;
     float plant_clock = 0.0F;
@@ -607,7 +598,7 @@ Result<PlantArchitecture> develop_plant(const PlantTypeParameters& plant_type,
 
     // Fixed step of kSimStep, with a final partial step so the clock lands exactly on
     // plant_age (no rounding overshoot; develop_plant(0.6) integrates to 0.6, not 1.0).
-    while (remaining > growth::kEpsilon && guard < kMaxSimSteps) {
+    while (remaining > kEpsilon && guard < kMaxSimSteps) {
         const float dt = std::min(kSimStep, remaining);
 
         refresh_vigor(modules, *prototypes, plant_type, spheres, plant_clock);
@@ -615,9 +606,9 @@ Result<PlantArchitecture> develop_plant(const PlantTypeParameters& plant_type,
         rebuild_children(modules);
 
         for (SimModule& module : modules) {
-            const growth::VigorInputs vigor{
+            const VigorInputs vigor{
                 .vigor = module.vigor, .min_vigor = threshold, .max_vigor = plant_type.root_max_vigor};
-            const auto rate = growth::growth_rate(plant_type, vigor);
+            const auto rate = growth_rate(plant_type, vigor);
             if (rate) {
                 module.age += *rate * dt * age_scale; // Paper: da_u/dt = Upsilon(u)
             }
@@ -648,7 +639,7 @@ Result<PlantArchitecture> develop_plant(const PlantTypeParameters& plant_type,
     architecture.modules.reserve(modules.size());
     for (const SimModule& module : modules) {
         const Prototype& prototype = (*prototypes)[module.prototype_index];
-        auto snapshot = growth::make_growth_snapshot(prototype.prepared, plant_type, module.age);
+        auto snapshot = make_growth_snapshot(prototype.prepared, plant_type, module.age);
         PlacedModule placed;
         placed.prototype_index = module.prototype_index;
         placed.parent_module = module.parent;
@@ -684,4 +675,4 @@ PlantArchitectureSummary summarize(const PlantArchitecture& architecture)
     return summary;
 }
 
-} // namespace toi::plant
+} // namespace toi::growth

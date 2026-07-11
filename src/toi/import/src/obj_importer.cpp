@@ -20,6 +20,8 @@ using growth::BranchNode;
 using growth::BranchSegment;
 using growth::Vec3;
 
+constexpr float kModulePrototypeImportScale = 200.0F;
+
 struct ObjObjectData {
     std::string name;
     std::vector<std::size_t> vertex_ids;
@@ -265,7 +267,7 @@ build_prototype(const ObjObjectData& object, const std::vector<Vec3>& global_ver
         const Vec3 app_position = obj_to_app_coordinates(*raw_position);
         nodes.push_back({
             .position =
-                growth::scale(growth::subtract(app_position, root_position), growth::kModulePrototypeImportScale),
+                growth::scale(growth::subtract(app_position, root_position), kModulePrototypeImportScale),
             .physiological_age = 0.0F,
         });
     }

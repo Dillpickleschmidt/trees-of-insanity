@@ -41,7 +41,7 @@ make_chain_build_requests(const growth::GrowthSnapshot& snapshot,
 [[nodiscard]] std::vector<MeshGeometry> build_meshes(const std::vector<ChainBuildRequest>& requests);
 [[nodiscard]] std::vector<GrowthPreviewMeshAttributes> mesh_attributes_for(const std::vector<MeshGeometry>& meshes);
 [[nodiscard]] GrowthPreviewStageProjection
-make_plant_preview_stage_projection_impl(const plant::PlantArchitecture& architecture,
+make_plant_preview_stage_projection_impl(const growth::PlantArchitecture& architecture,
                                          GrowthPreviewStageOptions options);
 [[nodiscard]] GrowthPreviewCamera make_camera_from_bounds(Bounds bounds, int requested_width, int requested_height);
 
@@ -54,7 +54,7 @@ GrowthPreviewStageProjection make_growth_preview_stage_projection(
     return make_growth_preview_stage_projection_impl(snapshot, camera_snapshot, prepared_prototype, options);
 }
 
-GrowthPreviewStageProjection make_plant_preview_stage_projection(const plant::PlantArchitecture& architecture,
+GrowthPreviewStageProjection make_plant_preview_stage_projection(const growth::PlantArchitecture& architecture,
                                                                 GrowthPreviewStageOptions options)
 {
     return make_plant_preview_stage_projection_impl(architecture, options);
@@ -894,7 +894,7 @@ GrowthPreviewUsdStage make_growth_preview_usd_stage(const std::vector<MeshGeomet
     };
 }
 
-[[nodiscard]] growth::Vec3 module_to_world(const plant::PlacedModule& module, growth::Vec3 local,
+[[nodiscard]] growth::Vec3 module_to_world(const growth::PlacedModule& module, growth::Vec3 local,
                                            growth::Vec3 root_local)
 {
     const growth::Vec3 relative = growth::subtract(local, root_local);
@@ -903,7 +903,7 @@ GrowthPreviewUsdStage make_growth_preview_usd_stage(const std::vector<MeshGeomet
                                                   growth::scale(module.basis_z, relative.z)));
 }
 
-GrowthPreviewStageProjection make_plant_preview_stage_projection_impl(const plant::PlantArchitecture& architecture,
+GrowthPreviewStageProjection make_plant_preview_stage_projection_impl(const growth::PlantArchitecture& architecture,
                                                                      GrowthPreviewStageOptions options)
 {
     std::vector<MeshGeometry> meshes;

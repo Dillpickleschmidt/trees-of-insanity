@@ -136,7 +136,7 @@ void save_viewport_preferences(const std::filesystem::path& project_path, const 
     return make_error(ApplicationError::Code::Growth, error.message);
 }
 
-[[nodiscard]] ApplicationError from_plant_error(const plant::PlantError& error)
+[[nodiscard]] ApplicationError from_plant_error(const growth::PlantError& error)
 {
     return make_error(ApplicationError::Code::Growth, error.message);
 }
@@ -389,13 +389,13 @@ ApplicationController::growth_preview_stage_projection(render::GrowthPreviewStag
                                                         options);
 }
 
-Result<plant::PlantArchitecture> ApplicationController::plant_architecture() const
+Result<growth::PlantArchitecture> ApplicationController::plant_architecture() const
 {
     const auto* active_plant = project::active_plant_type(project_);
     if (active_plant == nullptr) {
         return std::unexpected(make_error(ApplicationError::Code::NotFound, "active plant type does not exist"));
     }
-    auto architecture = plant::develop_plant(active_plant->parameters, prototype_library_, plant_physiological_age_);
+    auto architecture = growth::develop_plant(active_plant->parameters, prototype_library_, plant_physiological_age_);
     if (!architecture) {
         return std::unexpected(from_plant_error(architecture.error()));
     }
@@ -408,11 +408,11 @@ Result<PlantGrowthSummary> ApplicationController::plant_growth_summary() const
     if (active_plant == nullptr) {
         return std::unexpected(make_error(ApplicationError::Code::NotFound, "active plant type does not exist"));
     }
-    auto architecture = plant::develop_plant(active_plant->parameters, prototype_library_, plant_physiological_age_);
+    auto architecture = growth::develop_plant(active_plant->parameters, prototype_library_, plant_physiological_age_);
     if (!architecture) {
         return std::unexpected(from_plant_error(architecture.error()));
     }
-    const auto summary = plant::summarize(*architecture);
+    const auto summary = growth::summarize(*architecture);
     return PlantGrowthSummary{
         .plant_physiological_age = architecture->plant_age,
         .plant_fully_grown_age = active_plant->parameters.plant_max_age,
@@ -452,7 +452,7 @@ ApplicationController::plant_preset_preview_stage_projection(char preset_key, st
     // Omitted age previews the fully-grown plant; a provided age (including 0) is used as-is.
     const float requested = plant_age ? *plant_age : preset->plant_max_age;
     const float clamped = std::clamp(requested, 0.0F, preset->plant_max_age);
-    auto architecture = plant::develop_plant(*preset, prototype_library_, clamped);
+    auto architecture = growth::develop_plant(*preset, prototype_library_, clamped);
     if (!architecture) {
         return std::unexpected(from_plant_error(architecture.error()));
     }

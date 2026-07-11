@@ -1,7 +1,6 @@
 #pragma once
 
 #include "toi/growth/growth.hpp"
-#include "toi/plant/plant.hpp"
 
 #include <array>
 #include <cstddef>
@@ -73,7 +72,7 @@ struct GrowthPreviewStageProjection {
 // space, meshed with the shared chain builder, and accumulated; the camera frames the
 // whole plant.
 [[nodiscard]] GrowthPreviewStageProjection
-make_plant_preview_stage_projection(const plant::PlantArchitecture& architecture,
+make_plant_preview_stage_projection(const growth::PlantArchitecture& architecture,
                                     GrowthPreviewStageOptions options = {});
 [[nodiscard]] std::array<double, 16> growth_preview_camera_transform_matrix(const GrowthPreviewCamera& camera);
 

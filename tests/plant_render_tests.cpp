@@ -1,6 +1,5 @@
 #include "toi/growth/growth.hpp"
 #include "toi/import/obj_importer.hpp"
-#include "toi/plant/plant.hpp"
 #include "toi/render/render_projection.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -22,12 +21,12 @@ toi::import::BranchModulePrototypeLibrary load_library()
     return std::move(*library);
 }
 
-toi::plant::PlantArchitecture develop(char preset_key, float age)
+toi::growth::PlantArchitecture develop(char preset_key, float age)
 {
     const auto library = load_library();
     const auto plant_type = toi::growth::plant_type_preset_by_key(preset_key);
     REQUIRE(plant_type.has_value());
-    auto architecture = toi::plant::develop_plant(*plant_type, library, age);
+    auto architecture = toi::growth::develop_plant(*plant_type, library, age);
     REQUIRE(architecture.has_value());
     return std::move(*architecture);
 }

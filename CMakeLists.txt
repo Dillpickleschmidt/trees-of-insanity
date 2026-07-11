@@ -16,13 +16,7 @@ include(CTest)
 
 find_package(nlohmann_json CONFIG REQUIRED)
 
-add_library(toi_growth
-    src/toi/growth/src/growth.cpp
-)
-target_include_directories(toi_growth PUBLIC
-    src/toi/growth/include
-)
-target_compile_features(toi_growth PUBLIC cxx_std_23)
+add_subdirectory(packages/growth)
 
 add_library(toi_import
     src/toi/import/src/obj_importer.cpp
@@ -33,15 +27,6 @@ target_include_directories(toi_import PUBLIC
 target_link_libraries(toi_import PUBLIC toi_growth)
 target_compile_features(toi_import PUBLIC cxx_std_23)
 
-add_library(toi_plant
-    src/toi/plant/src/plant.cpp
-)
-target_include_directories(toi_plant PUBLIC
-    src/toi/plant/include
-)
-target_link_libraries(toi_plant PUBLIC toi_growth toi_import)
-target_compile_features(toi_plant PUBLIC cxx_std_23)
-
 add_library(toi_render
     src/toi/render/src/orbit_view.cpp
     src/toi/render/src/render_projection.cpp
@@ -50,7 +35,7 @@ add_library(toi_render
 target_include_directories(toi_render PUBLIC
     src/toi/render/include
 )
-target_link_libraries(toi_render PUBLIC toi_growth toi_plant)
+target_link_libraries(toi_render PUBLIC toi_growth)
 target_compile_features(toi_render PUBLIC cxx_std_23)
 
 add_library(toi_project
@@ -195,7 +180,6 @@ if(TOI_BUILD_TESTS)
     )
     target_link_libraries(toi_core_tests PRIVATE
         toi_app
-        toi_plant
         toi_import
         toi_native_core
         Catch2::Catch2WithMain

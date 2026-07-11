@@ -11,7 +11,6 @@
 namespace toi::growth {
 
 constexpr float kEpsilon = 1.0e-6F;
-constexpr float kModulePrototypeImportScale = 200.0F;
 
 struct Vec3 {
     float x = 0.0F;
@@ -104,6 +103,10 @@ struct BranchModulePrototype {
     std::vector<std::optional<std::size_t>> incoming_segment_by_node;
 };
 
+struct BranchModulePrototypeLibrary {
+    std::vector<BranchModulePrototype> prototypes;
+};
+
 enum class SegmentState {
     Growing,
     Mature,
@@ -142,5 +145,56 @@ compute_pipe_diameter_factors(const std::vector<BranchSegment>& segments,
 [[nodiscard]] Result<void> require_valid_branch_module_prototype(const BranchModulePrototype& prototype);
 
 [[nodiscard]] std::string to_string(SegmentState state);
+
+inline constexpr std::size_t kNoParent = static_cast<std::size_t>(-1);
+
+struct PlantError {
+    enum class Code {
+        InvalidInput,
+        InvalidPrototype,
+        EmptyLibrary,
+    };
+
+    Code code = Code::InvalidInput;
+    std::string message;
+};
+
+template <class T> using PlantResult = std::expected<T, PlantError>;
+
+struct PlacedModule {
+    std::size_t prototype_index = 0;
+    std::size_t parent_module = kNoParent;
+    std::size_t parent_terminal_node = 0;
+    Vec3 origin;
+    Vec3 basis_x{1.0F, 0.0F, 0.0F};
+    Vec3 basis_y{0.0F, 1.0F, 0.0F};
+    Vec3 basis_z{0.0F, 0.0F, 1.0F};
+    // Paper: a_u, module physiological age.
+    float physiological_age = 0.0F;
+    // Paper: v̄(u), module vigor.
+    float vigor = 0.0F;
+    GrowthSnapshot snapshot;
+};
+
+struct PlantArchitecture {
+    std::vector<PlacedModule> modules;
+    std::vector<BranchModulePrototype> prototypes;
+    // Paper: p_t, plant physiological age.
+    float plant_age = 0.0F;
+    bool senescent = false;
+};
+
+struct PlantArchitectureSummary {
+    std::size_t module_count = 0;
+    std::size_t visible_segment_count = 0;
+    float max_diameter = 0.0F;
+    float root_vigor = 0.0F;
+    bool senescent = false;
+};
+
+[[nodiscard]] PlantResult<PlantArchitecture>
+develop_plant(const PlantTypeParameters& plant_type, const BranchModulePrototypeLibrary& library, float plant_age);
+
+[[nodiscard]] PlantArchitectureSummary summarize(const PlantArchitecture& architecture);
 
 } // namespace toi::growth

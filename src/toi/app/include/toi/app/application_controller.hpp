@@ -2,7 +2,6 @@
 
 #include "toi/growth/growth.hpp"
 #include "toi/import/obj_importer.hpp"
-#include "toi/plant/plant.hpp"
 #include "toi/project/project.hpp"
 #include "toi/render/render_projection.hpp"
 
@@ -131,7 +130,7 @@ public:
     [[nodiscard]] Result<void> set_module_physiological_age(float module_physiological_age);
 
     // Plant workspace: develop the active plant type at the plant physiological age.
-    [[nodiscard]] Result<plant::PlantArchitecture> plant_architecture() const;
+    [[nodiscard]] Result<growth::PlantArchitecture> plant_architecture() const;
     [[nodiscard]] Result<PlantGrowthSummary> plant_growth_summary() const;
     [[nodiscard]] Result<render::GrowthPreviewStageProjection>
     plant_preview_stage_projection(render::GrowthPreviewStageOptions options = {}) const;
