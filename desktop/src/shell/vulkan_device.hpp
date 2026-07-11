@@ -22,10 +22,6 @@ public:
     VkDevice device() const;
     VkQueue queue() const;
     std::uint32_t queueFamily() const;
-    VkImage previewImage() const;
-    VkImageLayout previewImageLayout() const;
-    std::uint32_t previewWidth() const;
-    std::uint32_t previewHeight() const;
     const std::string& name() const;
 
 private:
@@ -35,9 +31,5 @@ private:
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue queue_ = VK_NULL_HANDLE;
     std::uint32_t queueFamily_ = 0;
-    VkImage previewImage_ = VK_NULL_HANDLE;
-    VkDeviceMemory previewMemory_ = VK_NULL_HANDLE;
-    std::uint32_t previewWidth_ = 640;
-    std::uint32_t previewHeight_ = 480;
     std::string name_;
 };

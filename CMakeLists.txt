@@ -6,6 +6,10 @@ option(TOI_BUILD_TESTS "Build C++ tests" ON)
 option(TOI_BUILD_DESKTOP "Build the Qt desktop application" OFF)
 option(TOI_ENABLE_OVRTX "Build the ovrtx CUDA/Vulkan preview renderer" OFF)
 
+if(TOI_BUILD_DESKTOP AND NOT TOI_ENABLE_OVRTX)
+    message(FATAL_ERROR "The desktop requires TOI_ENABLE_OVRTX; no alternate viewport architecture is supported")
+endif()
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

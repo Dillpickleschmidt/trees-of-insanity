@@ -1,9 +1,6 @@
 #include "viewport_texture_item.hpp"
 
-#include "vulkan_device.hpp"
-#if defined(TOI_ENABLE_OVRTX)
 #include "toi/viewport/preview_renderer.hpp"
-#endif
 
 #include <QQuickWindow>
 #include <QSGSimpleTextureNode>
@@ -43,15 +40,6 @@ ViewportTextureItem::ViewportTextureItem(QQuickItem* parent)
     setFlag(ItemHasContents, true);
 }
 
-void ViewportTextureItem::setDevice(VulkanDevice* device)
-{
-    if (device_ == device) {
-        return;
-    }
-    device_ = device;
-    update();
-}
-
 void ViewportTextureItem::setRenderer(toi::viewport::PreviewRenderer* renderer)
 {
     if (renderer_ == renderer) {
@@ -63,24 +51,16 @@ void ViewportTextureItem::setRenderer(toi::viewport::PreviewRenderer* renderer)
 
 QSGNode* ViewportTextureItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*)
 {
-    if (device_ == nullptr || window() == nullptr || window()->rhi() == nullptr) {
+    if (renderer_ == nullptr || window() == nullptr || window()->rhi() == nullptr) {
         delete oldNode;
         return nullptr;
     }
 
-    VkImage image = device_->previewImage();
-    VkImageLayout layout = device_->previewImageLayout();
-    int width = static_cast<int>(device_->previewWidth());
-    int height = static_cast<int>(device_->previewHeight());
-#if defined(TOI_ENABLE_OVRTX)
-    if (renderer_ != nullptr) {
-        (void)renderer_->prepare_frame_on_render_thread();
-        image = renderer_->display_image();
-        layout = renderer_->display_layout();
-        width = renderer_->width();
-        height = renderer_->height();
-    }
-#endif
+    (void)renderer_->prepare_frame_on_render_thread();
+    const VkImage image = renderer_->display_image();
+    const VkImageLayout layout = renderer_->display_layout();
+    const int width = renderer_->width();
+    const int height = renderer_->height();
 
     auto* node = static_cast<ImportedTextureNode*>(oldNode);
     if (node == nullptr) {

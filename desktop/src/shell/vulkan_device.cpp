@@ -82,96 +82,6 @@ VkPhysicalDevice choosePhysicalDevice(VkInstance instance, int cudaDevice)
     throw std::runtime_error("no Vulkan physical device matches CUDA device " + std::to_string(cudaDevice));
 }
 
-std::uint32_t deviceLocalMemoryType(VkPhysicalDevice physicalDevice, std::uint32_t typeBits)
-{
-    VkPhysicalDeviceMemoryProperties properties{};
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &properties);
-    for (std::uint32_t index = 0; index < properties.memoryTypeCount; ++index) {
-        if ((typeBits & (1U << index)) != 0 &&
-            (properties.memoryTypes[index].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0) {
-            return index;
-        }
-    }
-    throw std::runtime_error("no device-local Vulkan memory type for preview image");
-}
-
-void createPreviewImage(VulkanDevice& context, VkImage& previewImage, VkDeviceMemory& previewMemory)
-{
-    VkImageCreateInfo imageInfo{};
-    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
-    imageInfo.extent = {context.previewWidth(), context.previewHeight(), 1};
-    imageInfo.mipLevels = 1;
-    imageInfo.arrayLayers = 1;
-    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (vkCreateImage(context.device(), &imageInfo, nullptr, &previewImage) != VK_SUCCESS) {
-        throw std::runtime_error("vkCreateImage failed for preview image");
-    }
-
-    VkMemoryRequirements requirements{};
-    vkGetImageMemoryRequirements(context.device(), previewImage, &requirements);
-    VkMemoryAllocateInfo allocateInfo{};
-    allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocateInfo.allocationSize = requirements.size;
-    allocateInfo.memoryTypeIndex = deviceLocalMemoryType(context.physicalDevice(), requirements.memoryTypeBits);
-    if (vkAllocateMemory(context.device(), &allocateInfo, nullptr, &previewMemory) != VK_SUCCESS ||
-        vkBindImageMemory(context.device(), previewImage, previewMemory, 0) != VK_SUCCESS) {
-        throw std::runtime_error("failed to allocate preview image memory");
-    }
-
-    VkCommandPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    poolInfo.queueFamilyIndex = context.queueFamily();
-    VkCommandPool pool = VK_NULL_HANDLE;
-    vkCreateCommandPool(context.device(), &poolInfo, nullptr, &pool);
-    VkCommandBufferAllocateInfo commandInfo{};
-    commandInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    commandInfo.commandPool = pool;
-    commandInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    commandInfo.commandBufferCount = 1;
-    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-    vkAllocateCommandBuffers(context.device(), &commandInfo, &commandBuffer);
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(commandBuffer, &beginInfo);
-
-    VkImageMemoryBarrier toTransfer{};
-    toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    toTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    toTransfer.srcAccessMask = 0;
-    toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    toTransfer.image = previewImage;
-    toTransfer.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                         0, nullptr, 0, nullptr, 1, &toTransfer);
-    const VkClearColorValue color{{0.035F, 0.16F, 0.12F, 1.0F}};
-    vkCmdClearColorImage(commandBuffer, previewImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1,
-                         &toTransfer.subresourceRange);
-
-    VkImageMemoryBarrier toSample = toTransfer;
-    toSample.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    toSample.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    toSample.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    toSample.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-                         0, nullptr, 0, nullptr, 1, &toSample);
-    vkEndCommandBuffer(commandBuffer);
-    VkSubmitInfo submit{};
-    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit.commandBufferCount = 1;
-    submit.pCommandBuffers = &commandBuffer;
-    vkQueueSubmit(context.queue(), 1, &submit, VK_NULL_HANDLE);
-    vkQueueWaitIdle(context.queue());
-    vkDestroyCommandPool(context.device(), pool, nullptr);
-}
-
 std::vector<std::string> requiredDeviceExtensions()
 {
     std::set<std::string> names;
@@ -254,7 +164,6 @@ std::unique_ptr<VulkanDevice> VulkanDevice::create(QQuickWindow& window, QVulkan
     context->queue_ = queue;
     context->queueFamily_ = queueFamily;
     context->name_ = properties.deviceName;
-    createPreviewImage(*context, context->previewImage_, context->previewMemory_);
     return context;
 }
 
@@ -262,12 +171,6 @@ VulkanDevice::~VulkanDevice()
 {
     if (device_ != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device_);
-        if (previewImage_ != VK_NULL_HANDLE) {
-            vkDestroyImage(device_, previewImage_, nullptr);
-        }
-        if (previewMemory_ != VK_NULL_HANDLE) {
-            vkFreeMemory(device_, previewMemory_, nullptr);
-        }
         vkDestroyDevice(device_, nullptr);
     }
 }
@@ -276,8 +179,4 @@ VkPhysicalDevice VulkanDevice::physicalDevice() const { return physicalDevice_; 
 VkDevice VulkanDevice::device() const { return device_; }
 VkQueue VulkanDevice::queue() const { return queue_; }
 std::uint32_t VulkanDevice::queueFamily() const { return queueFamily_; }
-VkImage VulkanDevice::previewImage() const { return previewImage_; }
-VkImageLayout VulkanDevice::previewImageLayout() const { return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; }
-std::uint32_t VulkanDevice::previewWidth() const { return previewWidth_; }
-std::uint32_t VulkanDevice::previewHeight() const { return previewHeight_; }
 const std::string& VulkanDevice::name() const { return name_; }

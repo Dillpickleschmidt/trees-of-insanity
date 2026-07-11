@@ -120,7 +120,6 @@ int main(int argc, char* argv[])
         if (viewportItem == nullptr) {
             qFatal("Qt shell viewport texture item is missing");
         }
-        viewportItem->setDevice(vulkanDevice.get());
 #if defined(TOI_ENABLE_OVRTX)
         auto initialStage = make_preview_projection(bridge->session());
         if (!initialStage) {
