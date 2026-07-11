@@ -19,13 +19,15 @@
 #include <QVulkanInstance>
 #include <QtWebEngineQuick/qtwebenginequickglobal.h>
 
+#include <algorithm>
+#include <cmath>
 #include <memory>
 
 #if defined(TOI_ENABLE_OVRTX)
 namespace {
 
 toi::model::Result<toi::render::GrowthPreviewStageProjection>
-make_preview_projection(const toi::model::DesktopSession& session)
+make_preview_projection(const toi::model::DesktopSession& session, int width = 1280, int height = 720)
 {
     auto snapshot = session.active_preview_snapshot();
     if (!snapshot) {
@@ -33,6 +35,8 @@ make_preview_projection(const toi::model::DesktopSession& session)
     }
     const auto environment = session.preview_environment();
     const toi::render::GrowthPreviewStageOptions options{
+        .width = width,
+        .height = height,
         .asset_search_path = environment.asset_search_path,
         .hdri_texture_path = environment.hdri_texture_path,
         .hdri_visible = environment.hdri_visible,
@@ -146,14 +150,36 @@ int main(int argc, char* argv[])
         previewRenderer->set_frame_ready_callback([viewportItem] {
             QMetaObject::invokeMethod(viewportItem, [viewportItem] { viewportItem->update(); }, Qt::QueuedConnection);
         });
+        QSize requestedExtent(previewRenderer->width(), previewRenderer->height());
+        QSize pendingExtent = requestedExtent;
+        QTimer resizeTimer;
+        resizeTimer.setSingleShot(true);
+        resizeTimer.setInterval(140);
+        QObject::connect(&resizeTimer, &QTimer::timeout, viewportItem,
+                         [bridge = bridge.get(), renderer = previewRenderer.get(),
+                          &pendingExtent, &requestedExtent] {
+                             if (pendingExtent == requestedExtent) return;
+                             auto stage = make_preview_projection(
+                                 bridge->session(), pendingExtent.width(), pendingExtent.height());
+                             if (!stage) {
+                                 bridge->publishViewportStatus(QString::fromStdString(
+                                     std::string(R"({"phase":"error","message":")") +
+                                     stage.error().message +
+                                     R"(","viewport":{"width":0,"height":0},"color":{"width":0,"height":0},"depth":null,"frame_generation":0})"));
+                                 return;
+                             }
+                             requestedExtent = pendingExtent;
+                             renderer->set_stage(std::move(*stage));
+                         });
         QObject::connect(bridge.get(), &DesktopBridge::viewportCameraInput, viewportItem,
                          [renderer = previewRenderer.get()](const QString& kind, double dx, double dy, int height) {
                              renderer->apply_camera_input(kind.toStdString(), static_cast<float>(dx),
                                                           static_cast<float>(dy), height);
                          });
         QObject::connect(bridge.get(), &DesktopBridge::previewInvalidated, viewportItem,
-                         [bridge = bridge.get(), renderer = previewRenderer.get()] {
-                             auto stage = make_preview_projection(bridge->session());
+                         [bridge = bridge.get(), renderer = previewRenderer.get(), &requestedExtent] {
+                             auto stage = make_preview_projection(
+                                 bridge->session(), requestedExtent.width(), requestedExtent.height());
                              if (!stage) {
                                  bridge->publishViewportStatus(QString::fromStdString(
                                      std::string(R"({"phase":"error","message":")") +
@@ -182,12 +208,22 @@ int main(int argc, char* argv[])
                                  std::to_string(status.frame_generation) + "}"));
                          });
         statusTimer.start();
-#endif
         QObject::connect(bridge.get(), &DesktopBridge::viewportRectChanged, viewportItem,
-                         [viewportItem](double x, double y, double width, double height, double) {
+                         [viewportItem, &resizeTimer, &pendingExtent](double x, double y, double width,
+                                                                     double height, double devicePixelRatio) {
                              viewportItem->setPosition(QPointF(x, y));
                              viewportItem->setSize(QSizeF(width, height));
+                             double pixelWidth = std::max(1.0, width * devicePixelRatio);
+                             double pixelHeight = std::max(1.0, height * devicePixelRatio);
+                             const double scale = std::min(1.0, 4096.0 / std::max(pixelWidth, pixelHeight));
+                             pixelWidth *= scale;
+                             pixelHeight *= scale;
+                             pendingExtent = QSize(
+                                 std::max(16, static_cast<int>(std::lround(pixelWidth))),
+                                 std::max(16, static_cast<int>(std::lround(pixelHeight))));
+                             resizeTimer.start();
                          });
+#endif
         window->show();
         bridge->publishViewportStatus(QString::fromStdString(
             std::string(R"({"phase":"starting","message":"Qt Vulkan viewport starting on )") +

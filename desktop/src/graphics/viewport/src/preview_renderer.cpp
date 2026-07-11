@@ -18,6 +18,7 @@ namespace toi::viewport {
 namespace {
 
 constexpr int kSlotCount = 2;
+constexpr int kDisplayTextureExtent = 4096;
 constexpr float kTwoPi = 2.0F * std::numbers::pi_v<float>;
 constexpr float kDragDollyLogRadiusPerPixel = 0.01F;
 constexpr float kWheelDollyLogRadiusPerStep = 0.12F;
@@ -223,6 +224,41 @@ void PreviewRenderer::set_frame_ready_callback(std::function<void()> callback)
 
 bool PreviewRenderer::prepare_frame_on_render_thread()
 {
+    int resize_width = 0;
+    int resize_height = 0;
+    {
+        std::lock_guard lock(mutex_);
+        if (resize_waiting_) {
+            resize_width = requested_width_;
+            resize_height = requested_height_;
+        }
+    }
+    if (resize_width > 0 && resize_height > 0) {
+        auto resized = resize_frame_resources_on_render_thread(resize_width, resize_height);
+        {
+            std::lock_guard lock(mutex_);
+            resize_waiting_ = false;
+            if (resized) {
+                width_ = resize_width;
+                height_ = resize_height;
+                displayed_slot_ = -1;
+                ready_slot_ = -1;
+                dirty_ = true;
+                status_.width = width_;
+                status_.height = height_;
+                status_.phase = "rendering";
+                status_.message = "Qt RTX viewport resized";
+            } else {
+                dirty_ = false;
+                stage_dirty_ = false;
+                status_.phase = "error";
+                status_.message = resized.error().message;
+            }
+        }
+        condition_.notify_all();
+        return false;
+    }
+
     int slot_index = -1;
     int old_displayed_slot = -1;
     {
@@ -255,10 +291,6 @@ bool PreviewRenderer::prepare_frame_on_render_thread()
                VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                VK_PIPELINE_STAGE_TRANSFER_BIT);
 
-    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    const VkClearColorValue black{{0.0F, 0.0F, 0.0F, 1.0F}};
-    vkCmdClearColorImage(slot.command_buffer, display_image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                         &black, 1, &range);
     VkImageBlit blit{};
     blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     blit.srcOffsets[1] = {slot.color.width(), slot.color.height(), 1};
@@ -311,6 +343,8 @@ bool PreviewRenderer::prepare_frame_on_render_thread()
 
     {
         std::lock_guard lock(mutex_);
+        presented_width_ = width_;
+        presented_height_ = height_;
         status_.phase = "ready";
         status_.message = "Qt RTX viewport ready";
         status_.frame_generation = slot.timeline_value;
@@ -323,8 +357,10 @@ bool PreviewRenderer::prepare_frame_on_render_thread()
 
 VkImage PreviewRenderer::display_image() const { return display_image_; }
 VkImageLayout PreviewRenderer::display_layout() const { return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; }
-int PreviewRenderer::width() const { return width_; }
-int PreviewRenderer::height() const { return height_; }
+int PreviewRenderer::width() const { return presented_width_; }
+int PreviewRenderer::height() const { return presented_height_; }
+int PreviewRenderer::texture_width() const { return kDisplayTextureExtent; }
+int PreviewRenderer::texture_height() const { return kDisplayTextureExtent; }
 
 PreviewRendererStatus PreviewRenderer::status() const
 {
@@ -335,8 +371,10 @@ PreviewRendererStatus PreviewRenderer::status() const
 Result<void> PreviewRenderer::initialize(PreviewRendererDevice device,
                                          render::GrowthPreviewStageProjection initial_stage)
 {
-    width_ = std::max(1, initial_stage.usd_stage.width);
-    height_ = std::max(1, initial_stage.usd_stage.height);
+    width_ = std::clamp(initial_stage.usd_stage.width, 1, kDisplayTextureExtent);
+    height_ = std::clamp(initial_stage.usd_stage.height, 1, kDisplayTextureExtent);
+    presented_width_ = width_;
+    presented_height_ = height_;
 
     VkCommandPoolCreateInfo pool_info{};
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -394,7 +432,7 @@ Result<void> PreviewRenderer::initialize(PreviewRendererDevice device,
     image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     image_info.imageType = VK_IMAGE_TYPE_2D;
     image_info.format = VK_FORMAT_R8G8B8A8_UNORM;
-    image_info.extent = {static_cast<std::uint32_t>(width_), static_cast<std::uint32_t>(height_), 1};
+    image_info.extent = {kDisplayTextureExtent, kDisplayTextureExtent, 1};
     image_info.mipLevels = 1;
     image_info.arrayLayers = 1;
     image_info.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -425,7 +463,7 @@ Result<void> PreviewRenderer::initialize(PreviewRendererDevice device,
     }
     overlay_ = std::move(*overlay);
     if (auto target = overlay_.set_target(display_image_, VK_FORMAT_R8G8B8A8_UNORM,
-                                          {static_cast<std::uint32_t>(width_), static_cast<std::uint32_t>(height_)});
+                                          {kDisplayTextureExtent, kDisplayTextureExtent});
         !target) {
         return std::unexpected(target.error());
     }
@@ -484,6 +522,34 @@ Result<void> PreviewRenderer::initialize(PreviewRendererDevice device,
     return {};
 }
 
+Result<void> PreviewRenderer::resize_frame_resources_on_render_thread(int width, int height)
+{
+    for (int index = 0; index < kSlotCount; ++index) {
+        Slot& slot = slots_[index];
+        vkWaitForFences(context_.device(), 1, &slot.precompose_done, VK_TRUE, UINT64_MAX);
+        slot.color.reset();
+        slot.distance.reset();
+
+        auto color = CudaInteropImage::create(context_, width, height);
+        if (!color) {
+            return std::unexpected(color.error());
+        }
+        auto distance = CudaInteropFloatImage::create(context_, width, height);
+        if (!distance) {
+            return std::unexpected(distance.error());
+        }
+        slot.color = std::move(*color);
+        slot.distance = std::move(*distance);
+        slot.ready = false;
+        slot.rendering = false;
+        slot.has_distance = false;
+        if (auto wired = overlay_.set_scene_distance(static_cast<std::uint32_t>(index), slot.distance.view()); !wired) {
+            return std::unexpected(wired.error());
+        }
+    }
+    return {};
+}
+
 void PreviewRenderer::render_loop()
 {
     std::filesystem::path asset_search_path;
@@ -521,6 +587,20 @@ void PreviewRenderer::render_loop()
                 return false;
             });
             if (!running_) break;
+            if (pending_stage_ &&
+                (pending_stage_->usd_stage.width != width_ || pending_stage_->usd_stage.height != height_)) {
+                requested_width_ = std::clamp(pending_stage_->usd_stage.width, 1, kDisplayTextureExtent);
+                requested_height_ = std::clamp(pending_stage_->usd_stage.height, 1, kDisplayTextureExtent);
+                resize_waiting_ = true;
+                status_.phase = "resizing";
+                status_.message = "Qt RTX viewport resizing";
+                auto callback = frame_ready_callback_;
+                lock.unlock();
+                if (callback) callback();
+                lock.lock();
+                condition_.wait(lock, [this] { return !running_ || !resize_waiting_; });
+                continue;
+            }
             for (int index = 0; index < kSlotCount; ++index) {
                 if (index != displayed_slot_ && !slots_[index].rendering && !slots_[index].ready) {
                     slot_index = index;

@@ -65,7 +65,8 @@ QSGNode* ViewportTextureItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeD
     auto* node = static_cast<ImportedTextureNode*>(oldNode);
     if (node == nullptr) {
         QRhi* rhi = window()->rhi();
-        auto* rhiTexture = rhi->newTexture(QRhiTexture::RGBA8, QSize(width, height));
+        auto* rhiTexture = rhi->newTexture(
+            QRhiTexture::RGBA8, QSize(renderer_->texture_width(), renderer_->texture_height()));
         const QRhiTexture::NativeTexture native{
             static_cast<quint64>(reinterpret_cast<std::uintptr_t>(image)),
             static_cast<int>(layout),
@@ -81,6 +82,21 @@ QSGNode* ViewportTextureItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeD
         }
         node = new ImportedTextureNode(rhiTexture, texture);
     }
-    node->setRect(boundingRect());
+    node->setSourceRect(QRectF(0.0, 0.0, width, height));
+    QRectF target = boundingRect();
+    if (width > 0 && height > 0 && target.width() > 0.0 && target.height() > 0.0) {
+        const double texture_aspect = static_cast<double>(width) / static_cast<double>(height);
+        const double item_aspect = target.width() / target.height();
+        if (item_aspect > texture_aspect) {
+            const double fitted_width = target.height() * texture_aspect;
+            target.setLeft(target.left() + (target.width() - fitted_width) * 0.5);
+            target.setWidth(fitted_width);
+        } else {
+            const double fitted_height = target.width() / texture_aspect;
+            target.setTop(target.top() + (target.height() - fitted_height) * 0.5);
+            target.setHeight(fitted_height);
+        }
+    }
+    node->setRect(target);
     return node;
 }

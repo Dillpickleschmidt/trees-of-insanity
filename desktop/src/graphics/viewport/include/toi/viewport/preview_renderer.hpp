@@ -65,6 +65,8 @@ public:
     [[nodiscard]] VkImageLayout display_layout() const;
     [[nodiscard]] int width() const;
     [[nodiscard]] int height() const;
+    [[nodiscard]] int texture_width() const;
+    [[nodiscard]] int texture_height() const;
     [[nodiscard]] PreviewRendererStatus status() const;
 
 private:
@@ -74,6 +76,7 @@ private:
     [[nodiscard]] Result<void> initialize(PreviewRendererDevice device,
                                           render::GrowthPreviewStageProjection initial_stage);
     void render_loop();
+    [[nodiscard]] Result<void> resize_frame_resources_on_render_thread(int width, int height);
     void set_error(std::string message);
 
     VulkanContext context_;
@@ -86,6 +89,8 @@ private:
     VkDeviceMemory display_memory_ = VK_NULL_HANDLE;
     int width_ = 0;
     int height_ = 0;
+    int presented_width_ = 0;
+    int presented_height_ = 0;
 
     std::atomic<bool> running_{false};
     std::thread thread_;
@@ -95,6 +100,9 @@ private:
     bool dirty_ = false;
     bool stage_dirty_ = false;
     bool camera_dirty_ = false;
+    bool resize_waiting_ = false;
+    int requested_width_ = 0;
+    int requested_height_ = 0;
     bool guides_visible_ = true;
     bool world_origin_axes_visible_ = true;
     std::optional<render::GrowthPreviewCamera> base_camera_;

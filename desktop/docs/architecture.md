@@ -8,6 +8,8 @@
 
 Render projection converts snapshots to renderer inputs. ovrtx writes color into CUDA memory. `PreviewRenderer` double-buffers exportable Vulkan images, coordinates CUDA/Vulkan with a timeline semaphore, and precomposes layout/transitions on Qt's render thread. Qt samples the completed image as a scene-graph texture. No CPU pixel transfer occurs.
 
+Live resize aspect-fits the last complete frame instead of stretching it. After viewport geometry settles, the shell requests a device-pixel render extent; the render worker pauses while Qt's render thread replaces only the CUDA-interoperable frame slots. A stable maximum-size Vulkan display texture avoids scene-graph texture churn and unsafe image retirement.
+
 ## Shell
 
 Qt creates the CUDA-compatible Vulkan device and adopts it for the Quick scene graph. QML places `ViewportTextureItem` below a transparent WebEngine view. `DesktopBridge` exposes bootstrap/actions, viewport geometry, camera input, and status through WebChannel. Shell alone coordinates model and graphics.
