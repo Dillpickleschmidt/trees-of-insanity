@@ -1,4 +1,4 @@
-import { RefreshCw, TriangleAlert } from "lucide-solid";
+import { TriangleAlert } from "lucide-solid";
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 
 import { PlantTypesDialog } from "~/components/PlantTypesDialog";
@@ -76,7 +76,7 @@ const initialPlantSummary: PlantGrowthSummary = {
 
 const initialViewportStatus: ViewportStatus = {
 	phase: "detached",
-	message: "Native viewport detached",
+	message: "Viewport detached",
 	viewport: { width: 0, height: 0 },
 	color: { width: 0, height: 0 },
 	depth: null,
@@ -624,17 +624,6 @@ export function App() {
 							</Section>
 						</Show>
 
-						{/* VIEWPORT — shared across workspaces */}
-						<Show when={viewport()}>
-							{(view) => (
-								<ViewportControls
-									view={view()}
-									status={nativeViewportStatus()}
-									busy={busy()}
-									onChange={setViewportPreference}
-								/>
-							)}
-						</Show>
 					</div>
 				</main>
 
@@ -657,15 +646,15 @@ export function App() {
 				/>
 			</div>
 
-			<Viewport />
-			<button
-				type="button"
-				aria-label="Refresh viewport"
-				onClick={() => void refreshAll()}
-				class="fixed right-5 top-5 z-40 flex size-10 items-center justify-center rounded-full border border-white/20 bg-background/65 text-foreground shadow-lg transition-colors hover:bg-background/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-			>
-				<RefreshCw class="size-4" />
-			</button>
+			<div class="relative min-w-0 flex-1">
+				<Viewport />
+				<ViewportControls
+					view={viewport()}
+					status={nativeViewportStatus()}
+					busy={busy()}
+					onChange={setViewportPreference}
+				/>
+			</div>
 		</div>
 	);
 }

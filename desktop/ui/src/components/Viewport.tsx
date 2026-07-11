@@ -113,5 +113,5 @@ export function Viewport() {
 		}
 	});
 
-	return <div id="viewport-host" class="relative min-w-0 flex-1 bg-transparent" ref={(element) => (host = element)} />;
+	return <div id="viewport-host" class="absolute inset-0 bg-transparent" ref={(element) => (host = element)} />;
 }
