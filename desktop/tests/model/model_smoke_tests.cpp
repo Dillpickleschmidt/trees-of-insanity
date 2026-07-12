@@ -1,5 +1,6 @@
 #include "toi/model/desktop_session.hpp"
 #include "toi/import/obj_importer.hpp"
+#include "toi/project/project.hpp"
 #include "toi/render/render_projection.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 
@@ -24,7 +26,23 @@ std::filesystem::path fresh_project_path(std::string_view name)
     std::filesystem::create_directories(root);
     auto path = root / (std::string(name) + ".toi.project.json");
     std::filesystem::remove(path);
+    std::filesystem::remove(path.string() + ".tmp");
     return path;
+}
+
+toi::model::DesktopSessionOptions session_options(const std::filesystem::path& project_path)
+{
+    return {
+        .project_path = project_path,
+        .asset_root_path = prototype_path().parent_path().parent_path(),
+        .prototype_asset_path = prototype_path(),
+    };
+}
+
+std::string file_contents(const std::filesystem::path& path)
+{
+    std::ifstream input(path);
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
 } // namespace
@@ -41,6 +59,107 @@ TEST_CASE("bundled OBJ imports branch module prototypes")
     const auto& prototype = library->prototypes[*cube_008];
     CHECK(prototype.segments.size() == 25);
     CHECK(prototype.segments.front().max_length == Catch::Approx(0.242014F));
+}
+
+TEST_CASE("fresh project contains complete typed workspace state")
+{
+    const auto project_path = fresh_project_path("fresh-typed-workspaces");
+    auto session = toi::model::DesktopSession::create(session_options(project_path));
+    REQUIRE(session);
+
+    auto project = toi::project::load_project(project_path);
+    REQUIRE(project);
+    CHECK(project->version == 2);
+    CHECK(project->active_workspace == toi::project::Workspace::Module);
+    CHECK(project->plant_type_library.plant_types.size() == 1);
+    CHECK(project->module_workspace.prototype_id == 8);
+    CHECK(project->module_workspace.plant_type_id == "plant-type-1");
+    CHECK(project->module_workspace.physiological_age == Catch::Approx(63.5755F).margin(0.001F));
+    CHECK(project->plant_workspace.root_prototype_id == 8);
+    CHECK(project->plant_workspace.plant_type_id == "plant-type-1");
+    CHECK(project->plant_workspace.simulation_timestep == Catch::Approx(1.0F));
+    CHECK_FALSE(project->plant_workspace.diagnostics.module_diagnostic_labels_visible);
+    CHECK_FALSE(project->plant_workspace.diagnostics.direct_light_bounding_spheres_visible);
+    CHECK_FALSE(project->plant_workspace.diagnostics.accumulated_light_flow_visible);
+    CHECK_FALSE(project->plant_workspace.diagnostics.vigor_flow_visible);
+    CHECK_FALSE(project->plant_workspace.diagnostics.mature_terminal_markers_visible);
+    CHECK(project->module_workspace.viewport.active_hdri_environment_id == "hdri:meadow_2_4k.exr");
+    CHECK(project->plant_workspace.viewport.orbit.radius == Catch::Approx(1.0F));
+    CHECK(project->ecosystem_workspace.viewport.orbit.radius == Catch::Approx(1.0F));
+
+    nlohmann::json document;
+    std::ifstream(project_path) >> document;
+    CHECK(document.at("plant_type_library").contains("plant_types"));
+    CHECK_FALSE(document.at("plant_type_library").contains("active_plant_type_id"));
+    CHECK(document.contains("module_workspace"));
+    CHECK(document.contains("plant_workspace"));
+    CHECK(document.contains("ecosystem_workspace"));
+}
+
+TEST_CASE("typed Project round-trips independent workspaces")
+{
+    using namespace toi::project;
+    const auto project_path = fresh_project_path("typed-project-round-trip");
+    auto project = make_default_project(8, "hdri:module.exr");
+    REQUIRE(project);
+    auto second_type = create_plant_type_from_preset("plant-type-2", "Second", 'a');
+    REQUIRE(second_type);
+    project->plant_type_library.plant_types.push_back(*second_type);
+    project->active_workspace = Workspace::Ecosystem;
+    project->module_workspace.plant_type_id = "plant-type-2";
+    project->module_workspace.physiological_age = 12.5F;
+    project->module_workspace.viewport.orbit = {
+        .target = {.x = 1.0F, .y = 2.0F, .z = 3.0F},
+        .radius = 4.0F,
+        .azimuth_radians = 0.5F,
+        .elevation_radians = -0.25F,
+    };
+    project->plant_workspace.plant_type_id = "plant-type-2";
+    project->plant_workspace.simulation_timestep = 0.25F;
+    project->plant_workspace.diagnostics.vigor_flow_visible = true;
+    project->plant_workspace.viewport.active_hdri_environment_id = "hdri:plant.exr";
+    project->ecosystem_workspace.viewport.active_hdri_environment_id = "hdri:ecosystem.exr";
+    project->ecosystem_workspace.viewport.orbit.radius = 9.0F;
+    REQUIRE(save_project(project_path, *project));
+
+    auto loaded = load_project(project_path);
+    REQUIRE(loaded);
+    CHECK(loaded->active_workspace == Workspace::Ecosystem);
+    CHECK(loaded->module_workspace.viewport.orbit.target.y == Catch::Approx(2.0F));
+    CHECK(loaded->plant_workspace.simulation_timestep == Catch::Approx(0.25F));
+    CHECK(loaded->plant_workspace.diagnostics.vigor_flow_visible);
+    CHECK(loaded->plant_workspace.viewport.active_hdri_environment_id == "hdri:plant.exr");
+    CHECK(loaded->ecosystem_workspace.viewport.active_hdri_environment_id == "hdri:ecosystem.exr");
+    CHECK(loaded->ecosystem_workspace.viewport.orbit.radius == Catch::Approx(9.0F));
+
+    REQUIRE(delete_plant_type(*loaded, "plant-type-2"));
+    CHECK(loaded->module_workspace.plant_type_id == "plant-type-1");
+    CHECK(loaded->plant_workspace.plant_type_id == "plant-type-1");
+}
+
+TEST_CASE("Project loading rejects incomplete and dangling workspace state")
+{
+    const auto project_path = fresh_project_path("strict-project-loading");
+    auto project = toi::project::make_default_project(8, "hdri:test.exr");
+    REQUIRE(project);
+    REQUIRE(toi::project::save_project(project_path, *project));
+
+    nlohmann::json document;
+    std::ifstream(project_path) >> document;
+    auto incomplete = document;
+    incomplete.at("plant_workspace").erase("diagnostics");
+    std::ofstream(project_path) << incomplete.dump(2) << '\n';
+    CHECK_FALSE(toi::project::load_project(project_path));
+
+    auto dangling = document;
+    dangling.at("module_workspace").at("plant_type_id") = "missing";
+    std::ofstream(project_path) << dangling.dump(2) << '\n';
+    CHECK_FALSE(toi::project::load_project(project_path));
+
+    auto unknown_workspace = document;
+    unknown_workspace.at("active_workspace") = "forest";
+    std::ofstream(project_path) << unknown_workspace.dump(2) << '\n';
+    CHECK_FALSE(toi::project::load_project(project_path));
 }
 
 TEST_CASE("application session opens default module workspace")
@@ -68,6 +187,94 @@ TEST_CASE("application session opens default module workspace")
     }
     CHECK(plant_is_disabled);
     CHECK_FALSE(session->set_active_workspace("plant").has_value());
+}
+
+TEST_CASE("Module and viewport state persist through session reopen")
+{
+    const auto project_path = fresh_project_path("session-workspace-persistence");
+    {
+        auto session = toi::model::DesktopSession::create(session_options(project_path));
+        REQUIRE(session);
+        auto plant_type = session->create_plant_type("Persistent", 'a');
+        REQUIRE(plant_type);
+        REQUIRE(session->set_active_prototype(7));
+        REQUIRE(session->set_active_plant_type(plant_type->id));
+        REQUIRE(session->set_module_physiological_age(10.0F));
+        auto viewport = session->viewport_preferences();
+        auto invalid_viewport = viewport;
+        invalid_viewport.orbit.radius = 0.0F;
+        CHECK_FALSE(session->update_viewport_preferences(invalid_viewport));
+        CHECK(session->viewport_preferences().orbit.radius == Catch::Approx(1.0F));
+        viewport.guides_visible = false;
+        viewport.world_origin_axes_visible = false;
+        viewport.hdri_backdrop_visible = false;
+        viewport.orbit.target = {.x = 1.0F, .y = 2.0F, .z = 3.0F};
+        viewport.orbit.radius = 4.0F;
+        REQUIRE(session->update_viewport_preferences(viewport));
+    }
+
+    auto reopened = toi::model::DesktopSession::create(session_options(project_path));
+    REQUIRE(reopened);
+    auto state = reopened->state();
+    REQUIRE(state);
+    CHECK(state->active_prototype_id == 7);
+    CHECK(state->active_plant_type_id == "plant-type-2");
+    CHECK(state->module_physiological_age == Catch::Approx(10.0F));
+    const auto viewport = reopened->viewport_preferences();
+    CHECK_FALSE(viewport.guides_visible);
+    CHECK_FALSE(viewport.world_origin_axes_visible);
+    CHECK_FALSE(viewport.hdri_backdrop_visible);
+    CHECK(viewport.orbit.target.z == Catch::Approx(3.0F));
+    CHECK(viewport.orbit.radius == Catch::Approx(4.0F));
+    REQUIRE(reopened->module_preview_snapshot());
+
+    auto project = toi::project::load_project(project_path);
+    REQUIRE(project);
+    CHECK(project->plant_workspace.plant_type_id == "plant-type-1");
+    CHECK(project->plant_workspace.viewport.guides_visible);
+    CHECK(project->ecosystem_workspace.viewport.guides_visible);
+}
+
+TEST_CASE("session rejects disabled workspaces and missing asset prototypes without rewriting")
+{
+    using namespace toi::project;
+    const auto hdri = "hdri:meadow_2_4k.exr";
+
+    const auto disabled_path = fresh_project_path("disabled-workspace-project");
+    auto disabled = make_default_project(8, hdri);
+    REQUIRE(disabled);
+    disabled->active_workspace = Workspace::Plant;
+    REQUIRE(save_project(disabled_path, *disabled));
+    const auto disabled_bytes = file_contents(disabled_path);
+    CHECK_FALSE(toi::model::DesktopSession::create(session_options(disabled_path)));
+    CHECK(file_contents(disabled_path) == disabled_bytes);
+
+    const auto missing_path = fresh_project_path("missing-prototype-project");
+    auto missing = make_default_project(8, hdri);
+    REQUIRE(missing);
+    missing->module_workspace.prototype_id = 999;
+    REQUIRE(save_project(missing_path, *missing));
+    const auto missing_bytes = file_contents(missing_path);
+    CHECK_FALSE(toi::model::DesktopSession::create(session_options(missing_path)));
+    CHECK(file_contents(missing_path) == missing_bytes);
+
+    const auto missing_root_path = fresh_project_path("missing-root-prototype-project");
+    auto missing_root = make_default_project(8, hdri);
+    REQUIRE(missing_root);
+    missing_root->plant_workspace.root_prototype_id = 999;
+    REQUIRE(save_project(missing_root_path, *missing_root));
+    const auto missing_root_bytes = file_contents(missing_root_path);
+    CHECK_FALSE(toi::model::DesktopSession::create(session_options(missing_root_path)));
+    CHECK(file_contents(missing_root_path) == missing_root_bytes);
+
+    const auto over_mature_path = fresh_project_path("over-mature-project");
+    auto over_mature = make_default_project(8, hdri);
+    REQUIRE(over_mature);
+    over_mature->module_workspace.physiological_age = 64.0F;
+    REQUIRE(save_project(over_mature_path, *over_mature));
+    const auto over_mature_bytes = file_contents(over_mature_path);
+    CHECK_FALSE(toi::model::DesktopSession::create(session_options(over_mature_path)));
+    CHECK(file_contents(over_mature_path) == over_mature_bytes);
 }
 
 TEST_CASE("age scrubbing keeps the growth-preview stage topology stable")

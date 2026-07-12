@@ -3,13 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
-#include <fstream>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 namespace toi::model {
 namespace {
@@ -72,49 +69,30 @@ constexpr float kPrototypeLibraryGeometryScale = 2.0F;
     return std::filesystem::path("HDRI") / environment_id.substr(kHdriIdPrefix.size());
 }
 
-[[nodiscard]] std::filesystem::path viewport_preferences_path(const std::filesystem::path& project_path)
+[[nodiscard]] const project::ViewportState& active_viewport(const project::Project& project)
 {
-    auto parent = project_path.parent_path();
-    return (parent.empty() ? std::filesystem::path(".") : parent) / "viewport-preferences.json";
-}
-
-[[nodiscard]] ViewportPreferences load_viewport_preferences(const std::filesystem::path& project_path,
-                                                            const std::vector<HdriEnvironment>& environments)
-{
-    ViewportPreferences preferences;
-    preferences.active_hdri_environment_id = default_hdri_environment_id(environments);
-
-    const auto path = viewport_preferences_path(project_path);
-    std::ifstream input(path);
-    if (input) {
-        try {
-            const auto document = nlohmann::json::parse(input);
-            preferences.guides_visible = document.value("guides_visible", preferences.guides_visible);
-            preferences.world_origin_axes_visible =
-                document.value("world_origin_axes_visible", preferences.world_origin_axes_visible);
-            preferences.hdri_backdrop_visible =
-                document.value("hdri_backdrop_visible", preferences.hdri_backdrop_visible);
-            const auto active = document.value("active_hdri_environment_id", preferences.active_hdri_environment_id);
-            if (std::ranges::any_of(environments, [&](const auto& env) { return env.id == active; })) {
-                preferences.active_hdri_environment_id = active;
-            }
-        } catch (const std::exception&) {
-            // Ignore malformed preferences and keep defaults.
-        }
+    switch (project.active_workspace) {
+    case project::Workspace::Module:
+        return project.module_workspace.viewport;
+    case project::Workspace::Plant:
+        return project.plant_workspace.viewport;
+    case project::Workspace::Ecosystem:
+        return project.ecosystem_workspace.viewport;
     }
-    return preferences;
+    std::unreachable();
 }
 
-void save_viewport_preferences(const std::filesystem::path& project_path, const ViewportPreferences& preferences)
+[[nodiscard]] project::ViewportState& active_viewport(project::Project& project)
 {
-    const nlohmann::json document{
-        {"guides_visible", preferences.guides_visible},
-        {"world_origin_axes_visible", preferences.world_origin_axes_visible},
-        {"hdri_backdrop_visible", preferences.hdri_backdrop_visible},
-        {"active_hdri_environment_id", preferences.active_hdri_environment_id},
-    };
-    std::ofstream output(viewport_preferences_path(project_path));
-    output << document.dump(2) << '\n';
+    switch (project.active_workspace) {
+    case project::Workspace::Module:
+        return project.module_workspace.viewport;
+    case project::Workspace::Plant:
+        return project.plant_workspace.viewport;
+    case project::Workspace::Ecosystem:
+        return project.ecosystem_workspace.viewport;
+    }
+    std::unreachable();
 }
 
 [[nodiscard]] ApplicationError make_error(ApplicationError::Code code, std::string message)
@@ -190,13 +168,13 @@ struct ModuleWorkspaceFacts {
 [[nodiscard]] Result<ModuleWorkspaceFacts>
 module_workspace_facts(const import::BranchModulePrototypeLibrary& prototype_library, const project::Project& project)
 {
-    const auto* prototype = prototype_by_id(prototype_library, project.active_branch_module_prototype_id);
+    const auto* prototype = prototype_by_id(prototype_library, project.module_workspace.prototype_id);
     if (prototype == nullptr) {
         return std::unexpected(
             make_error(ApplicationError::Code::NotFound, "active branch module prototype does not exist"));
     }
 
-    const auto* plant_type = project::active_plant_type(project);
+    const auto* plant_type = project::plant_type_by_id(project, project.module_workspace.plant_type_id);
     if (plant_type == nullptr) {
         return std::unexpected(make_error(ApplicationError::Code::NotFound, "active plant type does not exist"));
     }
@@ -221,12 +199,10 @@ module_workspace_facts(const import::BranchModulePrototypeLibrary& prototype_lib
 } // namespace
 
 DesktopSession::DesktopSession(DesktopSessionOptions options,
-                                             import::BranchModulePrototypeLibrary prototype_library,
-                                             project::Project project, float module_physiological_age)
+                               import::BranchModulePrototypeLibrary prototype_library, project::Project project)
     : options_(std::move(options))
     , prototype_library_(std::move(prototype_library))
     , project_(std::move(project))
-    , module_physiological_age_(module_physiological_age)
 {
 }
 
@@ -243,28 +219,63 @@ Result<DesktopSession> DesktopSession::create(DesktopSessionOptions options)
         return std::unexpected(default_branch_module_prototype_id.error());
     }
 
-    auto loaded_project = project::load_or_create_project(options.project_path, *default_branch_module_prototype_id);
+    const auto environments = enumerate_hdri_environments(options.asset_root_path);
+    const auto default_hdri = default_hdri_environment_id(environments);
+    if (default_hdri.empty()) {
+        return std::unexpected(make_error(ApplicationError::Code::Project, "HDRI environment library is empty"));
+    }
+
+    project::Result<project::Project> loaded_project = std::filesystem::exists(options.project_path)
+                                                           ? project::load_project(options.project_path)
+                                                           : project::make_default_project(
+                                                                 *default_branch_module_prototype_id, default_hdri);
     if (!loaded_project) {
         return std::unexpected(from_project_error(loaded_project.error()));
     }
 
-    if (prototype_by_id(*library, loaded_project->active_branch_module_prototype_id) == nullptr) {
-        loaded_project->active_branch_module_prototype_id = *default_branch_module_prototype_id;
+    const bool creating_project = !std::filesystem::exists(options.project_path);
+    if (prototype_by_id(*library, loaded_project->module_workspace.prototype_id) == nullptr) {
+        return std::unexpected(make_error(ApplicationError::Code::Project,
+                                          "Module workspace prototype does not exist"));
+    }
+    if (prototype_by_id(*library, loaded_project->plant_workspace.root_prototype_id) == nullptr) {
+        return std::unexpected(
+            make_error(ApplicationError::Code::Project, "Plant workspace root prototype does not exist"));
+    }
+    if (loaded_project->active_workspace != project::Workspace::Module) {
+        return std::unexpected(make_error(ApplicationError::Code::Project,
+                                          "active workspace is not implemented: " +
+                                              std::string(project::to_string(loaded_project->active_workspace))));
+    }
+
+    const auto environment_exists = [&](const project::ViewportState& viewport) {
+        return std::ranges::any_of(environments, [&](const HdriEnvironment& environment) {
+            return environment.id == viewport.active_hdri_environment_id;
+        });
+    };
+    if (!environment_exists(loaded_project->module_workspace.viewport) ||
+        !environment_exists(loaded_project->plant_workspace.viewport) ||
+        !environment_exists(loaded_project->ecosystem_workspace.viewport)) {
+        return std::unexpected(
+            make_error(ApplicationError::Code::Project, "workspace references an unknown HDRI environment"));
+    }
+
+    auto facts = module_workspace_facts(*library, *loaded_project);
+    if (!facts) {
+        return std::unexpected(facts.error());
+    }
+    if (creating_project) {
+        loaded_project->module_workspace.physiological_age = facts->fully_grown_age;
         auto saved = project::save_project(options.project_path, *loaded_project);
         if (!saved) {
             return std::unexpected(from_project_error(saved.error()));
         }
+    } else if (loaded_project->module_workspace.physiological_age > facts->fully_grown_age) {
+        return std::unexpected(
+            make_error(ApplicationError::Code::Project, "Module physiological age exceeds fully-grown age"));
     }
 
-    DesktopSession session(std::move(options), std::move(*library), std::move(*loaded_project), 0.0F);
-    auto facts = module_workspace_facts(session.prototype_library_, session.project_);
-    if (!facts) {
-        return std::unexpected(facts.error());
-    }
-    session.module_physiological_age_ = facts->fully_grown_age;
-    session.viewport_preferences_ =
-        load_viewport_preferences(session.options_.project_path, session.hdri_environments());
-    return session;
+    return DesktopSession(std::move(options), std::move(*library), std::move(*loaded_project));
 }
 
 Result<void> DesktopSession::save_project() const
@@ -284,14 +295,14 @@ Result<AppStateView> DesktopSession::state() const
     }
 
     AppStateView view;
-    view.active_workspace = active_workspace_;
+    view.active_workspace = project::to_string(project_.active_workspace);
     view.workspace_previews = {
         {.workspace = "plant", .implemented = false},
         {.workspace = "ecosystem", .implemented = false},
     };
-    view.active_prototype_id = project_.active_branch_module_prototype_id;
-    view.active_plant_type_id = project_.plant_type_library.active_plant_type_id;
-    view.module_physiological_age = module_physiological_age_;
+    view.active_prototype_id = project_.module_workspace.prototype_id;
+    view.active_plant_type_id = project_.module_workspace.plant_type_id;
+    view.module_physiological_age = project_.module_workspace.physiological_age;
     view.fully_grown_age = facts->fully_grown_age;
 
     view.prototypes.reserve(prototype_library_.prototypes.size());
@@ -330,7 +341,7 @@ Result<growth::GrowthSnapshot> DesktopSession::growth_snapshot() const
         return std::unexpected(facts.error());
     }
     auto snapshot = growth::make_growth_snapshot(facts->prepared_prototype, facts->plant_type.parameters,
-                                                 module_physiological_age_);
+                                                 project_.module_workspace.physiological_age);
     if (!snapshot) {
         return std::unexpected(from_growth_error(snapshot.error()));
     }
@@ -366,7 +377,7 @@ Result<ModulePreviewSnapshot> DesktopSession::module_preview_snapshot() const
         return std::unexpected(facts.error());
     }
     auto snapshot = growth::make_growth_snapshot(facts->prepared_prototype, facts->plant_type.parameters,
-                                                 module_physiological_age_);
+                                                 project_.module_workspace.physiological_age);
     if (!snapshot) {
         return std::unexpected(from_growth_error(snapshot.error()));
     }
@@ -384,20 +395,21 @@ Result<ModulePreviewSnapshot> DesktopSession::module_preview_snapshot() const
 
 PreviewEnvironment DesktopSession::preview_environment() const
 {
+    const auto& viewport = active_viewport(project_);
     return {
         .asset_search_path = options_.asset_root_path,
-        .hdri_texture_path = hdri_relative_path(viewport_preferences_.active_hdri_environment_id),
-        .hdri_visible = viewport_preferences_.hdri_backdrop_visible,
-        .guides_visible = viewport_preferences_.guides_visible,
-        .world_origin_axes_visible = viewport_preferences_.world_origin_axes_visible,
+        .hdri_texture_path = hdri_relative_path(viewport.active_hdri_environment_id),
+        .hdri_visible = viewport.hdri_backdrop_visible,
+        .guides_visible = viewport.guides_visible,
+        .world_origin_axes_visible = viewport.world_origin_axes_visible,
     };
 }
 
 Result<void> DesktopSession::set_active_workspace(std::string_view workspace)
 {
     if (workspace == "module") {
-        active_workspace_ = "module";
-        return {};
+        project_.active_workspace = project::Workspace::Module;
+        return save_project();
     }
     if (workspace == "plant" || workspace == "ecosystem") {
         return std::unexpected(make_error(ApplicationError::Code::InvalidCommand,
@@ -423,7 +435,7 @@ Result<void> DesktopSession::set_active_prototype(std::size_t prototype_id)
         return std::unexpected(make_error(ApplicationError::Code::NotFound,
                                           "unknown branch module prototype id " + std::to_string(prototype_id)));
     }
-    project_.active_branch_module_prototype_id = prototype_id;
+    project_.module_workspace.prototype_id = prototype_id;
     auto clamped = clamp_module_age_to_active_range();
     if (!clamped) {
         return std::unexpected(clamped.error());
@@ -437,7 +449,7 @@ Result<void> DesktopSession::set_active_plant_type(std::string_view plant_type_i
         return std::unexpected(
             make_error(ApplicationError::Code::NotFound, "unknown plant type id " + std::string(plant_type_id)));
     }
-    project_.plant_type_library.active_plant_type_id = std::string(plant_type_id);
+    project_.module_workspace.plant_type_id = std::string(plant_type_id);
     auto clamped = clamp_module_age_to_active_range();
     if (!clamped) {
         return std::unexpected(clamped.error());
@@ -455,8 +467,8 @@ Result<void> DesktopSession::set_module_physiological_age(float module_physiolog
     if (!facts) {
         return std::unexpected(facts.error());
     }
-    module_physiological_age_ = std::min(module_physiological_age, facts->fully_grown_age);
-    return {};
+    project_.module_workspace.physiological_age = std::min(module_physiological_age, facts->fully_grown_age);
+    return save_project();
 }
 
 Result<project::PlantType> DesktopSession::create_plant_type(std::string name, char preset_key)
@@ -476,13 +488,16 @@ Result<project::PlantType> DesktopSession::create_plant_type(std::string name, c
 
 Result<void> DesktopSession::delete_plant_type(std::string_view plant_type_id)
 {
+    const bool module_selected = project_.module_workspace.plant_type_id == plant_type_id;
     auto deleted = project::delete_plant_type(project_, plant_type_id);
     if (!deleted) {
         return std::unexpected(from_project_error(deleted.error()));
     }
-    auto clamped = clamp_module_age_to_active_range();
-    if (!clamped) {
-        return std::unexpected(clamped.error());
+    if (module_selected) {
+        auto clamped = clamp_module_age_to_active_range();
+        if (!clamped) {
+            return std::unexpected(clamped.error());
+        }
     }
     return save_project();
 }
@@ -496,17 +511,20 @@ Result<void> DesktopSession::update_plant_type(project::PlantType plant_type)
     if (existing == nullptr) {
         return std::unexpected(make_error(ApplicationError::Code::NotFound, "unknown plant type id " + plant_type.id));
     }
+    const bool module_selected = project_.module_workspace.plant_type_id == plant_type.id;
     *existing = std::move(plant_type);
-    auto clamped = clamp_module_age_to_active_range();
-    if (!clamped) {
-        return std::unexpected(clamped.error());
+    if (module_selected) {
+        auto clamped = clamp_module_age_to_active_range();
+        if (!clamped) {
+            return std::unexpected(clamped.error());
+        }
     }
     return save_project();
 }
 
-ViewportPreferences DesktopSession::viewport_preferences() const
+project::ViewportState DesktopSession::viewport_preferences() const
 {
-    return viewport_preferences_;
+    return active_viewport(project_);
 }
 
 std::vector<HdriEnvironment> DesktopSession::hdri_environments() const
@@ -514,15 +532,21 @@ std::vector<HdriEnvironment> DesktopSession::hdri_environments() const
     return enumerate_hdri_environments(options_.asset_root_path);
 }
 
-Result<void> DesktopSession::update_viewport_preferences(ViewportPreferences preferences)
+Result<void> DesktopSession::update_viewport_preferences(project::ViewportState viewport)
 {
     const auto environments = hdri_environments();
-    if (!std::ranges::any_of(environments,
-                             [&](const auto& environment) { return environment.id == preferences.active_hdri_environment_id; })) {
+    if (!std::ranges::any_of(environments, [&](const auto& environment) {
+            return environment.id == viewport.active_hdri_environment_id;
+        })) {
         return std::unexpected(make_error(ApplicationError::Code::NotFound, "unknown HDRI environment"));
     }
-    viewport_preferences_ = std::move(preferences);
-    save_viewport_preferences(options_.project_path, viewport_preferences_);
+    auto updated_project = project_;
+    active_viewport(updated_project) = std::move(viewport);
+    auto saved = project::save_project(options_.project_path, updated_project);
+    if (!saved) {
+        return std::unexpected(from_project_error(saved.error()));
+    }
+    project_ = std::move(updated_project);
     return {};
 }
 
@@ -532,7 +556,8 @@ Result<void> DesktopSession::clamp_module_age_to_active_range()
     if (!facts) {
         return std::unexpected(facts.error());
     }
-    module_physiological_age_ = std::min(module_physiological_age_, facts->fully_grown_age);
+    project_.module_workspace.physiological_age =
+        std::min(project_.module_workspace.physiological_age, facts->fully_grown_age);
     return {};
 }
 

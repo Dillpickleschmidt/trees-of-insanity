@@ -223,7 +223,7 @@ bool action_changes_preview(std::string_view method)
            method == "viewport.set_preferences";
 }
 
-[[nodiscard]] static json to_json(const ViewportPreferences& preferences)
+[[nodiscard]] static json to_json(const project::ViewportState& preferences)
 {
     return json{
         {"guides_visible", preferences.guides_visible},

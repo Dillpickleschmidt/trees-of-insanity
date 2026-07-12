@@ -107,13 +107,6 @@ struct PreviewEnvironment {
     bool world_origin_axes_visible = true;
 };
 
-struct ViewportPreferences {
-    bool guides_visible = true;
-    bool world_origin_axes_visible = true;
-    bool hdri_backdrop_visible = true;
-    std::string active_hdri_environment_id;
-};
-
 class DesktopSession {
 public:
     [[nodiscard]] static Result<DesktopSession> create(DesktopSessionOptions options = {});
@@ -137,22 +130,19 @@ public:
     [[nodiscard]] Result<void> delete_plant_type(std::string_view plant_type_id);
     [[nodiscard]] Result<void> update_plant_type(project::PlantType plant_type);
 
-    [[nodiscard]] ViewportPreferences viewport_preferences() const;
+    [[nodiscard]] project::ViewportState viewport_preferences() const;
     [[nodiscard]] std::vector<HdriEnvironment> hdri_environments() const;
-    [[nodiscard]] Result<void> update_viewport_preferences(ViewportPreferences preferences);
+    [[nodiscard]] Result<void> update_viewport_preferences(project::ViewportState viewport);
 
 private:
     DesktopSession(DesktopSessionOptions options, import::BranchModulePrototypeLibrary prototype_library,
-                          project::Project project, float module_physiological_age);
+                   project::Project project);
 
     [[nodiscard]] Result<void> clamp_module_age_to_active_range();
 
     DesktopSessionOptions options_;
     import::BranchModulePrototypeLibrary prototype_library_;
     project::Project project_;
-    float module_physiological_age_ = 0.0F;
-    std::string active_workspace_ = "module";
-    ViewportPreferences viewport_preferences_;
 };
 
 [[nodiscard]] std::string to_string(PrototypeTreeItem::Kind kind);
