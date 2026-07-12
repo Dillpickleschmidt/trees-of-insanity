@@ -11,6 +11,7 @@ namespace {
 
 constexpr Vec3 kTropismAxis{0.0F, 0.0F, 1.0F};
 constexpr float kTropismRemainingAtFullLength = 0.25F;
+constexpr float kCentimetersToMeters = 0.01F;
 
 [[nodiscard]] GrowthError invalid_input(std::string message)
 {
@@ -202,7 +203,9 @@ Result<BranchModulePrototype> prepare_branch_module_prototype(const BranchModule
     }
 
     std::vector<float> node_ages(prepared.nodes.size(), 0.0F);
-    const float inverse_length_growth_scale = 1.0F / plant_type.length_growth_scale;
+    // Paper: β is authored in centimeters per physiological-age unit.
+    const float length_growth_scale = plant_type.length_growth_scale * kCentimetersToMeters;
+    const float inverse_length_growth_scale = 1.0F / length_growth_scale;
     std::queue<std::size_t> queue;
     queue.push(prepared.root_node);
 
@@ -229,7 +232,7 @@ Result<BranchModulePrototype> prepare_branch_module_prototype(const BranchModule
         const float base_node_age = prepared.nodes[segment.parent_node].physiological_age;
         const float remaining_age = max_physiological_age - base_node_age;
         segment.inverse_remaining_diameter_age = remaining_age <= kEpsilon ? 0.0F : 1.0F / remaining_age;
-        segment.tropism_falloff_age = tropism_falloff_age(segment.max_length, plant_type.length_growth_scale);
+        segment.tropism_falloff_age = tropism_falloff_age(segment.max_length, length_growth_scale);
     }
 
     return prepared;
@@ -248,6 +251,10 @@ Result<GrowthSnapshot> make_growth_snapshot(const BranchModulePrototype& prepare
     if (!required_prototype) {
         return std::unexpected(required_prototype.error());
     }
+
+    // Paper: φ and β are authored in centimeters; snapshots use meter-based plant space.
+    const float terminal_thickness = plant_type.terminal_thickness * kCentimetersToMeters;
+    const float length_growth_scale = plant_type.length_growth_scale * kCentimetersToMeters;
 
     std::vector<Vec3> current_positions(prepared_prototype.nodes.size());
     current_positions[prepared_prototype.root_node] = prepared_prototype.nodes[prepared_prototype.root_node].position;
@@ -272,7 +279,7 @@ Result<GrowthSnapshot> make_growth_snapshot(const BranchModulePrototype& prepare
         // Paper: a_b = max(0, a_u - a_n), segment physiological age.
         const float segment_age = std::max(0.0F, module_physiological_age - base_node_age);
         // Paper: ℓ_b = min(ℓ_max, β · a_b), current segment length.
-        const float segment_length = std::min(segment.max_length, plant_type.length_growth_scale * segment_age);
+        const float segment_length = std::min(segment.max_length, length_growth_scale * segment_age);
 
         const Vec3 segment_direction = segment_length <= kEpsilon
                                            ? segment.direction
@@ -290,7 +297,7 @@ Result<GrowthSnapshot> make_growth_snapshot(const BranchModulePrototype& prepare
             .source_segment_id = segment_index,
             .parent_position = parent_position,
             .child_position = child_position,
-            .diameter = segment_diameter(segment, segment_age, plant_type.terminal_thickness),
+            .diameter = segment_diameter(segment, segment_age, terminal_thickness),
             .state = state,
         });
     }
@@ -308,10 +315,12 @@ Result<float> fully_grown_age(const BranchModulePrototype& prepared_prototype, c
         return std::unexpected(required_prototype.error());
     }
 
+    // Paper: β is authored in centimeters per physiological-age unit.
+    const float length_growth_scale = plant_type.length_growth_scale * kCentimetersToMeters;
     float result = 0.0F;
     for (const auto& segment : prepared_prototype.segments) {
         const float base_node_age = prepared_prototype.nodes[segment.parent_node].physiological_age;
-        result = std::max(result, base_node_age + segment.max_length / plant_type.length_growth_scale);
+        result = std::max(result, base_node_age + segment.max_length / length_growth_scale);
     }
     return result;
 }

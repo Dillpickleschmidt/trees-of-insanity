@@ -32,12 +32,6 @@ float collision_measure(const Sphere& own_sphere, std::span<const Sphere> other_
     return intersection_volume;
 }
 
-float normalized_collision_measure(const Sphere& own_sphere, std::span<const Sphere> other_spheres)
-{
-    const float own_volume = sphere_volume(own_sphere.radius);
-    return own_volume <= kEpsilon ? 0.0F : collision_measure(own_sphere, other_spheres) / own_volume;
-}
-
 float light_exposure(float collision_measure_value)
 {
     // Paper: Q(u) = exp(-f_collisions(u)).

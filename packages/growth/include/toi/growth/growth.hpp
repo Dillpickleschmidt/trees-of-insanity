@@ -155,9 +155,8 @@ struct VigorSplit {
     float lateral_axis = 0.0F;
 };
 
-// Paper: f_collisions(u), raw and scale-normalized collision measures.
+// Paper: f_collisions(u), raw intersection volume in cubic meters.
 [[nodiscard]] float collision_measure(const Sphere& own_sphere, std::span<const Sphere> other_spheres);
-[[nodiscard]] float normalized_collision_measure(const Sphere& own_sphere, std::span<const Sphere> other_spheres);
 // Paper: Q(u), module light exposure.
 [[nodiscard]] float light_exposure(float collision_measure);
 // Paper Eq. 2: binary Borchert-Honda vigor split.

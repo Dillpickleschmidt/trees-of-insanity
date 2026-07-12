@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <cmath>
 #include <fstream>
 #include <iterator>
 #include <queue>
@@ -19,8 +20,6 @@ using growth::BranchModulePrototype;
 using growth::BranchNode;
 using growth::BranchSegment;
 using growth::Vec3;
-
-constexpr float kModulePrototypeImportScale = 200.0F;
 
 struct ObjObjectData {
     std::string name;
@@ -233,7 +232,8 @@ struct ParsedObj {
 }
 
 [[nodiscard]] Result<BranchModulePrototype>
-build_prototype(const ObjObjectData& object, const std::vector<Vec3>& global_vertices, std::size_t prototype_id)
+build_prototype(const ObjObjectData& object, const std::vector<Vec3>& global_vertices, std::size_t prototype_id,
+                float prototype_geometry_scale)
 {
     if (object.vertex_ids.empty()) {
         return std::unexpected(
@@ -266,8 +266,7 @@ build_prototype(const ObjObjectData& object, const std::vector<Vec3>& global_ver
         }
         const Vec3 app_position = obj_to_app_coordinates(*raw_position);
         nodes.push_back({
-            .position =
-                growth::scale(growth::subtract(app_position, root_position), kModulePrototypeImportScale),
+            .position = growth::scale(growth::subtract(app_position, root_position), prototype_geometry_scale),
             .physiological_age = 0.0F,
         });
     }
@@ -405,8 +404,14 @@ build_prototype(const ObjObjectData& object, const std::vector<Vec3>& global_ver
 
 Result<BranchModulePrototype> load_branch_module_prototype_from_obj(const std::filesystem::path& path,
                                                                     std::string_view object_name,
-                                                                    std::size_t prototype_id)
+                                                                    std::size_t prototype_id,
+                                                                    float prototype_geometry_scale)
 {
+    if (!std::isfinite(prototype_geometry_scale) || prototype_geometry_scale <= 0.0F) {
+        return std::unexpected(make_error(ImportError::Code::InvalidInput,
+                                          "prototype geometry scale must be finite and positive"));
+    }
+
     auto parsed = parse_obj_file(path);
     if (!parsed) {
         return std::unexpected(parsed.error());
@@ -420,11 +425,17 @@ Result<BranchModulePrototype> load_branch_module_prototype_from_obj(const std::f
             make_error(ImportError::Code::UnknownObject, "OBJ object not found: " + std::string(object_name)));
     }
 
-    return build_prototype(*found, parsed->global_vertices, prototype_id);
+    return build_prototype(*found, parsed->global_vertices, prototype_id, prototype_geometry_scale);
 }
 
-Result<BranchModulePrototypeLibrary> load_branch_module_prototype_library_from_obj(const std::filesystem::path& path)
+Result<BranchModulePrototypeLibrary> load_branch_module_prototype_library_from_obj(
+    const std::filesystem::path& path, float prototype_geometry_scale)
 {
+    if (!std::isfinite(prototype_geometry_scale) || prototype_geometry_scale <= 0.0F) {
+        return std::unexpected(make_error(ImportError::Code::InvalidInput,
+                                          "prototype geometry scale must be finite and positive"));
+    }
+
     auto parsed = parse_obj_file(path);
     if (!parsed) {
         return std::unexpected(parsed.error());
@@ -434,7 +445,8 @@ Result<BranchModulePrototypeLibrary> load_branch_module_prototype_library_from_o
     BranchModulePrototypeLibrary library;
     library.prototypes.reserve(objects.size());
     for (std::size_t index = 0; index < objects.size(); ++index) {
-        auto prototype = build_prototype(objects[index], parsed->global_vertices, index);
+        auto prototype =
+            build_prototype(objects[index], parsed->global_vertices, index, prototype_geometry_scale);
         if (!prototype) {
             return std::unexpected(prototype.error());
         }

@@ -17,6 +17,7 @@ namespace {
 constexpr std::string_view kDefaultPrototypeName = "Cube.008";
 constexpr std::string_view kHdriIdPrefix = "hdri:";
 constexpr std::string_view kDefaultHdriFile = "meadow_2_4k.exr";
+constexpr float kPrototypeLibraryGeometryScale = 2.0F;
 
 [[nodiscard]] bool is_hdri_file(const std::filesystem::path& path)
 {
@@ -231,7 +232,8 @@ DesktopSession::DesktopSession(DesktopSessionOptions options,
 
 Result<DesktopSession> DesktopSession::create(DesktopSessionOptions options)
 {
-    auto library = import::load_branch_module_prototype_library_from_obj(options.prototype_asset_path);
+    auto library = import::load_branch_module_prototype_library_from_obj(options.prototype_asset_path,
+                                                                         kPrototypeLibraryGeometryScale);
     if (!library) {
         return std::unexpected(from_import_error(library.error()));
     }

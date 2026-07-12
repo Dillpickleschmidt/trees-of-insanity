@@ -265,7 +265,7 @@ GrowthPreviewStageProjection make_growth_preview_stage_projection_impl(
 
 [[nodiscard]] float radius_of(Bounds bounds)
 {
-    return std::max(1.0F, growth::length(growth::scale(growth::subtract(bounds.max, bounds.min), 0.5F)));
+    return std::max(kEpsilon, growth::length(growth::scale(growth::subtract(bounds.max, bounds.min), 0.5F)));
 }
 
 [[nodiscard]] GrowthPreviewCamera make_camera_from_bounds(Bounds bounds, int requested_width, int requested_height)
@@ -276,7 +276,7 @@ GrowthPreviewStageProjection make_growth_preview_stage_projection_impl(
         kCameraHorizontalAperture * static_cast<double>(height) / static_cast<double>(width);
     const growth::Vec3 center = center_of(bounds);
     const float radius = radius_of(bounds);
-    const float distance = std::max(10.0F, radius * 3.0F);
+    const float distance = radius * 3.0F;
     const growth::Vec3 eye = growth::add(center, {.x = 0.0F, .y = -distance, .z = radius * 0.35F});
     const growth::Vec3 reference_up{.x = 0.0F, .y = 0.0F, .z = 1.0F};
     const growth::Vec3 forward = safe_normalize(growth::subtract(center, eye), {.x = 0.0F, .y = 1.0F, .z = 0.0F});
