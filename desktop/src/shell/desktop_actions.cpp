@@ -218,8 +218,7 @@ void apply_parameter_update(project::PlantType& plant_type, const json& paramete
 bool action_changes_preview(std::string_view method)
 {
     return method == "module.set_age" || method == "module.set_active_prototype" ||
-           method == "module.set_active_plant_type" || method == "plant.set_age" ||
-           method == "plant.set_active_plant_type" || method == "workspace.set" ||
+           method == "module.set_active_plant_type" || method == "workspace.set" ||
            method == "plant_types.create" || method == "plant_types.update" || method == "plant_types.delete" ||
            method == "viewport.set_preferences";
 }
@@ -271,8 +270,6 @@ bool action_changes_preview(std::string_view method)
         {"active_plant_type_id", state.active_plant_type_id},
         {"module_physiological_age", state.module_physiological_age},
         {"fully_grown_age", state.fully_grown_age},
-        {"plant_physiological_age", state.plant_physiological_age},
-        {"plant_fully_grown_age", state.plant_fully_grown_age},
         {"plant_type_parameter_descriptors", parameter_descriptors_to_json()},
     };
 }
@@ -291,18 +288,6 @@ bool action_changes_preview(std::string_view method)
         {"growing_segment_count", summary.growing_segment_count},
         {"mature_segment_count", summary.mature_segment_count},
         {"max_diameter", summary.max_diameter},
-    };
-}
-
-[[nodiscard]] static json to_json(const PlantGrowthSummary& summary)
-{
-    return json{
-        {"plant_physiological_age", summary.plant_physiological_age},
-        {"plant_fully_grown_age", summary.plant_fully_grown_age},
-        {"module_count", summary.module_count},
-        {"visible_segment_count", summary.visible_segment_count},
-        {"max_diameter", summary.max_diameter},
-        {"senescent", summary.senescent},
     };
 }
 
@@ -390,18 +375,6 @@ json dispatch_action(DesktopSession& session, const json& request)
         if (method == "workspace.set") {
             auto result = session.set_active_workspace(json_string(params, "workspace"));
             return result ? response_ok(id, json::object()) : response_error(id, result.error());
-        }
-        if (method == "plant.set_age") {
-            auto result = session.set_plant_physiological_age(json_float(params, "age"));
-            return result ? response_ok(id, json::object()) : response_error(id, result.error());
-        }
-        if (method == "plant.set_active_plant_type") {
-            auto result = session.set_active_plant_type(json_string(params, "plant_type_id"));
-            return result ? response_ok(id, json::object()) : response_error(id, result.error());
-        }
-        if (method == "plant.get_growth_summary") {
-            auto summary = session.plant_growth_summary();
-            return summary ? response_ok(id, to_json(*summary)) : response_error(id, summary.error());
         }
         if (method == "plant_types.list") {
             auto state = session.state();

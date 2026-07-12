@@ -9,7 +9,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <variant>
 #include <vector>
 
 namespace toi::model {
@@ -61,8 +60,6 @@ struct AppStateView {
     std::string active_plant_type_id;
     float module_physiological_age = 0.0F;
     float fully_grown_age = 0.0F;
-    float plant_physiological_age = 0.0F;
-    float plant_fully_grown_age = 0.0F;
 };
 
 struct PrototypeTreeItem {
@@ -90,15 +87,6 @@ struct GrowthSnapshotSummary {
     float max_diameter = 0.0F;
 };
 
-struct PlantGrowthSummary {
-    float plant_physiological_age = 0.0F;
-    float plant_fully_grown_age = 0.0F;
-    std::size_t module_count = 0;
-    std::size_t visible_segment_count = 0;
-    float max_diameter = 0.0F;
-    bool senescent = false;
-};
-
 struct HdriEnvironment {
     std::string id;
     std::string name;
@@ -110,8 +98,6 @@ struct ModulePreviewSnapshot {
     growth::GrowthSnapshot camera_snapshot;
     growth::BranchModulePrototype prepared_prototype;
 };
-
-using ActivePreviewSnapshot = std::variant<ModulePreviewSnapshot, growth::PlantArchitecture>;
 
 struct PreviewEnvironment {
     std::filesystem::path asset_search_path;
@@ -144,12 +130,7 @@ public:
     [[nodiscard]] Result<void> set_active_plant_type(std::string_view plant_type_id);
     [[nodiscard]] Result<void> set_module_physiological_age(float module_physiological_age);
 
-    // Plant workspace: develop the active plant type at the plant physiological age.
-    [[nodiscard]] Result<growth::PlantArchitecture> plant_architecture() const;
-    [[nodiscard]] Result<PlantGrowthSummary> plant_growth_summary() const;
-    [[nodiscard]] Result<ActivePreviewSnapshot> active_preview_snapshot() const;
     [[nodiscard]] PreviewEnvironment preview_environment() const;
-    [[nodiscard]] Result<void> set_plant_physiological_age(float plant_physiological_age);
     [[nodiscard]] Result<void> set_active_workspace(std::string_view workspace);
 
     [[nodiscard]] Result<project::PlantType> create_plant_type(std::string name, char preset_key);
@@ -170,7 +151,6 @@ private:
     import::BranchModulePrototypeLibrary prototype_library_;
     project::Project project_;
     float module_physiological_age_ = 0.0F;
-    float plant_physiological_age_ = 0.0F;
     std::string active_workspace_ = "module";
     ViewportPreferences viewport_preferences_;
 };

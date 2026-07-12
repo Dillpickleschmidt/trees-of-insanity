@@ -1,11 +1,11 @@
 # Trees of Insanity
 
-Monorepo containing an independently buildable C++ growth library and a Qt desktop plant editor.
+Monorepo containing an independently buildable C++ growth library and a Qt desktop plant-modeling application.
 
 ## Products
 
-- [`packages/growth`](packages/growth): deterministic renderer-independent growth simulation.
-- [`desktop`](desktop): Qt Quick/WebEngine + Solid UI with an ovrtx CUDA→Vulkan viewport.
+- [`packages/growth`](packages/growth): deterministic module growth, paper equations, and staged single-plant simulation.
+- [`desktop`](desktop): Module workspace plus the staged Plant workspace, using Qt Quick/WebEngine, Solid UI, and an ovrtx CUDA→Vulkan viewport. Ecosystem remains a disabled placeholder.
 
 Supported desktop targets: Linux and Windows on NVIDIA/CUDA. macOS unsupported.
 

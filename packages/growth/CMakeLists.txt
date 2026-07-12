@@ -3,8 +3,8 @@ cmake_minimum_required(VERSION 3.25)
 project(toi_growth VERSION 0.1.0 LANGUAGES CXX)
 
 add_library(toi_growth
+    src/equations.cpp
     src/growth.cpp
-    src/plant.cpp
 )
 add_library(toi::growth ALIAS toi_growth)
 target_include_directories(toi_growth

@@ -2,7 +2,7 @@
 
 Trees of Insanity is one Git repository with two owned products:
 
-- `packages/growth`: standalone deterministic C++ plant-growth library.
+- `packages/growth`: standalone deterministic C++ module-growth, plant-equation, and single-plant simulation library.
 - `desktop`: Qt/CUDA/Vulkan desktop application and Solid UI.
 
 ## Boundaries

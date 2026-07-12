@@ -1,151 +1,108 @@
-# Single-plant growth model
+# Growth model and equation library
 
-Complete reference for plant-scale growth of one plant, from Synthetic Silviculture (SS) and its
-source Palubicki et al. 2009. Goal: no academic ambiguity remains during implementation. Uses
-`CONTEXT.md` terms. Symbols in `backticks` are paper notation.
+Reference for the retained Synthetic Silviculture math and its source model in Palubicki et al. 2009. The library currently develops one branch module; it does not orchestrate a whole plant.
 
-## Scope
+## Module development
 
-Plant workspace = one plant, no ecosystem. Excluded (ecosystem-only, no decision needed):
-temperature/precipitation axes, automatic species selection, seeding/dispersal, successions, gap
-dynamics, inter-plant shadow propagation. Plant type is user-selected directly.
+Implemented by `growth_rate`, `prepare_branch_module_prototype`, `make_growth_snapshot`, and `fully_grown_age`:
 
-Module scale (§5.3, §5.3.1) is **already implemented** (`make_growth_snapshot`). Plant scale (§5.2)
-— module architecture, light/vigor distribution, attach/shed, orientation — is **new**.
-
-**First plant milestone = full morphospace**: all nine prototypes with Voronoi selection and `D'`, so
-determinacy is active from the start (no single-prototype bypass). This runs on the current 2D
-prototypes: module orientation at attachment (§5.2.3) rotates each module in `φ`/`ψ` while
-`f_collisions` pushes modules out of plane, so the whole-tree architecture is 3D even with flat
-prototypes. Prototype depth is an additional source of 3D form (out-of-plane branches within each
-module) that we simply haven't authored yet — a realism improvement, not a functional prerequisite.
-
-## Plant-scale loop (per simulation step)
-
-```
-1. Light      Q(u) = exp(−f_collisions(u))                      eq1
-2. Vigor      two-pass Borchert-Honda over the module tree      eq2
-3. Growth     Υ(u) = smoothstep((v̄−v̄min)/(v̄max−v̄min))·g_p       eq5  (module scale, done)
-4. Age        da_u/dt = Υ(u), Euler, 0 → a_mature               eq6  (module scale, done)
-5. Attach/shed/senesce
+```text
+Υ(u) = S((v̄(u) - v̄_min) / (v̄_max - v̄_min)) · g_p    Eq. 5
+S(x) = 3x² - 2x³
+da_u/dt = Υ(u)                                             Eq. 6
+a_b = max(0, a_u - a_n)                                  Eq. 7
+d_b = sqrt(Σ d_c²), terminal d_b = φ                     Eq. 8
+ℓ_b = min(ℓ_max, β · a_b)                                 Eq. 9
+τ_offset(a_b) = g₁ · ĝ_dir · g₂ / (a_b + g₁)             Eq. 10
 ```
 
-## Equations
+`physiological_age_euler_step` preserves the paper's forward-Euler approximation of Eq. 6 without choosing a clock or timestep. Node age `a_n` remains provisionally derived from scaled root-to-node path length (ADR 0003). Existing module behavior is unchanged.
 
-Plant scale (new):
+## Plant-scale equation functions
 
-```
-f_collisions(u) = Σ_w V_intersect(B_u, B_w)          eq1   self-collisions only (single plant)
-Q(u)            = exp(−f_collisions(u))              eq1
-Q(u)            = Q(u_m) + Q(u_l)                    basipetal (tips→root)
-v̄(u_m)          = v̄(u)·λQ(u_m) / (λQ(u_m)+(1−λ)Q(u_l))   eq2   acropetal (root→tips)
-v̄(u_l)          = v̄(u) − v̄(u_m)                      eq2
-```
-`λ>0.5` excurrent (trunk), `≤0.5` decurrent (spreading). Root allocation and shedding: see Decisions.
+These pure functions preserve the paper math without architecture or stepping policy.
 
-Module selection (§5.2.2): new module placed in morphospace at `(λ, D')`, `D' = v̄(u_parent)·D/v̄_max`;
-Voronoi over 9 prototype seeds picks the prototype = nearest seed to the query point (for the even 3×3
-grid, snap `λ` and `D'` each to the nearest of {0.17, 0.5, 0.83}; no Voronoi diagram needed). `λ` picks
-the row (fixed per plant type), vigor picks the column via `D'`. See Morphospace.
+### Light and vigor
 
-Module orientation (§5.2.3 / A.1): discrete coordinate descent on Euler angles `ρ=[φ,θ,ψ]`.
-Start = parent module orientation. Each step tries `P = {[α_s,0,0],[−α_s,0,0],[0,0,α_s],[0,0,−α_s]}`
-(perturb `φ` and `ψ` only — `θ` never changes) and keeps the candidate with lowest `f_distribution`;
-stop after a few steps or `f_distribution < error`.
-
-```
-f_distribution(u) = ω₁·f_collisions(u) + ω₂·f_tropism(u)     eq3
-f_tropism(u_α)    = ‖cos(α_tropism) − cos(u_α)‖              eq4
+```text
+f_collisions(u) = Σ_w V_intersect(B_u, B_w)               Eq. 1
+Q(u) = exp(-f_collisions(u))
+Q_accumulated(u) = Q_direct(u) + Σ_c Q_accumulated(c)      basipetal accumulation
+v̄(u_root) = min(Q_accumulated(u_root), v̄_rootmax)
+v̄(u_m) = v̄(u) · λQ(u_m) / (λQ(u_m) + (1-λ)Q(u_l))       Eq. 2
+v̄(u_l) = v̄(u) - v̄(u_m)
 ```
 
-Module scale (already implemented, listed for completeness):
+- `collision_measure` calculates Eq. 1's raw cubic-meter intersection sum over every other module; see ADR 0006.
+- `light_exposure` calculates direct light exposure `Q(u)`.
+- Accumulated light includes each module's direct exposure exactly once; see ADR 0007.
+- Mature modules divide direct exposure equally among terminals; occupied terminals add child accumulated light, and prototype branch topology carries the combined value toward the module root. Vigor traverses the same continuous network in reverse (ADR 0016).
+- The root vigor budget follows accumulated light up to `v̄_rootmax`; see ADR 0009.
+- `split_vigor` performs one binary Borchert-Honda split. Main-axis continuations are precomputed from prototype geometry using ADR 0010. Multiple laterals form one group for Eq. 2, then divide their shared budget proportionally by accumulated light using ADR 0011. An all-zero-light fork uses `λ` and `1−λ` directly rather than sending all vigor to main or producing `0/0`.
 
+The earlier Self-organizing Tree Models paper applies the two-pass Borchert-Honda process to buds and branches. Synthetic Silviculture adapts it to branch modules.
+
+### Morphospace selection
+
+A new module's query coordinate is `(λ, D')`:
+
+```text
+D' = v̄(u_parent) · D / v̄_max
 ```
-a_b = max(0, a_u − a_n)                              eq7   segment age
-d_b = √(Σ_{c∈C_b} d_c²)  else φ                      eq8   pipe model, n=2
-ℓ_b = min(ℓ_max, β·a_b)                              eq9   segment length
-τ_offset(a_b) = (g₁·ĝ_dir·g₂) / (a_b + g₁)           eq10  per-segment tropism bend
+
+`vigor_scaled_determinacy` calculates `D'`. `nearest_morphospace_prototype` applies the accepted fixed grid (ADR 0005):
+
+```text
+ λ high | Cube.006  Cube.007  Cube.008
+ λ mid  | Cube.003  Cube.004  Cube.005
+ λ low  | Cube      Cube.001  Cube.002
+          D low     D mid     D high
 ```
-eq10: `ĝ_dir` = normalized gravity; sign of the strength selects gravitropism (−) / phototropism (+);
-offset decays as segment age `a_b` grows. Added to node positions.
 
-## Paper → PlantTypeParameters (Table 4, plant types a–p)
+Each axis uses levels `{1/6, 1/2, 5/6}`. Determinacy increases across columns; apical control increases across rows. Maximum module vigor is the shared constant `v̄_max = 1`, distinct from `v̄_rootmax`; a root selection query uses full module vigor, making `D' = D` (ADR 0008).
 
-| Table 4 | struct field | role |
+### Orientation
+
+```text
+f_distribution(u) = ω₁ · f_collisions(u) + ω₂ · f_tropism(u)    Eq. 3
+f_tropism(u_α) = |cos(α_tropism) - cos(u_α)|                    Eq. 4
+```
+
+`orientation_distribution_cost` and `orientation_tropism_cost` preserve these equations. Appendix A.1 describes coordinate descent from the parent orientation using perturbations `{[α_s,0,0],[-α_s,0,0],[0,0,α_s],[0,0,-α_s]}`. A new module is rigidly oriented once at attachment using its mature prototype extent against existing current bounds; later Eq. 10 tropism adaptation bends developing segments without rerunning module orientation (ADR 0013). Search uses the paper's four positive/negative perturbations of the first and third Euler angles, at most three iterations, and stops when no candidate improves cost. The perturbation angle is provisionally 10 degrees because the paper only specifies a small angle; it remains subject to result calibration.
+
+### Attachment, shedding, and senescence reference
+
+For a mature module, each terminal receives `q(n_i) = Q(u) / #n`. An occupied terminal adds its child's accumulated light and passes allocated vigor into that child; an unoccupied terminal attaches a child when its allocated vigor exceeds `v̄_min`. All eligible attachments commit together when the maturity-crossing step commits. Eq. 8 diameter support continues across parent-terminal/child-root attachments in one basipetal pipe calculation; shedding removes the child's contribution (ADR 0017).
+
+The paper does not provide a numerical value for `v̄_min`. Growth, attachment, and shedding provisionally share `v̄_min = 0.02` in the module-vigor range `[0, 1]` until whole-plant calibration is possible.
+
+At `p_t ≥ p_max`, the paper linearly reduces root vigor to zero with a constant step but does not provide the decline rate or duration. Senescence behavior remains deferred until healthy growth, attachment, light, and shedding are validated.
+
+## Plant type parameters
+
+The 16 presets retain Synthetic Silviculture Table 4 exactly:
+
+| Paper | Field | Role |
 |---|---|---|
 | `p_max` | `plant_max_age` | senescence onset |
-| `v̄_rootmax` | `root_max_vigor` | root vigor (constant) |
-| `g_p` | `plant_growth_rate` | scales Υ (eq5) |
-| `λ/λ_mature` | `apical_control` / `mature_apical_control` | eq2 split + morphospace axis |
-| `D/D_mature` | `determinacy` / `mature_determinacy` | morphospace axis (selection only) |
-| `F_age` | `flowering_age` | when mature params apply (`-` = never) |
-| `α` | `tropism_angle` | eq4 tropism target angle |
-| `ω₂` | `tropism_weight` | eq3 orientation weight |
-| `g₁` (signed) | `tropism_strength` | eq10 tropism strength+direction |
-| `φ` | `terminal_thickness` | eq8 terminal diameter |
-| `β` | `length_growth_scale` | eq9 length scale |
+| `v̄_rootmax` | `root_max_vigor` | maximum whole-plant root vigor budget |
+| `g_p` | `plant_growth_rate` | Eq. 5 scale |
+| `λ/λ_mature` | `apical_control` / `mature_apical_control` | Eq. 2 and morphospace |
+| `D/D_mature` | `determinacy` / `mature_determinacy` | morphospace |
+| `F_age` | `flowering_age` | mature-parameter transition |
+| `α` | `tropism_angle` | Eq. 4 target |
+| `ω₂` | `tropism_weight` | Eq. 3 weight |
+| signed `g₁` | `tropism_strength` | Eq. 10 strength/direction |
+| `φ` | `terminal_thickness` | Eq. 8 terminal diameter; interpreted as centimeters and converted to meters |
+| `β` | `length_growth_scale` | Eq. 9 scale; interpreted as centimeters per physiological-age unit and converted to meters |
 
-The struct matches Table 4 exactly; nothing missing for single-plant.
+`parameter_for_plant_age` selects young or mature values at flowering age. The paper's Eq. 10 `g₁`/`g₂` labels and Table 4's single signed `g₁` column are inconsistent; module growth retains the existing interpretation: the table value controls signed strength while per-segment falloff controls decay.
 
-## Morphospace (resolved — ADR-0013)
+## Current reset point
 
-Nine prototypes `Cube`..`Cube.008` on an even 3×3 grid at unit-square cell centers.
-**D increases left→right (X); λ increases bottom→top (Y).** Traced from SS Fig. of §5.2.2.
-
-```
- λ hi | Cube.006  Cube.007  Cube.008
- λ mid| Cube.003  Cube.004  Cube.005
- λ lo | Cube      Cube.001  Cube.002
-        D lo      D mid     D hi
-```
-
-Seed coordinates `(λ, D)`, levels ∈ {0.17, 0.5, 0.83}:
-
-| proto | λ | D | proto | λ | D | proto | λ | D |
-|---|---|---|---|---|---|---|---|---|
-| Cube | .17 | .17 | Cube.001 | .17 | .5 | Cube.002 | .17 | .83 |
-| Cube.003 | .5 | .17 | Cube.004 | .5 | .5 | Cube.005 | .5 | .83 |
-| Cube.006 | .83 | .17 | Cube.007 | .83 | .5 | Cube.008 | .83 | .83 |
-
-**Selecting a prototype = pick the nearest seed** to the query point `(λ, D')`. "Voronoi" is just the
-paper's name for that nearest-seed partition — needed because *their* seeds are scattered arbitrarily.
-On our even grid it reduces to snapping `λ` and `D'` each to the nearest of {0.17, 0.5, 0.83}: two
-roundings, no diagram, no library. `λ` (fixed per plant type) picks the row; vigor via `D'` picks the
-column.
-
-Prototypes are currently 2D tracings (z≈0). Sufficient for the milestone: each module stays planar but
-the architecture still spreads in 3D via module orientation. Prototype depth is an additional (not the
-only) source of 3D form — it adds out-of-plane branches *within* a module. Realism improvement,
-optional.
-
-## Decisions & provisional rules
-
-Every unspecified item has an explicit rule so no academic decision is needed mid-implementation.
-
-- **Light (single plant)** — self-collision only; unoccluded sky. No inter-plant shadow. (ADR-0012)
-- **Root vigor** — root receives constant `v̄_rootmax` each step (paper: "never allocate more than
-  `v̄_rootmax`"; senescence text confirms it is the per-step allocation). No `α` scaling — Table 4's
-  `α` is the tropism angle, not a vigor coefficient.
-- **`v̄_max = v̄_rootmax`** — the root holds the maximum (matches `VigorInputs::max_for`).
-- **Shedding** — module removed when `v̄ < v̄_min`.
-- **Senescence** — at `p_t ≥ p_max`, interpolate `v̄_rootmax → 0` at constant step until all modules shed.
-- **`B_u`** — sphere centered at the module-geometry centroid with radius = the maximum distance from
-  that centroid to any node (an enclosing sphere). `f_collisions` divides each pairwise overlap by the
-  module's own sphere volume, so the measure is scale-invariant.
-- **Node age `a_n`** — provisional path-length / `β` until authored into prototypes. (ADR-0006)
-- **Borchert-Honda beyond binary** — eq2 is main + one lateral; for a node with >2 children, apply
-  eq2 recursively (main vs. the combined rest). Our interpretation of an unstated case.
-- **Root module prototype** — the root has no parent, so `D'` is undefined. Select its prototype as if
-  the seed were full vigor (`D' = D`), i.e. the nearest seed to `(λ, D)`. The paper doesn't specify this.
-- **Orientation** — only `ω₂` is tabulated, so fix `ω₁ = 1`; step angle `α_s` small and step count
-  "few or until `f < error`" are our tuning. Note `α_s` (A.1 step size) ≠ `α_tropism` (eq4) — the
-  paper reuses `α`.
-- **Tropism naming** — the paper's eq10 names `g₁` (time decay) and `g₂` (signed strength), but
-  Table 4 tabulates a single signed column labelled `g₁`. Treat the tabulated signed value as
-  strength+direction (`tropism_strength`); segment-age falloff is handled by `tropism_falloff_age`.
-  The paper's `g₁`/`g₂` labelling is internally inconsistent — flagged, not guessed.
+The source interface currently retains module development and pure equation primitives; `PlantSimulation`, placed-module topology, traversal, attachment, orientation search, and plant snapshots enter through the accepted incremental milestones. The ADRs in this directory define their agreed behavior before implementation.
 
 ## Sources
 
-- Synthetic Silviculture (Makowski et al. 2019) — §5.2, §5.3, §5.3.1, App. A.1, Table 4 (Fig. 21).
-- Self-organizing tree models (Palubicki et al. 2009) — §3 (main/lateral topology), §4.2 (Borchert-Honda).
+- Synthetic Silviculture (Makowski et al. 2019): §5.2, §5.3, §5.3.1, Appendix A.1, Table 4.
+- Self-organizing tree models for image synthesis (Palubicki et al. 2009): §4.1–4.5, especially extended Borchert-Honda allocation.

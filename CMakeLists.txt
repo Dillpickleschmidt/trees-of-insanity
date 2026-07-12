@@ -201,9 +201,6 @@ if(TOI_BUILD_TESTS)
 
     add_executable(toi_core_tests
         desktop/tests/model/model_smoke_tests.cpp
-        desktop/tests/model/imported_growth_tests.cpp
-        desktop/tests/graphics/render_projection_tests.cpp
-        desktop/tests/model/plant_session_tests.cpp
     )
     target_link_libraries(toi_core_tests PRIVATE
         toi_desktop_model

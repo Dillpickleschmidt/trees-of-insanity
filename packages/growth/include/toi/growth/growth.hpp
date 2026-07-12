@@ -28,7 +28,6 @@ struct Vec3 {
 struct GrowthError {
     enum class Code {
         InvalidInput,
-        UnknownPlantType,
         InvalidPrototype,
     };
 
@@ -146,55 +145,40 @@ compute_pipe_diameter_factors(const std::vector<BranchSegment>& segments,
 
 [[nodiscard]] std::string to_string(SegmentState state);
 
-inline constexpr std::size_t kNoParent = static_cast<std::size_t>(-1);
-
-struct PlantError {
-    enum class Code {
-        InvalidInput,
-        InvalidPrototype,
-        EmptyLibrary,
-    };
-
-    Code code = Code::InvalidInput;
-    std::string message;
+struct Sphere {
+    Vec3 center;
+    float radius = 0.0F;
 };
 
-template <class T> using PlantResult = std::expected<T, PlantError>;
-
-struct PlacedModule {
-    std::size_t prototype_index = 0;
-    std::size_t parent_module = kNoParent;
-    std::size_t parent_terminal_node = 0;
-    Vec3 origin;
-    Vec3 basis_x{1.0F, 0.0F, 0.0F};
-    Vec3 basis_y{0.0F, 1.0F, 0.0F};
-    Vec3 basis_z{0.0F, 0.0F, 1.0F};
-    // Paper: a_u, module physiological age.
-    float physiological_age = 0.0F;
-    // Paper: v̄(u), module vigor.
-    float vigor = 0.0F;
-    GrowthSnapshot snapshot;
+struct VigorSplit {
+    float main_axis = 0.0F;
+    float lateral_axis = 0.0F;
 };
 
-struct PlantArchitecture {
-    std::vector<PlacedModule> modules;
-    std::vector<BranchModulePrototype> prototypes;
-    // Paper: p_t, plant physiological age.
-    float plant_age = 0.0F;
-    bool senescent = false;
-};
+// Paper: f_collisions(u), raw and scale-normalized collision measures.
+[[nodiscard]] float collision_measure(const Sphere& own_sphere, std::span<const Sphere> other_spheres);
+[[nodiscard]] float normalized_collision_measure(const Sphere& own_sphere, std::span<const Sphere> other_spheres);
+// Paper: Q(u), module light exposure.
+[[nodiscard]] float light_exposure(float collision_measure);
+// Paper Eq. 2: binary Borchert-Honda vigor split.
+[[nodiscard]] VigorSplit split_vigor(float available_vigor, float main_axis_light, float lateral_axis_light,
+                                     float apical_control);
+// Paper: D', vigor-scaled determinacy.
+[[nodiscard]] float vigor_scaled_determinacy(float determinacy, float module_vigor, float root_max_vigor);
+// Fixed 3x3 morphospace, row-major by apical control then determinacy.
+[[nodiscard]] std::size_t nearest_morphospace_prototype(float apical_control, float determinacy);
+[[nodiscard]] float parameter_for_plant_age(float young_value, std::optional<float> mature_value,
+                                            float flowering_age, float plant_age);
+// Paper Eq. 4 and Eq. 3 respectively.
+[[nodiscard]] float orientation_tropism_cost(float tropism_angle, Vec3 module_axis, Vec3 tropism_axis);
+[[nodiscard]] float orientation_distribution_cost(float collision_exposure, float collision_weight,
+                                                  float tropism_cost, float tropism_weight);
+// Paper Eq. 6: forward-Euler physiological-age integration.
+[[nodiscard]] float physiological_age_euler_step(float physiological_age, float growth_rate, float time_step);
 
-struct PlantArchitectureSummary {
-    std::size_t module_count = 0;
-    std::size_t visible_segment_count = 0;
-    float max_diameter = 0.0F;
-    float root_vigor = 0.0F;
-    bool senescent = false;
-};
-
-[[nodiscard]] PlantResult<PlantArchitecture>
-develop_plant(const PlantTypeParameters& plant_type, const BranchModulePrototypeLibrary& library, float plant_age);
-
-[[nodiscard]] PlantArchitectureSummary summarize(const PlantArchitecture& architecture);
+inline constexpr float kShedVigorFraction = 0.02F;
+[[nodiscard]] float shedding_vigor_threshold(float root_max_vigor);
+[[nodiscard]] float senescence_interpolation(float full_vigor, float plant_age, float maximum_age,
+                                             float ramp_duration);
 
 } // namespace toi::growth

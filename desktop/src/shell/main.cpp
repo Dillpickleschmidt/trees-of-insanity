@@ -29,7 +29,7 @@ namespace {
 toi::model::Result<toi::render::GrowthPreviewStageProjection>
 make_preview_projection(const toi::model::DesktopSession& session, int width = 1280, int height = 720)
 {
-    auto snapshot = session.active_preview_snapshot();
+    auto snapshot = session.module_preview_snapshot();
     if (!snapshot) {
         return std::unexpected(snapshot.error());
     }
@@ -41,15 +41,8 @@ make_preview_projection(const toi::model::DesktopSession& session, int width = 1
         .hdri_texture_path = environment.hdri_texture_path,
         .hdri_visible = environment.hdri_visible,
     };
-    return std::visit([&options](const auto& value) {
-        using Value = std::decay_t<decltype(value)>;
-        if constexpr (std::is_same_v<Value, toi::model::ModulePreviewSnapshot>) {
-            return toi::render::make_growth_preview_stage_projection(
-                value.snapshot, value.camera_snapshot, value.prepared_prototype, options);
-        } else {
-            return toi::render::make_plant_preview_stage_projection(value, options);
-        }
-    }, *snapshot);
+    return toi::render::make_growth_preview_stage_projection(
+        snapshot->snapshot, snapshot->camera_snapshot, snapshot->prepared_prototype, options);
 }
 
 } // namespace

@@ -55,6 +55,15 @@ TEST_CASE("application session opens default module workspace")
     CHECK(state->active_prototype_id == 8);
     CHECK(state->active_plant_type_id == "plant-type-1");
     CHECK(state->module_physiological_age == state->fully_grown_age);
+
+    bool plant_is_disabled = false;
+    for (const auto& preview : state->workspace_previews) {
+        if (preview.workspace == "plant") {
+            plant_is_disabled = !preview.implemented;
+        }
+    }
+    CHECK(plant_is_disabled);
+    CHECK_FALSE(session->set_active_workspace("plant").has_value());
 }
 
 TEST_CASE("age scrubbing keeps the growth-preview stage topology stable")

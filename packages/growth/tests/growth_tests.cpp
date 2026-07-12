@@ -1,8 +1,11 @@
 #include "toi/growth/growth.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <cmath>
+#include <numbers>
 
 namespace {
 
@@ -11,7 +14,7 @@ toi::growth::BranchModulePrototype make_prototype(std::size_t id)
     using namespace toi::growth;
     BranchModulePrototype prototype;
     prototype.id = id;
-    prototype.name = id == 0 ? "Cube" : "Cube." + std::string(id < 10 ? "00" : "0") + std::to_string(id);
+    prototype.name = "prototype";
     prototype.root_node = 0;
     prototype.nodes = {
         {{0.0F, 0.0F, 0.0F}, 0.0F},
@@ -28,20 +31,6 @@ toi::growth::BranchModulePrototype make_prototype(std::size_t id)
     prototype.child_segments_by_node = {{0}, {1, 2}, {}, {}};
     prototype.incoming_segment_by_node = {std::nullopt, 0, 1, 2};
     return prototype;
-}
-
-toi::growth::BranchModulePrototypeLibrary make_library()
-{
-    toi::growth::BranchModulePrototypeLibrary library;
-    for (std::size_t id = 0; id < 9; ++id) {
-        library.prototypes.push_back(make_prototype(id));
-    }
-    return library;
-}
-
-bool finite(toi::growth::Vec3 value)
-{
-    return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
 
 } // namespace
@@ -62,35 +51,44 @@ TEST_CASE("module growth is deterministic")
     REQUIRE(first->module_physiological_age == second->module_physiological_age);
 }
 
-TEST_CASE("every preset develops a bounded finite plant")
+TEST_CASE("sphere collision measure is normalized by the subject sphere volume")
 {
     using namespace toi::growth;
-    const auto library = make_library();
-    for (char key = 'a'; key <= 'p'; ++key) {
-        const auto plant_type = plant_type_preset_by_key(key);
-        REQUIRE(plant_type);
-        const auto architecture = develop_plant(*plant_type, library, plant_type->plant_max_age);
-        REQUIRE(architecture);
-        REQUIRE_FALSE(architecture->modules.empty());
-        REQUIRE(architecture->modules.size() <= 128);
-        for (const auto& module : architecture->modules) {
-            REQUIRE(finite(module.origin));
-            REQUIRE(std::isfinite(module.physiological_age));
-            REQUIRE(std::isfinite(module.vigor));
-        }
-    }
+    const Sphere own{{0.0F, 0.0F, 0.0F}, 2.0F};
+    const std::array others{Sphere{{0.0F, 0.0F, 0.0F}, 2.0F}};
+    CHECK(normalized_collision_measure(own, others) == Catch::Approx(1.0F));
+    CHECK(collision_measure(own, others) == Catch::Approx(32.0F * std::numbers::pi_v<float> / 3.0F));
+    CHECK(light_exposure(1.0F) == Catch::Approx(std::exp(-1.0F)));
 }
 
-TEST_CASE("plant development is deterministic")
+TEST_CASE("Borchert-Honda split conserves vigor")
+{
+    const auto split = toi::growth::split_vigor(80.0F, 3.0F, 1.0F, 0.75F);
+    CHECK(split.main_axis == Catch::Approx(72.0F));
+    CHECK(split.lateral_axis == Catch::Approx(8.0F));
+    CHECK(split.main_axis + split.lateral_axis == Catch::Approx(80.0F));
+}
+
+TEST_CASE("full-vigor determinacy selects the nearest fixed morphospace cell")
 {
     using namespace toi::growth;
-    const auto plant_type = plant_type_preset_by_key('h');
-    REQUIRE(plant_type);
-    const auto library = make_library();
-    const auto first = develop_plant(*plant_type, library, 120.0F);
-    const auto second = develop_plant(*plant_type, library, 120.0F);
-    REQUIRE(first);
-    REQUIRE(second);
-    REQUIRE(first->modules.size() == second->modules.size());
-    REQUIRE(summarize(*first).visible_segment_count == summarize(*second).visible_segment_count);
+    CHECK(vigor_scaled_determinacy(0.8F, 100.0F, 100.0F) == Catch::Approx(0.8F));
+    CHECK(nearest_morphospace_prototype(0.5F, vigor_scaled_determinacy(0.8F, 100.0F, 100.0F)) == 5);
+}
+
+TEST_CASE("orientation costs implement equations 3 and 4")
+{
+    using namespace toi::growth;
+    const float tropism = orientation_tropism_cost(0.0F, {1.0F, 0.0F, 0.0F}, {0.0F, 0.0F, 1.0F});
+    CHECK(tropism == Catch::Approx(1.0F));
+    CHECK(orientation_distribution_cost(0.25F, 2.0F, tropism, 3.0F) == Catch::Approx(3.5F));
+}
+
+TEST_CASE("age integration shedding and senescence policies are explicit")
+{
+    using namespace toi::growth;
+    CHECK(physiological_age_euler_step(2.0F, 0.5F, 4.0F) == Catch::Approx(4.0F));
+    CHECK(shedding_vigor_threshold(500.0F) == Catch::Approx(10.0F));
+    CHECK(senescence_interpolation(100.0F, 25.0F, 20.0F, 10.0F) == Catch::Approx(50.0F));
+    CHECK(parameter_for_plant_age(0.9F, 0.4F, 20.0F, 20.0F) == Catch::Approx(0.4F));
 }

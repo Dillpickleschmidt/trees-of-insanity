@@ -1,8 +1,10 @@
-# Desktop PRD
+# Desktop product requirements
 
 ## Product
 
-A local desktop editor for branch-module and plant development. Users select prototypes and plant types, scrub physiological age, edit plant parameters, save one Project, inspect structure, and orbit/pan/dolly an RTX preview.
+A local desktop plant-modeling application with typed Module, Plant, and Ecosystem workspaces. Module previews one branch-module prototype at a directly selected physiological age. Plant runs a transient deterministic `toi::growth::PlantSimulation` with human-verifiable diagnostics. Ecosystem remains a disabled placeholder until its simulation exists.
+
+One fresh Project stores project-wide authored content plus complete typed state for every workspace, including independent viewport state. No schema migration or fallback inheritance is required before release.
 
 ## Requirements
 
@@ -10,6 +12,10 @@ A local desktop editor for branch-module and plant development. Users select pro
 - One Qt-composited window with Solid controls over a native Vulkan texture.
 - GPU-only asynchronous CUDA→Vulkan frame path; no CPU image readback.
 - Interactive camera changes coalesce and never block the UI thread.
+- Module and Plant keep independent controls, selections, cameras, environments, and viewport diagnostics.
+- Plant simulation steps atomically and independently from render cadence; timestep changes only while paused.
+- Plant diagnostics provide independent labels, direct-light spheres, accumulated-light flow, vigor flow, and mature-terminal toggles.
+- Ecosystem cannot activate until implemented.
 - Loaded/empty UI states remain distinct and controls are keyboard accessible.
 - Ordinary rounded, shadowed, translucent CSS; cross-layer backdrop blur not required.
 - Bun builds frontend assets but is not shipped.
@@ -17,4 +23,4 @@ A local desktop editor for branch-module and plant development. Users select pro
 
 ## Quality gates
 
-Core and growth tests pass independently. UI typecheck/build passes. Desktop starts, edits refresh the preview, camera controls work, and model/graphics errors reach viewport status. No second native window or viewport exists.
+Core and growth tests pass independently. UI typecheck/build passes. Desktop starts, Module edits and Plant steps refresh the preview, camera controls work, and model/graphics errors reach viewport status. No second native window or viewport exists.

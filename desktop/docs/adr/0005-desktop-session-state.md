@@ -1,5 +1,3 @@
-# ADR 0005: DesktopSession owns application state
+# DesktopSession owns project and runtime state
 
-Status: accepted
-
-`DesktopSession` is the model facade for Project, active workspace, physiological ages, and viewport preferences. It returns growth snapshots, never renderer or Qt objects. Shell coordinates projections and rendering.
+`DesktopSession` is the model facade owning one Project plus transient runtime simulations such as `PlantSimulation`. The Project contains project-wide authored content and complete typed Module, Plant, and Ecosystem workspace states, each with independent viewport state. Shell coordinates model snapshots and graphics projections; no renderer or Qt objects enter the model.
