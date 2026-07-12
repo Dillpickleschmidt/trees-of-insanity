@@ -97,8 +97,8 @@ struct Project {
     EcosystemWorkspaceState ecosystem_workspace;
 };
 
-[[nodiscard]] Result<Project> make_default_project(std::size_t default_prototype_id,
-                                                   std::string default_hdri_environment_id);
+[[nodiscard]] Project make_default_project(std::size_t default_prototype_id,
+                                           std::string default_hdri_environment_id);
 [[nodiscard]] Result<Project> load_project(const std::filesystem::path& path);
 [[nodiscard]] Result<void> save_project(const std::filesystem::path& path, const Project& project);
 
@@ -107,7 +107,6 @@ struct Project {
 [[nodiscard]] Result<PlantType> create_plant_type_from_preset(std::string id, std::string name, char preset_key);
 [[nodiscard]] std::string next_plant_type_id(const PlantTypeLibrary& library);
 [[nodiscard]] Result<void> delete_plant_type(Project& project, std::string_view id);
-[[nodiscard]] Result<void> require_valid_project(const Project& project);
 [[nodiscard]] std::string_view to_string(Workspace workspace);
 
 } // namespace toi::project

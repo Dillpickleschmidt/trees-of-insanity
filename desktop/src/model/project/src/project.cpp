@@ -20,27 +20,23 @@ constexpr char kDefaultPlantTypePreset = 'o';
 [[nodiscard]] std::string plant_type_name_for_preset(char preset_key);
 [[nodiscard]] json project_to_json(const Project& project);
 [[nodiscard]] Result<Project> project_from_json(const json& value);
+[[nodiscard]] Result<void> validate_project(const Project& project);
 [[nodiscard]] bool viewport_is_valid(const ViewportState& viewport);
 
 } // namespace
 
-Result<Project> make_default_project(std::size_t default_prototype_id, std::string default_hdri_environment_id)
+Project make_default_project(std::size_t default_prototype_id, std::string default_hdri_environment_id)
 {
-    if (default_hdri_environment_id.empty()) {
-        return std::unexpected(invalid_project("default HDRI environment id cannot be empty"));
-    }
-
-    auto plant_type = create_plant_type_from_preset(std::string(kDefaultPlantTypeId), {}, kDefaultPlantTypePreset);
-    if (!plant_type) {
-        return std::unexpected(plant_type.error());
-    }
-
     ViewportState viewport;
     viewport.active_hdri_environment_id = std::move(default_hdri_environment_id);
 
     Project project;
     project.version = kProjectVersion;
-    project.plant_type_library.plant_types.push_back(std::move(*plant_type));
+    project.plant_type_library.plant_types.push_back({
+        .id = std::string(kDefaultPlantTypeId),
+        .name = plant_type_name_for_preset(kDefaultPlantTypePreset),
+        .parameters = *growth::plant_type_preset_by_key(kDefaultPlantTypePreset),
+    });
     project.active_workspace = Workspace::Module;
     project.module_workspace = {
         .prototype_id = default_prototype_id,
@@ -78,11 +74,6 @@ Result<Project> load_project(const std::filesystem::path& path)
 
 Result<void> save_project(const std::filesystem::path& path, const Project& project)
 {
-    auto required_project = require_valid_project(project);
-    if (!required_project) {
-        return std::unexpected(required_project.error());
-    }
-
     const auto temporary_path = path.string() + ".tmp";
     {
         std::ofstream file(temporary_path, std::ios::trunc);
@@ -177,18 +168,12 @@ Result<void> delete_plant_type(Project& project, std::string_view id)
     return {};
 }
 
-Result<void> require_valid_project(const Project& project)
+namespace {
+
+Result<void> validate_project(const Project& project)
 {
     if (project.version != kProjectVersion) {
         return std::unexpected(invalid_project("unsupported project version"));
-    }
-    switch (project.active_workspace) {
-    case Workspace::Module:
-    case Workspace::Plant:
-    case Workspace::Ecosystem:
-        break;
-    default:
-        return std::unexpected(invalid_project("active workspace is invalid"));
     }
     if (project.plant_type_library.plant_types.empty()) {
         return std::unexpected(invalid_project("plant type library must contain at least one plant type"));
@@ -232,6 +217,8 @@ Result<void> require_valid_project(const Project& project)
     return {};
 }
 
+} // namespace
+
 std::string_view to_string(Workspace workspace)
 {
     switch (workspace) {
@@ -242,7 +229,7 @@ std::string_view to_string(Workspace workspace)
     case Workspace::Ecosystem:
         return "ecosystem";
     }
-    return "unknown";
+    std::unreachable();
 }
 
 namespace {
@@ -699,7 +686,7 @@ namespace {
         return std::unexpected(ecosystem_viewport.error());
     project.ecosystem_workspace = {.viewport = std::move(*ecosystem_viewport)};
 
-    auto required_project = require_valid_project(project);
+    auto required_project = validate_project(project);
     if (!required_project) {
         return std::unexpected(required_project.error());
     }

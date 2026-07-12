@@ -107,6 +107,13 @@ struct PreviewEnvironment {
     bool world_origin_axes_visible = true;
 };
 
+struct ViewportAppearance {
+    bool guides_visible = true;
+    bool world_origin_axes_visible = true;
+    bool hdri_backdrop_visible = true;
+    std::string active_hdri_environment_id;
+};
+
 class DesktopSession {
 public:
     [[nodiscard]] static Result<DesktopSession> create(DesktopSessionOptions options = {});
@@ -130,9 +137,9 @@ public:
     [[nodiscard]] Result<void> delete_plant_type(std::string_view plant_type_id);
     [[nodiscard]] Result<void> update_plant_type(project::PlantType plant_type);
 
-    [[nodiscard]] project::ViewportState viewport_preferences() const;
+    [[nodiscard]] ViewportAppearance viewport_preferences() const;
     [[nodiscard]] std::vector<HdriEnvironment> hdri_environments() const;
-    [[nodiscard]] Result<void> update_viewport_preferences(project::ViewportState viewport);
+    [[nodiscard]] Result<void> update_viewport_preferences(ViewportAppearance appearance);
 
 private:
     DesktopSession(DesktopSessionOptions options, import::BranchModulePrototypeLibrary prototype_library,

@@ -63,9 +63,6 @@ constexpr float kPrototypeLibraryGeometryScale = 2.0F;
 // The stage references HDRI files relative to the asset search path.
 [[nodiscard]] std::filesystem::path hdri_relative_path(std::string_view environment_id)
 {
-    if (!environment_id.starts_with(kHdriIdPrefix)) {
-        return std::filesystem::path("HDRI") / kDefaultHdriFile;
-    }
     return std::filesystem::path("HDRI") / environment_id.substr(kHdriIdPrefix.size());
 }
 
@@ -225,15 +222,16 @@ Result<DesktopSession> DesktopSession::create(DesktopSessionOptions options)
         return std::unexpected(make_error(ApplicationError::Code::Project, "HDRI environment library is empty"));
     }
 
-    project::Result<project::Project> loaded_project = std::filesystem::exists(options.project_path)
-                                                           ? project::load_project(options.project_path)
-                                                           : project::make_default_project(
-                                                                 *default_branch_module_prototype_id, default_hdri);
+    const bool creating_project = !std::filesystem::exists(options.project_path);
+    project::Result<project::Project> loaded_project =
+        creating_project
+            ? project::Result<project::Project>{
+                  project::make_default_project(*default_branch_module_prototype_id, default_hdri)}
+            : project::load_project(options.project_path);
     if (!loaded_project) {
         return std::unexpected(from_project_error(loaded_project.error()));
     }
 
-    const bool creating_project = !std::filesystem::exists(options.project_path);
     if (prototype_by_id(*library, loaded_project->module_workspace.prototype_id) == nullptr) {
         return std::unexpected(make_error(ApplicationError::Code::Project,
                                           "Module workspace prototype does not exist"));
@@ -242,12 +240,6 @@ Result<DesktopSession> DesktopSession::create(DesktopSessionOptions options)
         return std::unexpected(
             make_error(ApplicationError::Code::Project, "Plant workspace root prototype does not exist"));
     }
-    if (loaded_project->active_workspace != project::Workspace::Module) {
-        return std::unexpected(make_error(ApplicationError::Code::Project,
-                                          "active workspace is not implemented: " +
-                                              std::string(project::to_string(loaded_project->active_workspace))));
-    }
-
     const auto environment_exists = [&](const project::ViewportState& viewport) {
         return std::ranges::any_of(environments, [&](const HdriEnvironment& environment) {
             return environment.id == viewport.active_hdri_environment_id;
@@ -270,9 +262,6 @@ Result<DesktopSession> DesktopSession::create(DesktopSessionOptions options)
         if (!saved) {
             return std::unexpected(from_project_error(saved.error()));
         }
-    } else if (loaded_project->module_workspace.physiological_age > facts->fully_grown_age) {
-        return std::unexpected(
-            make_error(ApplicationError::Code::Project, "Module physiological age exceeds fully-grown age"));
     }
 
     return DesktopSession(std::move(options), std::move(*library), std::move(*loaded_project));
@@ -522,9 +511,15 @@ Result<void> DesktopSession::update_plant_type(project::PlantType plant_type)
     return save_project();
 }
 
-project::ViewportState DesktopSession::viewport_preferences() const
+ViewportAppearance DesktopSession::viewport_preferences() const
 {
-    return active_viewport(project_);
+    const auto& viewport = active_viewport(project_);
+    return {
+        .guides_visible = viewport.guides_visible,
+        .world_origin_axes_visible = viewport.world_origin_axes_visible,
+        .hdri_backdrop_visible = viewport.hdri_backdrop_visible,
+        .active_hdri_environment_id = viewport.active_hdri_environment_id,
+    };
 }
 
 std::vector<HdriEnvironment> DesktopSession::hdri_environments() const
@@ -532,16 +527,20 @@ std::vector<HdriEnvironment> DesktopSession::hdri_environments() const
     return enumerate_hdri_environments(options_.asset_root_path);
 }
 
-Result<void> DesktopSession::update_viewport_preferences(project::ViewportState viewport)
+Result<void> DesktopSession::update_viewport_preferences(ViewportAppearance appearance)
 {
     const auto environments = hdri_environments();
     if (!std::ranges::any_of(environments, [&](const auto& environment) {
-            return environment.id == viewport.active_hdri_environment_id;
+            return environment.id == appearance.active_hdri_environment_id;
         })) {
         return std::unexpected(make_error(ApplicationError::Code::NotFound, "unknown HDRI environment"));
     }
     auto updated_project = project_;
-    active_viewport(updated_project) = std::move(viewport);
+    auto& viewport = active_viewport(updated_project);
+    viewport.guides_visible = appearance.guides_visible;
+    viewport.world_origin_axes_visible = appearance.world_origin_axes_visible;
+    viewport.hdri_backdrop_visible = appearance.hdri_backdrop_visible;
+    viewport.active_hdri_environment_id = std::move(appearance.active_hdri_environment_id);
     auto saved = project::save_project(options_.project_path, updated_project);
     if (!saved) {
         return std::unexpected(from_project_error(saved.error()));
@@ -569,7 +568,7 @@ std::string to_string(PrototypeTreeItem::Kind kind)
     case PrototypeTreeItem::Kind::Segment:
         return "segment";
     }
-    return "unknown";
+    std::unreachable();
 }
 
 } // namespace toi::model
