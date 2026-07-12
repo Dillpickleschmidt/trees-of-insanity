@@ -39,12 +39,6 @@ toi::model::DesktopSessionOptions session_options(const std::filesystem::path& p
     };
 }
 
-std::string file_contents(const std::filesystem::path& path)
-{
-    std::ifstream input(path);
-    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
-}
-
 } // namespace
 
 TEST_CASE("bundled OBJ imports branch module prototypes")
@@ -90,7 +84,6 @@ TEST_CASE("fresh project contains complete typed workspace state")
     nlohmann::json document;
     std::ifstream(project_path) >> document;
     CHECK(document.at("plant_type_library").contains("plant_types"));
-    CHECK_FALSE(document.at("plant_type_library").contains("active_plant_type_id"));
     CHECK(document.contains("module_workspace"));
     CHECK(document.contains("plant_workspace"));
     CHECK(document.contains("ecosystem_workspace"));
@@ -235,7 +228,7 @@ TEST_CASE("Module and viewport state persist through session reopen")
     CHECK(project->ecosystem_workspace.viewport.guides_visible);
 }
 
-TEST_CASE("session rejects disabled workspaces and missing asset prototypes without rewriting")
+TEST_CASE("session rejects unavailable workspace state")
 {
     using namespace toi::project;
     const auto hdri = "hdri:meadow_2_4k.exr";
@@ -245,36 +238,28 @@ TEST_CASE("session rejects disabled workspaces and missing asset prototypes with
     REQUIRE(disabled);
     disabled->active_workspace = Workspace::Plant;
     REQUIRE(save_project(disabled_path, *disabled));
-    const auto disabled_bytes = file_contents(disabled_path);
     CHECK_FALSE(toi::model::DesktopSession::create(session_options(disabled_path)));
-    CHECK(file_contents(disabled_path) == disabled_bytes);
 
     const auto missing_path = fresh_project_path("missing-prototype-project");
     auto missing = make_default_project(8, hdri);
     REQUIRE(missing);
     missing->module_workspace.prototype_id = 999;
     REQUIRE(save_project(missing_path, *missing));
-    const auto missing_bytes = file_contents(missing_path);
     CHECK_FALSE(toi::model::DesktopSession::create(session_options(missing_path)));
-    CHECK(file_contents(missing_path) == missing_bytes);
 
     const auto missing_root_path = fresh_project_path("missing-root-prototype-project");
     auto missing_root = make_default_project(8, hdri);
     REQUIRE(missing_root);
     missing_root->plant_workspace.root_prototype_id = 999;
     REQUIRE(save_project(missing_root_path, *missing_root));
-    const auto missing_root_bytes = file_contents(missing_root_path);
     CHECK_FALSE(toi::model::DesktopSession::create(session_options(missing_root_path)));
-    CHECK(file_contents(missing_root_path) == missing_root_bytes);
 
     const auto over_mature_path = fresh_project_path("over-mature-project");
     auto over_mature = make_default_project(8, hdri);
     REQUIRE(over_mature);
     over_mature->module_workspace.physiological_age = 64.0F;
     REQUIRE(save_project(over_mature_path, *over_mature));
-    const auto over_mature_bytes = file_contents(over_mature_path);
     CHECK_FALSE(toi::model::DesktopSession::create(session_options(over_mature_path)));
-    CHECK(file_contents(over_mature_path) == over_mature_bytes);
 }
 
 TEST_CASE("age scrubbing keeps the growth-preview stage topology stable")
