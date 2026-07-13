@@ -126,6 +126,10 @@ TEST_CASE("maturity crossing atomically attaches every eligible root terminal")
     REQUIRE(attached.mature_terminals.size() == 2);
     CHECK(attached.mature_terminals[0].child_module_id == 1);
     CHECK(attached.mature_terminals[1].child_module_id == 2);
+    CHECK(std::ranges::count(attached.mature_terminals, TerminalAxisRole::Main,
+                             &MatureTerminalSnapshot::axis_role) == 1);
+    CHECK(std::ranges::count(attached.mature_terminals, TerminalAxisRole::Lateral,
+                             &MatureTerminalSnapshot::axis_role) == 1);
     CHECK(module_by_id(attached, 1).root_position.x ==
           Catch::Approx(attached.mature_terminals[0].position.x));
     CHECK(module_by_id(attached, 1).root_position.z ==

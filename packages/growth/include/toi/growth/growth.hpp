@@ -102,6 +102,7 @@ struct BranchModulePrototype {
     std::vector<std::vector<std::size_t>> child_segments_by_node;
     std::vector<std::optional<std::size_t>> incoming_segment_by_node;
     std::vector<std::optional<std::size_t>> main_child_segment_by_node;
+    std::optional<std::size_t> main_axis_terminal_node;
 };
 
 struct BranchModulePrototypeLibrary {
@@ -200,6 +201,11 @@ struct PlantModuleSnapshot {
     SnapshotRange segments;
 };
 
+enum class TerminalAxisRole {
+    Main,
+    Lateral,
+};
+
 struct MatureTerminalSnapshot {
     std::size_t module_id = 0;
     std::size_t terminal_node = 0;
@@ -207,6 +213,7 @@ struct MatureTerminalSnapshot {
     Vec3 tangent;
     float host_radius = 0.0F;
     float vigor = 0.0F;
+    TerminalAxisRole axis_role = TerminalAxisRole::Lateral;
     std::optional<std::size_t> child_module_id;
 };
 

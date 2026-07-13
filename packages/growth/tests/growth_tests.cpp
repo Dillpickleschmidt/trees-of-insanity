@@ -92,11 +92,13 @@ TEST_CASE("prototype preparation precomputes main-axis continuation")
     REQUIRE(prepared);
     REQUIRE(prepared->main_child_segment_by_node[1]);
     CHECK(*prepared->main_child_segment_by_node[1] == 2);
+    CHECK(prepared->main_axis_terminal_node == 3);
 
     prototype.segments[2].pipe_diameter_factor = 1.0F;
     prepared = prepare_branch_module_prototype(prototype, *plant_type);
     REQUIRE(prepared);
     CHECK(*prepared->main_child_segment_by_node[1] == 1);
+    CHECK(prepared->main_axis_terminal_node == 2);
 
     prototype.segments[2].direction = {0.342020F, 0.0F, 0.939693F};
     prototype.segments[2].pipe_diameter_factor = 10.0F;

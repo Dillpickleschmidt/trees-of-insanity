@@ -140,6 +140,16 @@ void precompute_main_axis_continuations(BranchModulePrototype& prototype)
         // Paper: the selected child continues the main axis at this fork.
         prototype.main_child_segment_by_node[node] = selected;
     }
+
+    std::size_t main_axis_node = prototype.root_node;
+    while (!prototype.child_segments_by_node[main_axis_node].empty()) {
+        const auto& children = prototype.child_segments_by_node[main_axis_node];
+        const std::size_t continuation = children.size() == 1
+            ? children.front()
+            : *prototype.main_child_segment_by_node[main_axis_node];
+        main_axis_node = prototype.segments[continuation].child_node;
+    }
+    prototype.main_axis_terminal_node = main_axis_node;
 }
 
 } // namespace

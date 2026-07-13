@@ -406,8 +406,9 @@ void append_terminal_marker_lines(std::vector<DiagnosticOverlayLine>& lines,
     const auto tangent = safe_normalize(terminal.tangent, {.x = 0.0F, .y = 0.0F, .z = 1.0F});
     const auto first_axis = fallback_normal_for(tangent);
     const auto second_axis = safe_normalize(cross(tangent, first_axis), {.x = 0.0F, .y = 1.0F, .z = 0.0F});
-    const float vigor = std::clamp(terminal.vigor, 0.0F, 1.0F);
-    const growth::Vec3 color{.x = 1.0F - vigor, .y = 0.3F + 0.7F * vigor, .z = 0.15F};
+    const growth::Vec3 color = terminal.axis_role == growth::TerminalAxisRole::Main
+        ? growth::Vec3{.x = 0.15F, .y = 1.0F, .z = 0.35F}
+        : growth::Vec3{.x = 0.85F, .y = 0.3F, .z = 1.0F};
     const auto point_at = [&](float angle) {
         return growth::add(terminal.position,
                            growth::scale(growth::add(growth::scale(first_axis, std::cos(angle)),

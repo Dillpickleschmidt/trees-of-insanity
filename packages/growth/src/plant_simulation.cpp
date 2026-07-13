@@ -504,6 +504,9 @@ Result<void> PlantSimulation::rebuild_snapshot(bool emit_flows)
                     .tangent = normalize(subtract(segment.mature_child_position, segment.mature_parent_position)),
                     .host_radius = segment.target_diameter * 0.5F,
                     .vigor = node_vigor[module][terminal],
+                    .axis_role = terminal == *prototype.main_axis_terminal_node
+                        ? TerminalAxisRole::Main
+                        : TerminalAxisRole::Lateral,
                     .child_module_id = child
                         ? std::optional<std::size_t>{module_records_[*child].id}
                         : std::nullopt,
