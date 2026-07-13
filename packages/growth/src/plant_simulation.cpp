@@ -41,6 +41,7 @@ struct ModuleGeometry {
     std::span<const std::optional<std::size_t>> child_module_by_node,
     std::span<const float> child_root_supplies);
 [[nodiscard]] RigidTransform orient_child(const RigidTransform& inherited, Vec3 translation,
+                                          Vec3 terminal_tangent,
                                           const BranchModulePrototype& child_prototype,
                                           const PlantTypeParameters& plant_type,
                                           std::span<const Sphere> existing_spheres);
@@ -195,7 +196,8 @@ Result<void> PlantSimulation::step(float timestep)
                 }
                 const std::size_t child_id = next.next_module_id_++;
                 const RigidTransform child_transform = orient_child(
-                    root_record->transform, terminal->position, *selected, next.plant_type_, precommit_spheres);
+                    root_record->transform, terminal->position, terminal->tangent,
+                    *selected, next.plant_type_, precommit_spheres);
                 next.module_records_.push_back({
                     .id = child_id,
                     .prototype_index = selected_index,
@@ -672,9 +674,31 @@ std::vector<float> dynamic_pipe_factors(
 }
 
 RigidTransform orient_child(const RigidTransform& inherited, Vec3 translation,
+                            Vec3 terminal_tangent,
                             const BranchModulePrototype& child_prototype,
                             const PlantTypeParameters& plant_type, std::span<const Sphere> existing_spheres)
 {
+    const auto root_segment = child_prototype.child_segments_by_node[child_prototype.root_node].front();
+    const Vec3 inherited_root_direction = normalize(
+        transform_direction(inherited, child_prototype.segments[root_segment].direction));
+    terminal_tangent = normalize(terminal_tangent);
+    const float alignment = std::clamp(dot(inherited_root_direction, terminal_tangent), -1.0F, 1.0F);
+    Vec3 rotation_axis = cross(inherited_root_direction, terminal_tangent);
+    float rotation_axis_length = length(rotation_axis);
+    if (rotation_axis_length <= kEpsilon && alignment < 0.0F) {
+        rotation_axis = cross(inherited_root_direction, inherited.x_axis);
+        rotation_axis_length = length(rotation_axis);
+        if (rotation_axis_length <= kEpsilon) {
+            rotation_axis = cross(inherited_root_direction, inherited.y_axis);
+            rotation_axis_length = length(rotation_axis);
+        }
+    }
+    RigidTransform baseline = inherited;
+    if (rotation_axis_length > kEpsilon) {
+        baseline = rotated_transform(inherited, scale(rotation_axis, 1.0F / rotation_axis_length),
+                                     std::acos(alignment));
+    }
+
     auto scored = [&](RigidTransform transform) {
         transform.translation = translation;
         const auto geometry = build_geometry(child_prototype, plant_type, transform,
@@ -686,7 +710,7 @@ RigidTransform orient_child(const RigidTransform& inherited, Vec3 translation,
         return orientation_distribution_cost(collisions, 1.0F, tropism, plant_type.tropism_weight);
     };
 
-    RigidTransform best = inherited;
+    RigidTransform best = baseline;
     best.translation = translation;
     float best_cost = scored(best);
     for (int iteration = 0; iteration < kOrientationIterations; ++iteration) {

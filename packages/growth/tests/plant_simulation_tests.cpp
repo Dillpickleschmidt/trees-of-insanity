@@ -130,6 +130,14 @@ TEST_CASE("maturity crossing atomically attaches every eligible root terminal")
           Catch::Approx(attached.mature_terminals[0].position.x));
     CHECK(module_by_id(attached, 1).root_position.z ==
           Catch::Approx(attached.mature_terminals[0].position.z));
+    for (const auto& terminal : attached.mature_terminals) {
+        REQUIRE(terminal.child_module_id);
+        const auto& child = module_by_id(attached, *terminal.child_module_id);
+        const float direction_alignment = child.transform.z_axis.x * terminal.tangent.x +
+            child.transform.z_axis.y * terminal.tangent.y +
+            child.transform.z_axis.z * terminal.tangent.z;
+        CHECK(direction_alignment > 0.85F);
+    }
 
     const auto child_transform = module_by_id(attached, 1).transform;
     REQUIRE(simulation->step(1.0F));
