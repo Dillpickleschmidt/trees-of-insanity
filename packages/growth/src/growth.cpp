@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <numbers>
 #include <queue>
 #include <utility>
 
@@ -12,6 +13,7 @@ namespace {
 constexpr Vec3 kTropismAxis{0.0F, 0.0F, 1.0F};
 constexpr float kTropismRemainingAtFullLength = 0.25F;
 constexpr float kCentimetersToMeters = 0.01F;
+constexpr float kMainAxisEquivalenceRadians = 10.0F * std::numbers::pi_v<float> / 180.0F;
 
 [[nodiscard]] GrowthError invalid_input(std::string message)
 {
@@ -65,6 +67,79 @@ constexpr float kCentimetersToMeters = 0.01F;
                                         ? 1.0F
                                         : std::clamp(segment_age * segment.inverse_remaining_diameter_age, 0.0F, 1.0F);
     return terminal_thickness + (target_diameter - terminal_thickness) * diameter_maturity;
+}
+
+[[nodiscard]] float direction_dot(Vec3 left, Vec3 right)
+{
+    return left.x * right.x + left.y * right.y + left.z * right.z;
+}
+
+[[nodiscard]] float downstream_reach(const BranchModulePrototype& prototype, std::size_t segment_index,
+                                     std::vector<float>& memo)
+{
+    if (memo[segment_index] >= 0.0F) {
+        return memo[segment_index];
+    }
+    const auto& segment = prototype.segments[segment_index];
+    float child_reach = 0.0F;
+    for (const auto child : prototype.child_segments_by_node[segment.child_node]) {
+        child_reach = std::max(child_reach, downstream_reach(prototype, child, memo));
+    }
+    memo[segment_index] = segment.max_length + child_reach;
+    return memo[segment_index];
+}
+
+void precompute_main_axis_continuations(BranchModulePrototype& prototype)
+{
+    prototype.main_child_segment_by_node.assign(prototype.nodes.size(), std::nullopt);
+    std::vector<float> reaches(prototype.segments.size(), -1.0F);
+    for (std::size_t index = 0; index < prototype.segments.size(); ++index) {
+        (void)downstream_reach(prototype, index, reaches);
+    }
+
+    for (std::size_t node = 0; node < prototype.nodes.size(); ++node) {
+        const auto incoming = prototype.incoming_segment_by_node[node];
+        const auto& children = prototype.child_segments_by_node[node];
+        if (!incoming || children.empty()) {
+            continue;
+        }
+        const Vec3 incoming_direction = normalize(prototype.segments[*incoming].direction);
+        float straightest_angle = std::numbers::pi_v<float>;
+        for (const auto child : children) {
+            const float cosine = std::clamp(direction_dot(incoming_direction,
+                                                          normalize(prototype.segments[child].direction)),
+                                            -1.0F, 1.0F);
+            straightest_angle = std::min(straightest_angle, std::acos(cosine));
+        }
+
+        std::optional<std::size_t> selected;
+        for (const auto child : children) {
+            const auto& candidate = prototype.segments[child];
+            const float candidate_dot = std::clamp(
+                direction_dot(incoming_direction, normalize(candidate.direction)), -1.0F, 1.0F);
+            if (std::acos(candidate_dot) > straightest_angle + kMainAxisEquivalenceRadians) {
+                continue;
+            }
+            if (!selected) {
+                selected = child;
+                continue;
+            }
+            const auto& current = prototype.segments[*selected];
+            const float current_dot = std::clamp(
+                direction_dot(incoming_direction, normalize(current.direction)), -1.0F, 1.0F);
+            const bool better = candidate.pipe_diameter_factor > current.pipe_diameter_factor + kEpsilon ||
+                (std::abs(candidate.pipe_diameter_factor - current.pipe_diameter_factor) <= kEpsilon &&
+                 (candidate_dot > current_dot + kEpsilon ||
+                  (std::abs(candidate_dot - current_dot) <= kEpsilon &&
+                   (reaches[child] > reaches[*selected] + kEpsilon ||
+                    (std::abs(reaches[child] - reaches[*selected]) <= kEpsilon && child < *selected)))));
+            if (better) {
+                selected = child;
+            }
+        }
+        // Paper: the selected child continues the main axis at this fork.
+        prototype.main_child_segment_by_node[node] = selected;
+    }
 }
 
 } // namespace
@@ -234,6 +309,7 @@ Result<BranchModulePrototype> prepare_branch_module_prototype(const BranchModule
         segment.inverse_remaining_diameter_age = remaining_age <= kEpsilon ? 0.0F : 1.0F / remaining_age;
         segment.tropism_falloff_age = tropism_falloff_age(segment.max_length, length_growth_scale);
     }
+    precompute_main_axis_continuations(prepared);
 
     return prepared;
 }
@@ -348,55 +424,102 @@ std::vector<float> compute_pipe_diameter_factors(const std::vector<BranchSegment
 
 Result<void> require_valid_branch_module_prototype(const BranchModulePrototype& prototype)
 {
-    if (prototype.nodes.empty()) {
-        return std::unexpected(invalid_prototype("prototype has no branch nodes"));
-    }
-    if (prototype.segments.empty()) {
-        return std::unexpected(invalid_prototype("prototype has no branch segments"));
+    if (prototype.nodes.empty() || prototype.segments.empty()) {
+        return std::unexpected(invalid_prototype("prototype topology is empty"));
     }
     if (prototype.root_node >= prototype.nodes.size()) {
         return std::unexpected(invalid_prototype("prototype root node is out of bounds"));
     }
-    if (prototype.child_segments_by_node.size() != prototype.nodes.size()) {
-        return std::unexpected(invalid_prototype("prototype child segment index is invalid"));
+    if (prototype.child_segments_by_node.size() != prototype.nodes.size() ||
+        prototype.incoming_segment_by_node.size() != prototype.nodes.size()) {
+        return std::unexpected(invalid_prototype("prototype node indexes are incomplete"));
     }
-    if (prototype.incoming_segment_by_node.size() != prototype.nodes.size()) {
-        return std::unexpected(invalid_prototype("prototype incoming segment index is invalid"));
+    if (prototype.incoming_segment_by_node[prototype.root_node]) {
+        return std::unexpected(invalid_prototype("prototype root cannot have an incoming segment"));
+    }
+    if (!prototype.main_child_segment_by_node.empty() &&
+        prototype.main_child_segment_by_node.size() != prototype.nodes.size()) {
+        return std::unexpected(invalid_prototype("prototype main-child index is incomplete"));
     }
 
-    for (std::size_t node_index = 0; node_index < prototype.nodes.size(); ++node_index) {
-        const auto& node = prototype.nodes[node_index];
+    for (const auto& node : prototype.nodes) {
         if (!std::isfinite(node.position.x) || !std::isfinite(node.position.y) || !std::isfinite(node.position.z) ||
             !std::isfinite(node.physiological_age)) {
             return std::unexpected(invalid_prototype("prototype branch node has invalid values"));
         }
-        for (const std::size_t segment_index : prototype.child_segments_by_node[node_index]) {
-            if (segment_index >= prototype.segments.size()) {
-                return std::unexpected(invalid_prototype("child segment index is out of bounds"));
-            }
-        }
     }
-
-    for (const auto& incoming_segment : prototype.incoming_segment_by_node) {
-        if (incoming_segment && *incoming_segment >= prototype.segments.size()) {
-            return std::unexpected(invalid_prototype("incoming segment index is out of bounds"));
+    for (std::size_t segment_index = 0; segment_index < prototype.segments.size(); ++segment_index) {
+        const auto& segment = prototype.segments[segment_index];
+        if (segment.parent_node >= prototype.nodes.size() || segment.child_node >= prototype.nodes.size() ||
+            segment.parent_node == segment.child_node) {
+            return std::unexpected(invalid_prototype("branch segment references invalid nodes"));
         }
-    }
-
-    for (const auto& segment : prototype.segments) {
-        if (segment.parent_node >= prototype.nodes.size() || segment.child_node >= prototype.nodes.size()) {
-            return std::unexpected(invalid_prototype("branch segment references out-of-bounds node"));
-        }
-        if (segment.parent_node == segment.child_node) {
-            return std::unexpected(invalid_prototype("branch segment references the same node twice"));
-        }
-        if (!std::isfinite(segment.max_length) || segment.max_length <= kEpsilon ||
+        if (!std::isfinite(segment.direction.x) || !std::isfinite(segment.direction.y) ||
+            !std::isfinite(segment.direction.z) || length(segment.direction) <= kEpsilon ||
+            !std::isfinite(segment.max_length) || segment.max_length <= kEpsilon ||
             !std::isfinite(segment.pipe_diameter_factor) || !std::isfinite(segment.inverse_remaining_diameter_age) ||
             !std::isfinite(segment.tropism_falloff_age)) {
             return std::unexpected(invalid_prototype("branch segment has invalid values"));
         }
     }
 
+    std::vector<bool> reached_nodes(prototype.nodes.size(), false);
+    std::vector<bool> reached_segments(prototype.segments.size(), false);
+    std::queue<std::size_t> queue;
+    queue.push(prototype.root_node);
+    reached_nodes[prototype.root_node] = true;
+    while (!queue.empty()) {
+        const auto node = queue.front();
+        queue.pop();
+        for (const auto segment_index : prototype.child_segments_by_node[node]) {
+            if (segment_index >= prototype.segments.size() || reached_segments[segment_index]) {
+                return std::unexpected(invalid_prototype("prototype child segment index is invalid"));
+            }
+            const auto& segment = prototype.segments[segment_index];
+            if (segment.parent_node != node || reached_nodes[segment.child_node]) {
+                return std::unexpected(invalid_prototype("prototype is not a rooted tree"));
+            }
+            if (prototype.incoming_segment_by_node[segment.child_node] != segment_index) {
+                return std::unexpected(invalid_prototype("prototype incoming and child indexes disagree"));
+            }
+            reached_segments[segment_index] = true;
+            reached_nodes[segment.child_node] = true;
+            queue.push(segment.child_node);
+        }
+        if (!prototype.main_child_segment_by_node.empty()) {
+            const auto main = prototype.main_child_segment_by_node[node];
+            if (main && std::ranges::find(prototype.child_segments_by_node[node], *main) ==
+                            prototype.child_segments_by_node[node].end()) {
+                return std::unexpected(invalid_prototype("prototype main child is not a child of its node"));
+            }
+        }
+    }
+    if (std::ranges::find(reached_nodes, false) != reached_nodes.end() ||
+        std::ranges::find(reached_segments, false) != reached_segments.end()) {
+        return std::unexpected(invalid_prototype("prototype topology is disconnected"));
+    }
+    for (std::size_t node = 0; node < prototype.nodes.size(); ++node) {
+        if (node != prototype.root_node && !prototype.incoming_segment_by_node[node]) {
+            return std::unexpected(invalid_prototype("non-root node has no incoming segment"));
+        }
+    }
+
+    if (prototype.terminal_nodes.empty()) {
+        return std::unexpected(invalid_prototype("prototype has no terminal nodes"));
+    }
+    std::vector<bool> terminals(prototype.nodes.size(), false);
+    for (const auto terminal : prototype.terminal_nodes) {
+        if (terminal >= prototype.nodes.size() || terminals[terminal] ||
+            !prototype.child_segments_by_node[terminal].empty()) {
+            return std::unexpected(invalid_prototype("prototype terminal nodes are invalid"));
+        }
+        terminals[terminal] = true;
+    }
+    for (std::size_t node = 0; node < prototype.nodes.size(); ++node) {
+        if (prototype.child_segments_by_node[node].empty() && !terminals[node]) {
+            return std::unexpected(invalid_prototype("prototype leaf is not a terminal node"));
+        }
+    }
     return {};
 }
 

@@ -67,6 +67,24 @@ export function PlantPanel(props: {
 								<span class="text-[13px]">Direct-light bounding spheres</span>
 								<SwitchControl><SwitchThumb /></SwitchControl>
 							</Switch>
+							<Switch checked={state().accumulated_light_flow_visible} disabled={props.busy}
+								onChange={(value) => props.onDiagnostics({ accumulated_light_flow_visible: value })}
+								class="flex items-center justify-between gap-4">
+								<span class="text-[13px]">Accumulated-light flow</span>
+								<SwitchControl><SwitchThumb /></SwitchControl>
+							</Switch>
+							<Switch checked={state().vigor_flow_visible} disabled={props.busy}
+								onChange={(value) => props.onDiagnostics({ vigor_flow_visible: value })}
+								class="flex items-center justify-between gap-4">
+								<span class="text-[13px]">Vigor flow</span>
+								<SwitchControl><SwitchThumb /></SwitchControl>
+							</Switch>
+							<Switch checked={state().mature_terminal_markers_visible} disabled={props.busy}
+								onChange={(value) => props.onDiagnostics({ mature_terminal_markers_visible: value })}
+								class="flex items-center justify-between gap-4">
+								<span class="text-[13px]">Mature-terminal markers</span>
+								<SwitchControl><SwitchThumb /></SwitchControl>
+							</Switch>
 						</div>
 					</Section>
 				</div>

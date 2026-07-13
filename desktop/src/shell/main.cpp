@@ -49,9 +49,15 @@ make_preview_projection(const toi::model::DesktopSession& session, int width = 1
         if (!snapshot) return std::unexpected(snapshot.error());
         if (!plant_state) return std::unexpected(plant_state.error());
         return toi::render::make_plant_preview_stage_projection(
-            snapshot->snapshot, snapshot->mature_root_snapshot, snapshot->prepared_root,
-            plant_state->direct_light_bounding_spheres_visible,
-            plant_state->module_diagnostic_labels_visible, options);
+            snapshot->snapshot, snapshot->mature_root_snapshot,
+            {
+                .show_collision_spheres = plant_state->direct_light_bounding_spheres_visible,
+                .show_labels = plant_state->module_diagnostic_labels_visible,
+                .show_accumulated_light_flow = plant_state->accumulated_light_flow_visible,
+                .show_vigor_flow = plant_state->vigor_flow_visible,
+                .show_mature_terminals = plant_state->mature_terminal_markers_visible,
+            },
+            options);
     }
     auto snapshot = session.module_preview_snapshot();
     if (!snapshot) {

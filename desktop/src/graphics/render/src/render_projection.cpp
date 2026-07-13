@@ -23,6 +23,9 @@ struct ContinuationTopology;
 struct ChainBuildRequest;
 struct MeshGeometry;
 
+[[nodiscard]] growth::Vec3 safe_normalize(growth::Vec3 value, growth::Vec3 fallback);
+[[nodiscard]] growth::Vec3 subtract_projection(growth::Vec3 value, growth::Vec3 axis);
+[[nodiscard]] growth::Vec3 fallback_normal_for(growth::Vec3 tangent);
 [[nodiscard]] GrowthPreviewStageProjection make_growth_preview_stage_projection_impl(
     const growth::GrowthSnapshot& snapshot, const growth::GrowthSnapshot& camera_snapshot,
     const growth::BranchModulePrototype& prepared_prototype, GrowthPreviewStageOptions options);
@@ -30,6 +33,12 @@ struct MeshGeometry;
 [[nodiscard]] GrowthPreviewCamera make_growth_preview_camera(const growth::GrowthSnapshot& camera_snapshot, int width,
                                                              int height);
 void append_collision_sphere_lines(std::vector<DiagnosticOverlayLine>& lines, const growth::Sphere& sphere);
+void append_terminal_marker_lines(std::vector<DiagnosticOverlayLine>& lines,
+                                  const growth::MatureTerminalSnapshot& terminal);
+[[nodiscard]] std::vector<ChainBuildRequest> make_plant_chain_build_requests(
+    const growth::PlantSnapshot& snapshot, bool mature_geometry);
+[[nodiscard]] std::vector<ChainBuildRequest> make_plant_dynamic_chain_build_requests(
+    const growth::PlantSnapshot& snapshot, const std::vector<ChainBuildRequest>& topology_requests);
 [[nodiscard]] GrowthPreviewUsdStage make_growth_preview_usd_stage(const std::vector<MeshGeometry>& meshes,
                                                                   const GrowthPreviewCamera& camera,
                                                                   GrowthPreviewStageOptions options);
@@ -54,27 +63,58 @@ GrowthPreviewStageProjection make_growth_preview_stage_projection(
 
 GrowthPreviewStageProjection make_plant_preview_stage_projection(
     const growth::PlantSnapshot& snapshot, const growth::GrowthSnapshot& mature_root_snapshot,
-    const growth::BranchModulePrototype& prepared_root, bool show_collision_sphere, bool show_diagnostic_label,
-    GrowthPreviewStageOptions options)
+    PlantDiagnosticOptions diagnostics, GrowthPreviewStageOptions options)
 {
-    const auto& root = snapshot.modules.front();
-    growth::GrowthSnapshot root_snapshot{
-        .module_physiological_age = root.physiological_age,
-        .growth_rate = root.growth_rate,
-        .segments = std::vector<growth::GrowthSnapshotSegment>(root.segments.begin(), root.segments.end()),
+    auto topology_requests = make_plant_chain_build_requests(snapshot, true);
+    auto topology_meshes = build_meshes(topology_requests);
+    auto dynamic_requests = make_plant_dynamic_chain_build_requests(snapshot, topology_requests);
+    auto dynamic_meshes = build_meshes(dynamic_requests);
+    const auto camera = make_growth_preview_camera(mature_root_snapshot, options.width, options.height);
+    auto projection = GrowthPreviewStageProjection{
+        .usd_stage = make_growth_preview_usd_stage(topology_meshes, camera, options),
+        .mesh = stats_for(dynamic_meshes, dynamic_requests.size()),
+        .camera = camera,
+        .mesh_attributes = mesh_attributes_for(dynamic_meshes),
     };
-    auto projection =
-        make_growth_preview_stage_projection_impl(root_snapshot, mature_root_snapshot, prepared_root, options);
-    if (show_collision_sphere && root.collision_sphere.radius > 0.0F) {
-        append_collision_sphere_lines(projection.diagnostic_lines, root.collision_sphere);
+
+    for (const auto& module : snapshot.modules) {
+        if (diagnostics.show_collision_spheres && module.collision_sphere.radius > 0.0F) {
+            append_collision_sphere_lines(projection.diagnostic_lines, module.collision_sphere);
+        }
+        if (diagnostics.show_labels) {
+            projection.diagnostic_labels.push_back({
+                .world_position = module.root_position,
+                .direct_light_exposure = module.direct_light_exposure,
+                .accumulated_light = module.accumulated_light,
+                .vigor = module.vigor,
+            });
+        }
     }
-    if (show_diagnostic_label) {
-        projection.diagnostic_labels.push_back({
-            .world_position = root.root_position,
-            .direct_light_exposure = root.direct_light_exposure,
-            .accumulated_light = root.accumulated_light,
-            .vigor = root.vigor,
-        });
+    for (const auto& flow : snapshot.flow_paths) {
+        if ((flow.kind == growth::FlowKind::AccumulatedLight && !diagnostics.show_accumulated_light_flow) ||
+            (flow.kind == growth::FlowKind::Vigor && !diagnostics.show_vigor_flow)) {
+            continue;
+        }
+        const int half_width = static_cast<int>(std::round(2.0F * flow.fraction));
+        for (int offset = -half_width; offset <= half_width; ++offset) {
+            projection.diagnostic_lines.push_back({
+                .start = flow.start,
+                .end = flow.end,
+                .color = flow.kind == growth::FlowKind::AccumulatedLight
+                             ? growth::Vec3{.x = 0.1F, .y = 0.85F, .z = 1.0F}
+                             : growth::Vec3{.x = 1.0F, .y = 0.65F, .z = 0.1F},
+                .alpha = 0.45F + 0.55F * flow.fraction,
+                .dash_direction = 1.0F,
+                .surface_tangent = flow.tangent,
+                .surface_radius = flow.host_radius,
+                .screen_offset_pixels = static_cast<float>(offset),
+            });
+        }
+    }
+    if (diagnostics.show_mature_terminals) {
+        for (const auto& terminal : snapshot.mature_terminals) {
+            append_terminal_marker_lines(projection.diagnostic_lines, terminal);
+        }
     }
     return projection;
 }
@@ -358,6 +398,43 @@ void append_collision_sphere_lines(std::vector<DiagnosticOverlayLine>& lines, co
     }
 }
 
+void append_terminal_marker_lines(std::vector<DiagnosticOverlayLine>& lines,
+                                  const growth::MatureTerminalSnapshot& terminal)
+{
+    constexpr int segment_count = 12;
+    const float marker_radius = std::max(0.005F, terminal.host_radius * 1.5F);
+    const auto tangent = safe_normalize(terminal.tangent, {.x = 0.0F, .y = 0.0F, .z = 1.0F});
+    const auto first_axis = fallback_normal_for(tangent);
+    const auto second_axis = safe_normalize(cross(tangent, first_axis), {.x = 0.0F, .y = 1.0F, .z = 0.0F});
+    const float vigor = std::clamp(terminal.vigor, 0.0F, 1.0F);
+    const growth::Vec3 color{.x = 1.0F - vigor, .y = 0.3F + 0.7F * vigor, .z = 0.15F};
+    const auto point_at = [&](float angle) {
+        return growth::add(terminal.position,
+                           growth::scale(growth::add(growth::scale(first_axis, std::cos(angle)),
+                                                     growth::scale(second_axis, std::sin(angle))),
+                                         marker_radius));
+    };
+    for (int index = 0; index < segment_count; ++index) {
+        lines.push_back({
+            .start = point_at(kTwoPi * static_cast<float>(index) / segment_count),
+            .end = point_at(kTwoPi * static_cast<float>(index + 1) / segment_count),
+            .color = color,
+            .alpha = 0.9F,
+        });
+    }
+    if (terminal.child_module_id) {
+        for (int row = -3; row <= 3; ++row) {
+            const float second_offset = static_cast<float>(row) * marker_radius / 4.0F;
+            const float half_width = std::sqrt(marker_radius * marker_radius - second_offset * second_offset);
+            const auto center = growth::add(terminal.position, growth::scale(second_axis, second_offset));
+            lines.push_back({.start = growth::subtract(center, growth::scale(first_axis, half_width)),
+                             .end = growth::add(center, growth::scale(first_axis, half_width)),
+                             .color = color,
+                             .alpha = 0.9F});
+        }
+    }
+}
+
 void write_vec3(std::ostream& out, growth::Vec3 value)
 {
     out << "(" << value.x << ", " << value.y << ", " << value.z << ")";
@@ -619,6 +696,69 @@ std::vector<ChainBuildRequest> make_dynamic_chain_build_requests(
     requests.reserve(topology_requests.size());
     for (const auto& topology_request : topology_requests) {
         requests.push_back(make_dynamic_chain_build_request(topology_request, live, topology, prepared_prototype));
+    }
+    return requests;
+}
+
+std::vector<ChainBuildRequest> make_plant_chain_build_requests(const growth::PlantSnapshot& snapshot,
+                                                               bool mature_geometry)
+{
+    std::vector<ChainBuildRequest> requests;
+    for (const auto& module : snapshot.modules) {
+        std::vector<bool> is_continuation(module.segments.count, false);
+        for (std::size_t local = 0; local < module.segments.count; ++local) {
+            const auto& segment = snapshot.segments[module.segments.offset + local];
+            if (segment.main_continuation_segment &&
+                *segment.main_continuation_segment >= module.segments.offset &&
+                *segment.main_continuation_segment < module.segments.offset + module.segments.count) {
+                is_continuation[*segment.main_continuation_segment - module.segments.offset] = true;
+            }
+        }
+        for (std::size_t local = 0; local < module.segments.count; ++local) {
+            if (is_continuation[local]) continue;
+            std::size_t segment_index = module.segments.offset + local;
+            ChainBuildRequest request;
+            request.start_cap = local == 0;
+            const auto& first = snapshot.segments[segment_index];
+            request.centers.push_back(mature_geometry ? first.mature_parent_position : first.parent_position);
+            request.radii.push_back((mature_geometry ? first.target_diameter : first.diameter) * 0.5F);
+            while (true) {
+                const auto& segment = snapshot.segments[segment_index];
+                request.source_segment_ids.push_back(segment_index);
+                request.centers.push_back(mature_geometry ? segment.mature_child_position : segment.child_position);
+                const bool developed = growth::distance(segment.parent_position, segment.child_position) > kEpsilon;
+                request.radii.push_back(mature_geometry ? segment.target_diameter * 0.5F
+                                                        : (developed ? segment.diameter * 0.5F : 0.0F));
+                if (!segment.main_continuation_segment) break;
+                segment_index = *segment.main_continuation_segment;
+            }
+            requests.push_back(std::move(request));
+        }
+    }
+    return requests;
+}
+
+std::vector<ChainBuildRequest> make_plant_dynamic_chain_build_requests(
+    const growth::PlantSnapshot& snapshot, const std::vector<ChainBuildRequest>& topology_requests)
+{
+    std::vector<ChainBuildRequest> requests;
+    requests.reserve(topology_requests.size());
+    for (const auto& topology : topology_requests) {
+        ChainBuildRequest request;
+        request.source_segment_ids = topology.source_segment_ids;
+        request.start_cap = topology.start_cap;
+        request.end_cap = topology.end_cap;
+        const auto& first = snapshot.segments[request.source_segment_ids.front()];
+        request.centers.push_back(first.parent_position);
+        const bool first_developed = growth::distance(first.parent_position, first.child_position) > kEpsilon;
+        request.radii.push_back(first_developed ? first.diameter * 0.5F : 0.0F);
+        for (const auto segment_index : request.source_segment_ids) {
+            const auto& segment = snapshot.segments[segment_index];
+            const bool developed = growth::distance(segment.parent_position, segment.child_position) > kEpsilon;
+            request.centers.push_back(segment.child_position);
+            request.radii.push_back(developed ? segment.diameter * 0.5F : 0.0F);
+        }
+        requests.push_back(std::move(request));
     }
     return requests;
 }

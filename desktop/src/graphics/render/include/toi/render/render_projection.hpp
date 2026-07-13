@@ -62,6 +62,18 @@ struct DiagnosticOverlayLine {
     growth::Vec3 end;
     growth::Vec3 color;
     float alpha = 1.0F;
+    float dash_direction = 0.0F;
+    growth::Vec3 surface_tangent{};
+    float surface_radius = 0.0F;
+    float screen_offset_pixels = 0.0F;
+};
+
+struct PlantDiagnosticOptions {
+    bool show_collision_spheres = false;
+    bool show_labels = false;
+    bool show_accumulated_light_flow = false;
+    bool show_vigor_flow = false;
+    bool show_mature_terminals = false;
 };
 
 struct PlantDiagnosticLabel {
@@ -85,8 +97,7 @@ struct GrowthPreviewStageProjection {
     const growth::BranchModulePrototype& prepared_prototype, GrowthPreviewStageOptions options = {});
 [[nodiscard]] GrowthPreviewStageProjection make_plant_preview_stage_projection(
     const growth::PlantSnapshot& snapshot, const growth::GrowthSnapshot& mature_root_snapshot,
-    const growth::BranchModulePrototype& prepared_root, bool show_collision_sphere, bool show_diagnostic_label,
-    GrowthPreviewStageOptions options = {});
+    PlantDiagnosticOptions diagnostics = {}, GrowthPreviewStageOptions options = {});
 [[nodiscard]] std::array<double, 16> growth_preview_camera_transform_matrix(const GrowthPreviewCamera& camera);
 
 } // namespace toi::render

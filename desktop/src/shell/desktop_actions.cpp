@@ -287,6 +287,9 @@ bool action_changes_preview(std::string_view method)
         {"plant_type_id", state.plant_type_id},
         {"module_diagnostic_labels_visible", state.module_diagnostic_labels_visible},
         {"direct_light_bounding_spheres_visible", state.direct_light_bounding_spheres_visible},
+        {"accumulated_light_flow_visible", state.accumulated_light_flow_visible},
+        {"vigor_flow_visible", state.vigor_flow_visible},
+        {"mature_terminal_markers_visible", state.mature_terminal_markers_visible},
         {"direct_light_exposure", state.direct_light_exposure},
         {"accumulated_light", state.accumulated_light},
         {"vigor", state.vigor},
@@ -416,6 +419,11 @@ json dispatch_action(DesktopSession& session, const json& request)
                     params, "module_diagnostic_labels_visible", state->module_diagnostic_labels_visible),
                 .direct_light_bounding_spheres_visible = optional_json_bool(
                     params, "direct_light_bounding_spheres_visible", state->direct_light_bounding_spheres_visible),
+                .accumulated_light_flow_visible = optional_json_bool(
+                    params, "accumulated_light_flow_visible", state->accumulated_light_flow_visible),
+                .vigor_flow_visible = optional_json_bool(params, "vigor_flow_visible", state->vigor_flow_visible),
+                .mature_terminal_markers_visible = optional_json_bool(
+                    params, "mature_terminal_markers_visible", state->mature_terminal_markers_visible),
             };
             auto result = session.update_plant_diagnostics(diagnostics);
             return result ? response_ok(id, json::object()) : response_error(id, result.error());

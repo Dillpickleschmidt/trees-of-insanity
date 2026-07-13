@@ -266,9 +266,13 @@ TEST_CASE("Plant workspace steps and resets one diagnosed root")
     auto initial_preview = session->plant_preview_snapshot();
     REQUIRE(initial_preview);
     REQUIRE(initial_preview->snapshot.modules.size() == 1);
-    CHECK(initial_preview->snapshot.modules.front().segments.empty());
+    const auto root_range = initial_preview->snapshot.modules.front().segments;
+    CHECK(std::ranges::all_of(
+        initial_preview->snapshot.segments.subspan(root_range.offset, root_range.count),
+        [](const auto& segment) { return toi::growth::distance(segment.parent_position, segment.child_position) <= toi::growth::kEpsilon; }));
     const auto seed_projection = toi::render::make_plant_preview_stage_projection(
-        initial_preview->snapshot, initial_preview->mature_root_snapshot, initial_preview->prepared_root, true, true);
+        initial_preview->snapshot, initial_preview->mature_root_snapshot,
+        {.show_collision_spheres = true, .show_labels = true});
     CHECK(seed_projection.diagnostic_lines.empty());
     REQUIRE(seed_projection.diagnostic_labels.size() == 1);
 
@@ -286,8 +290,8 @@ TEST_CASE("Plant workspace steps and resets one diagnosed root")
     auto developed_preview = session->plant_preview_snapshot();
     REQUIRE(developed_preview);
     const auto developed_projection = toi::render::make_plant_preview_stage_projection(
-        developed_preview->snapshot, developed_preview->mature_root_snapshot, developed_preview->prepared_root,
-        true, true);
+        developed_preview->snapshot, developed_preview->mature_root_snapshot,
+        {.show_collision_spheres = true, .show_labels = true});
     CHECK_FALSE(developed_projection.diagnostic_lines.empty());
     CHECK(developed_projection.camera.eye.x == Catch::Approx(seed_projection.camera.eye.x));
     CHECK(developed_projection.camera.eye.y == Catch::Approx(seed_projection.camera.eye.y));
@@ -313,6 +317,57 @@ TEST_CASE("Plant workspace steps and resets one diagnosed root")
     CHECK(reopened_state->direct_light_bounding_spheres_visible);
     REQUIRE(reopened->set_active_workspace("module"));
     CHECK(reopened->active_orbit().radius == Catch::Approx(4.0F));
+}
+
+TEST_CASE("Plant maturity crossing exposes one attached generation")
+{
+    auto session = toi::model::DesktopSession::create(
+        session_options(fresh_project_path("first-attached-generation")));
+    REQUIRE(session);
+    REQUIRE(session->set_active_workspace("plant"));
+    REQUIRE(session->update_active_orbit({.radius = 3.0F}));
+    REQUIRE(session->set_plant_timestep(1'000.0F));
+    REQUIRE(session->update_plant_diagnostics({
+        .module_diagnostic_labels_visible = true,
+        .direct_light_bounding_spheres_visible = true,
+        .accumulated_light_flow_visible = true,
+        .vigor_flow_visible = true,
+        .mature_terminal_markers_visible = true,
+    }));
+    REQUIRE(session->plant_step());
+
+    auto attached = session->plant_preview_snapshot();
+    REQUIRE(attached);
+    REQUIRE(attached->snapshot.modules.size() > 1);
+    CHECK(attached->snapshot.attachment_events.size() == attached->snapshot.modules.size() - 1);
+    for (std::size_t index = 1; index < attached->snapshot.modules.size(); ++index) {
+        CHECK(attached->snapshot.modules[index].parent_module_id == 0);
+        CHECK(attached->snapshot.modules[index].physiological_age == Catch::Approx(0.0F));
+    }
+    CHECK(session->active_orbit().radius == Catch::Approx(3.0F));
+    CHECK_FALSE(session->active_camera_needs_frame());
+
+    const auto module_count = attached->snapshot.modules.size();
+    REQUIRE(session->plant_step());
+    auto flowing = session->plant_preview_snapshot();
+    REQUIRE(flowing);
+    CHECK(flowing->snapshot.modules.size() == module_count);
+    CHECK_FALSE(flowing->snapshot.flow_paths.empty());
+    const auto projection = toi::render::make_plant_preview_stage_projection(
+        flowing->snapshot, flowing->mature_root_snapshot,
+        {.show_collision_spheres = true,
+         .show_labels = true,
+         .show_accumulated_light_flow = true,
+         .show_vigor_flow = true,
+         .show_mature_terminals = true});
+    CHECK(projection.diagnostic_labels.size() == module_count);
+    CHECK_FALSE(projection.diagnostic_lines.empty());
+    CHECK(std::ranges::any_of(projection.diagnostic_lines, [](const auto& line) {
+        return line.dash_direction != 0.0F && line.surface_radius > 0.0F;
+    }));
+    CHECK(std::ranges::any_of(projection.diagnostic_lines, [](const auto& line) {
+        return line.screen_offset_pixels != 0.0F;
+    }));
 }
 
 TEST_CASE("Plant-selected type changes reset the transient simulation")

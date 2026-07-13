@@ -27,6 +27,10 @@ struct OverlayLine {
     float end[3]{};
     float color[3]{};
     float alpha = 1.0F;
+    float dash_direction = 0.0F;
+    float surface_tangent[3]{};
+    float surface_radius = 0.0F;
+    float screen_offset_pixels = 0.0F;
 };
 
 class ViewportOverlay {
@@ -45,7 +49,7 @@ public:
     [[nodiscard]] Result<void> set_scene_distance(std::uint32_t slot, VkImageView distance_view);
     [[nodiscard]] Result<void> record(VkCommandBuffer command_buffer, VkExtent2D extent, VkRect2D content_rect,
                                       const OverlayCamera& camera, std::span<const OverlayLine> lines,
-                                      float depth_bias, std::uint32_t distance_slot);
+                                      float depth_bias, float animation_time, std::uint32_t distance_slot);
     void reset();
 
 private:

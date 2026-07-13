@@ -44,14 +44,15 @@ VigorSplit split_vigor(float available_vigor, float main_axis_light, float later
     const float main_weight = apical_control * main_axis_light;
     const float lateral_weight = (1.0F - apical_control) * lateral_axis_light;
     const float denominator = main_weight + lateral_weight;
-    const float main_vigor = denominator <= kEpsilon ? available_vigor : available_vigor * main_weight / denominator;
+    const float main_vigor = denominator <= kEpsilon ? available_vigor * apical_control
+                                                      : available_vigor * main_weight / denominator;
     return {.main_axis = main_vigor, .lateral_axis = available_vigor - main_vigor};
 }
 
-float vigor_scaled_determinacy(float determinacy, float module_vigor, float root_max_vigor)
+float vigor_scaled_determinacy(float determinacy, float module_vigor)
 {
-    // Paper: D' = v̄(u) D / v̄_max.
-    return root_max_vigor <= kEpsilon ? determinacy : module_vigor * determinacy / root_max_vigor;
+    // Paper: D' = v̄(u) D / v̄_max, with shared module v̄_max = 1.
+    return module_vigor * determinacy / kMaximumModuleVigor;
 }
 
 std::size_t nearest_morphospace_prototype(float apical_control, float determinacy)

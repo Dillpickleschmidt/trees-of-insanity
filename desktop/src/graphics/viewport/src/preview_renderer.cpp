@@ -63,6 +63,10 @@ std::vector<OverlayLine> build_overlay_lines(const render::GrowthPreviewCamera& 
             .end = {line.end.x, line.end.y, line.end.z},
             .color = {line.color.x, line.color.y, line.color.z},
             .alpha = line.alpha,
+            .dash_direction = line.dash_direction,
+            .surface_tangent = {line.surface_tangent.x, line.surface_tangent.y, line.surface_tangent.z},
+            .surface_radius = line.surface_radius,
+            .screen_offset_pixels = line.screen_offset_pixels,
         });
     }
     return lines;
@@ -374,6 +378,7 @@ bool PreviewRenderer::prepare_frame_on_render_thread()
                 {static_cast<std::uint32_t>(width_), static_cast<std::uint32_t>(height_)},
                 {{0, 0}, {static_cast<std::uint32_t>(width_), static_cast<std::uint32_t>(height_)}},
                 to_overlay_camera(slot.camera), slot.overlay_lines, overlay_depth_bias(slot.camera),
+                std::chrono::duration<float>(std::chrono::steady_clock::now().time_since_epoch()).count(),
                 static_cast<std::uint32_t>(slot_index)); !recorded) {
             vkEndCommandBuffer(slot.command_buffer);
             set_error("Vulkan guide overlay failed: " + recorded.error().message);
@@ -408,6 +413,7 @@ bool PreviewRenderer::prepare_frame_on_render_thread()
 
     std::function<void(std::vector<ProjectedPlantDiagnosticLabel>)> labels_callback;
     std::vector<ProjectedPlantDiagnosticLabel> projected_labels;
+    bool animate_overlay = false;
     {
         std::lock_guard lock(mutex_);
         presented_width_ = width_;
@@ -417,11 +423,18 @@ bool PreviewRenderer::prepare_frame_on_render_thread()
         status_.frame_generation = slot.timeline_value;
         labels_callback = diagnostic_labels_callback_;
         projected_labels = slot.projected_labels;
+        animate_overlay = std::ranges::any_of(slot.overlay_lines, [](const OverlayLine& line) {
+            return line.dash_direction != 0.0F;
+        });
+        if (animate_overlay) {
+            dirty_ = true;
+        }
         if (old_displayed_slot >= 0) {
             condition_.notify_all();
         }
     }
     if (labels_callback) labels_callback(std::move(projected_labels));
+    if (animate_overlay) condition_.notify_all();
     return true;
 }
 

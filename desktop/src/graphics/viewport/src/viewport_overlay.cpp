@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <cmath>
 #include <sstream>
 #include <string_view>
 #include <utility>
@@ -16,12 +17,17 @@ extern unsigned int overlay_lines_frag_spv_len;
 namespace toi::viewport {
 namespace {
 
-constexpr std::uint32_t kMaxLines = 256;
+constexpr std::uint32_t kMaxLines = 4096;
 
 struct OverlayVertex {
     float position[3];
     float color[3];
     float alpha;
+    float path_distance;
+    float dash_direction;
+    float surface_tangent[3];
+    float surface_radius;
+    float screen_offset_pixels;
 };
 
 struct OverlayPushConstants {
@@ -220,10 +226,15 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     stages[1].pName = "main";
 
     VkVertexInputBindingDescription binding{0, sizeof(OverlayVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-    std::array<VkVertexInputAttributeDescription, 3> attributes{{
+    std::array<VkVertexInputAttributeDescription, 8> attributes{{
         {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(OverlayVertex, position)},
         {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(OverlayVertex, color)},
         {2, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlayVertex, alpha)},
+        {3, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlayVertex, path_distance)},
+        {4, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlayVertex, dash_direction)},
+        {5, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(OverlayVertex, surface_tangent)},
+        {6, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlayVertex, surface_radius)},
+        {7, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlayVertex, screen_offset_pixels)},
     }};
     VkPipelineVertexInputStateCreateInfo vertex_input{};
     vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -388,7 +399,7 @@ Result<void> ViewportOverlay::set_scene_distance(std::uint32_t distance_slot, Vk
 
 Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D extent, VkRect2D content_rect,
                                      const OverlayCamera& camera, std::span<const OverlayLine> lines,
-                                     float depth_bias, std::uint32_t distance_slot)
+                                     float depth_bias, float animation_time, std::uint32_t distance_slot)
 {
     if (distance_slot >= kDistanceSlotCount) {
         return std::unexpected(make_error("overlay distance slot out of range"));
@@ -397,7 +408,10 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D 
         return std::unexpected(make_error("overlay target is missing"));
     }
 
-    const std::uint32_t line_count = std::min<std::uint32_t>(static_cast<std::uint32_t>(lines.size()), kMaxLines);
+    if (lines.size() > kMaxLines) {
+        return std::unexpected(make_error("overlay line capacity exceeded"));
+    }
+    const std::uint32_t line_count = static_cast<std::uint32_t>(lines.size());
     auto* vertices = static_cast<OverlayVertex*>(vertex_mapped_);
     for (std::uint32_t index = 0; index < line_count; ++index) {
         const auto& line = lines[index];
@@ -406,9 +420,22 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D 
         std::memcpy(start.position, line.start, sizeof(line.start));
         std::memcpy(start.color, line.color, sizeof(line.color));
         start.alpha = line.alpha;
+        start.path_distance = 0.0F;
+        start.dash_direction = line.dash_direction;
+        std::memcpy(start.surface_tangent, line.surface_tangent, sizeof(line.surface_tangent));
+        start.surface_radius = line.surface_radius;
+        start.screen_offset_pixels = line.screen_offset_pixels;
         std::memcpy(end.position, line.end, sizeof(line.end));
         std::memcpy(end.color, line.color, sizeof(line.color));
         end.alpha = line.alpha;
+        const float dx = line.end[0] - line.start[0];
+        const float dy = line.end[1] - line.start[1];
+        const float dz = line.end[2] - line.start[2];
+        end.path_distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        end.dash_direction = line.dash_direction;
+        std::memcpy(end.surface_tangent, line.surface_tangent, sizeof(line.surface_tangent));
+        end.surface_radius = line.surface_radius;
+        end.screen_offset_pixels = line.screen_offset_pixels;
     }
 
     VkRenderPassBeginInfo begin{};
@@ -439,6 +466,7 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D 
         push.projection[3] = camera.near_clip;
         push.depth[0] = camera.far_clip;
         push.depth[1] = depth_bias;
+        push.depth[2] = animation_time;
         push.viewport[0] = static_cast<float>(content_rect.offset.x);
         push.viewport[1] = static_cast<float>(content_rect.offset.y);
         push.viewport[2] = static_cast<float>(content_rect.extent.width);

@@ -29,6 +29,7 @@ struct GrowthError {
     enum class Code {
         InvalidInput,
         InvalidPrototype,
+        ResourceExhausted,
     };
 
     Code code = Code::InvalidInput;
@@ -100,6 +101,7 @@ struct BranchModulePrototype {
     float max_physiological_age = 0.0F;
     std::vector<std::vector<std::size_t>> child_segments_by_node;
     std::vector<std::optional<std::size_t>> incoming_segment_by_node;
+    std::vector<std::optional<std::size_t>> main_child_segment_by_node;
 };
 
 struct BranchModulePrototypeLibrary {
@@ -153,9 +155,40 @@ struct Sphere {
 inline constexpr float kMinimumModuleVigor = 0.02F;
 inline constexpr float kMaximumModuleVigor = 1.0F;
 
+struct SnapshotRange {
+    std::size_t offset = 0;
+    std::size_t count = 0;
+};
+
+struct RigidTransform {
+    Vec3 x_axis{1.0F, 0.0F, 0.0F};
+    Vec3 y_axis{0.0F, 1.0F, 0.0F};
+    Vec3 z_axis{0.0F, 0.0F, 1.0F};
+    Vec3 translation;
+};
+
+[[nodiscard]] Vec3 transform_direction(const RigidTransform& transform, Vec3 direction);
+[[nodiscard]] Vec3 transform_point(const RigidTransform& transform, Vec3 point);
+
+struct PlantSegmentSnapshot {
+    std::size_t module_id = 0;
+    std::size_t source_segment_id = 0;
+    Vec3 parent_position;
+    Vec3 child_position;
+    Vec3 mature_parent_position;
+    Vec3 mature_child_position;
+    float diameter = 0.0F;
+    float target_diameter = 0.0F;
+    SegmentState state = SegmentState::Growing;
+    std::optional<std::size_t> main_continuation_segment;
+};
+
 struct PlantModuleSnapshot {
     std::size_t id = 0;
     std::size_t prototype_id = 0;
+    std::optional<std::size_t> parent_module_id;
+    std::optional<std::size_t> parent_terminal_node;
+    RigidTransform transform;
     Vec3 root_position;
     float physiological_age = 0.0F;
     float fully_grown_age = 0.0F;
@@ -164,12 +197,51 @@ struct PlantModuleSnapshot {
     float vigor = 0.0F;
     float growth_rate = 0.0F;
     Sphere collision_sphere;
-    std::span<const GrowthSnapshotSegment> segments;
+    SnapshotRange segments;
+};
+
+struct MatureTerminalSnapshot {
+    std::size_t module_id = 0;
+    std::size_t terminal_node = 0;
+    Vec3 position;
+    Vec3 tangent;
+    float host_radius = 0.0F;
+    float vigor = 0.0F;
+    std::optional<std::size_t> child_module_id;
+};
+
+enum class FlowKind {
+    AccumulatedLight,
+    Vigor,
+};
+
+struct PlantFlowPath {
+    FlowKind kind = FlowKind::AccumulatedLight;
+    std::size_t module_id = 0;
+    std::size_t source_segment_id = 0;
+    Vec3 start;
+    Vec3 end;
+    Vec3 tangent;
+    float host_radius = 0.0F;
+    float amount = 0.0F;
+    float root_total = 0.0F;
+    float fraction = 0.0F;
+};
+
+struct AttachmentEvent {
+    std::size_t child_module_id = 0;
+    std::size_t parent_module_id = 0;
+    std::size_t parent_terminal_node = 0;
+    std::size_t prototype_id = 0;
 };
 
 struct PlantSnapshot {
     float plant_age = 0.0F;
     std::span<const PlantModuleSnapshot> modules;
+    std::span<const PlantSegmentSnapshot> segments;
+    std::span<const MatureTerminalSnapshot> mature_terminals;
+    std::span<const PlantFlowPath> flow_paths;
+    std::span<const AttachmentEvent> attachment_events;
 };
 
 class PlantSimulation {
@@ -180,21 +252,35 @@ public:
 
     [[nodiscard]] Result<void> step(float timestep);
 
-    // Views remain valid until the next step or simulation destruction.
+    // Views remain valid until the next successful step or simulation destruction.
     [[nodiscard]] PlantSnapshot snapshot() const;
 
 private:
+    struct ModuleRecord {
+        std::size_t id = 0;
+        std::size_t prototype_index = 0;
+        std::optional<std::size_t> parent_module_id;
+        std::optional<std::size_t> parent_terminal_node;
+        RigidTransform transform;
+        float physiological_age = 0.0F;
+        float fully_grown_age = 0.0F;
+        bool diagnostics_active = true;
+    };
+
     PlantSimulation() = default;
 
-    [[nodiscard]] Result<void> rebuild_snapshot(float plant_age, float root_physiological_age);
+    [[nodiscard]] Result<void> rebuild_snapshot(bool emit_flows);
 
     PlantTypeParameters plant_type_;
-    BranchModulePrototype prepared_root_;
-    float fully_grown_age_ = 0.0F;
+    std::vector<BranchModulePrototype> prepared_prototypes_;
+    std::vector<ModuleRecord> module_records_;
+    std::size_t next_module_id_ = 1;
     float plant_age_ = 0.0F;
-    float root_physiological_age_ = 0.0F;
-    std::vector<GrowthSnapshotSegment> root_segments_;
-    std::vector<PlantModuleSnapshot> modules_;
+    std::vector<PlantModuleSnapshot> snapshot_modules_;
+    std::vector<PlantSegmentSnapshot> snapshot_segments_;
+    std::vector<MatureTerminalSnapshot> snapshot_terminals_;
+    std::vector<PlantFlowPath> snapshot_flows_;
+    std::vector<AttachmentEvent> snapshot_attachment_events_;
 };
 
 struct VigorSplit {
@@ -210,7 +296,7 @@ struct VigorSplit {
 [[nodiscard]] VigorSplit split_vigor(float available_vigor, float main_axis_light, float lateral_axis_light,
                                      float apical_control);
 // Paper: D', vigor-scaled determinacy.
-[[nodiscard]] float vigor_scaled_determinacy(float determinacy, float module_vigor, float root_max_vigor);
+[[nodiscard]] float vigor_scaled_determinacy(float determinacy, float module_vigor);
 // Fixed 3x3 morphospace, row-major by apical control then determinacy.
 [[nodiscard]] std::size_t nearest_morphospace_prototype(float apical_control, float determinacy);
 [[nodiscard]] float parameter_for_plant_age(float young_value, std::optional<float> mature_value,

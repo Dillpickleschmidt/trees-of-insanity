@@ -88,6 +88,9 @@ export type PlantState = {
 	plant_type_id: string;
 	module_diagnostic_labels_visible: boolean;
 	direct_light_bounding_spheres_visible: boolean;
+	accumulated_light_flow_visible: boolean;
+	vigor_flow_visible: boolean;
+	mature_terminal_markers_visible: boolean;
 	direct_light_exposure: number;
 	accumulated_light: number;
 	vigor: number;
@@ -96,7 +99,11 @@ export type PlantState = {
 
 export type PlantDiagnostics = Pick<
 	PlantState,
-	"module_diagnostic_labels_visible" | "direct_light_bounding_spheres_visible"
+	| "module_diagnostic_labels_visible"
+	| "direct_light_bounding_spheres_visible"
+	| "accumulated_light_flow_visible"
+	| "vigor_flow_visible"
+	| "mature_terminal_markers_visible"
 >;
 
 export type PlantTypeParameters = {

@@ -79,6 +79,48 @@ TEST_CASE("Table structural parameters produce meter-based module geometry")
     CHECK(first_terminal->diameter == Catch::Approx(0.0057F));
 }
 
+TEST_CASE("prototype preparation precomputes main-axis continuation")
+{
+    using namespace toi::growth;
+    auto prototype = make_prototype(0);
+    prototype.segments[1].direction = {0.0F, 0.0F, 1.0F};
+    prototype.segments[2].direction = {0.0871557F, 0.0F, 0.996195F};
+    prototype.segments[2].pipe_diameter_factor = 2.0F;
+    const auto plant_type = plant_type_preset_by_key('a');
+    REQUIRE(plant_type);
+    auto prepared = prepare_branch_module_prototype(prototype, *plant_type);
+    REQUIRE(prepared);
+    REQUIRE(prepared->main_child_segment_by_node[1]);
+    CHECK(*prepared->main_child_segment_by_node[1] == 2);
+
+    prototype.segments[2].pipe_diameter_factor = 1.0F;
+    prepared = prepare_branch_module_prototype(prototype, *plant_type);
+    REQUIRE(prepared);
+    CHECK(*prepared->main_child_segment_by_node[1] == 1);
+
+    prototype.segments[2].direction = {0.342020F, 0.0F, 0.939693F};
+    prototype.segments[2].pipe_diameter_factor = 10.0F;
+    prepared = prepare_branch_module_prototype(prototype, *plant_type);
+    REQUIRE(prepared);
+    CHECK(*prepared->main_child_segment_by_node[1] == 1);
+
+    prototype.segments[2].direction = prototype.segments[1].direction;
+    prototype.segments[2].pipe_diameter_factor = prototype.segments[1].pipe_diameter_factor;
+    prototype.segments[2].max_length = prototype.segments[1].max_length * 2.0F;
+    prepared = prepare_branch_module_prototype(prototype, *plant_type);
+    REQUIRE(prepared);
+    CHECK(*prepared->main_child_segment_by_node[1] == 2);
+
+    prototype.segments[2].max_length = prototype.segments[1].max_length;
+    prepared = prepare_branch_module_prototype(prototype, *plant_type);
+    REQUIRE(prepared);
+    CHECK(*prepared->main_child_segment_by_node[1] == 1);
+    CHECK_FALSE(prepared->main_child_segment_by_node[prototype.root_node]);
+
+    prototype.segments[2].direction = {};
+    CHECK_FALSE(prepare_branch_module_prototype(prototype, *plant_type));
+}
+
 TEST_CASE("three-sphere collision exposure changes gradually with raw cubic-meter volume")
 {
     using namespace toi::growth;
@@ -118,13 +160,16 @@ TEST_CASE("Borchert-Honda split conserves vigor")
     CHECK(split.main_axis == Catch::Approx(72.0F));
     CHECK(split.lateral_axis == Catch::Approx(8.0F));
     CHECK(split.main_axis + split.lateral_axis == Catch::Approx(80.0F));
+    const auto zero_light = toi::growth::split_vigor(80.0F, 0.0F, 0.0F, 0.75F);
+    CHECK(zero_light.main_axis == Catch::Approx(60.0F));
+    CHECK(zero_light.lateral_axis == Catch::Approx(20.0F));
 }
 
 TEST_CASE("full-vigor determinacy selects the nearest fixed morphospace cell")
 {
     using namespace toi::growth;
-    CHECK(vigor_scaled_determinacy(0.8F, 100.0F, 100.0F) == Catch::Approx(0.8F));
-    CHECK(nearest_morphospace_prototype(0.5F, vigor_scaled_determinacy(0.8F, 100.0F, 100.0F)) == 5);
+    CHECK(vigor_scaled_determinacy(0.8F, 1.0F) == Catch::Approx(0.8F));
+    CHECK(nearest_morphospace_prototype(0.5F, vigor_scaled_determinacy(0.8F, 1.0F)) == 5);
 }
 
 TEST_CASE("orientation costs implement equations 3 and 4")

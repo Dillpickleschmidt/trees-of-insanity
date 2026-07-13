@@ -435,6 +435,9 @@ Result<PlantStateView> DesktopSession::plant_state() const
         .plant_type_id = project_.plant_workspace.plant_type_id,
         .module_diagnostic_labels_visible = diagnostics.module_diagnostic_labels_visible,
         .direct_light_bounding_spheres_visible = diagnostics.direct_light_bounding_spheres_visible,
+        .accumulated_light_flow_visible = diagnostics.accumulated_light_flow_visible,
+        .vigor_flow_visible = diagnostics.vigor_flow_visible,
+        .mature_terminal_markers_visible = diagnostics.mature_terminal_markers_visible,
         .direct_light_exposure = root.direct_light_exposure,
         .accumulated_light = root.accumulated_light,
         .vigor = root.vigor,
@@ -531,6 +534,11 @@ Result<void> DesktopSession::update_plant_diagnostics(PlantDiagnosticsUpdate dia
         diagnostics.module_diagnostic_labels_visible;
     project_.plant_workspace.diagnostics.direct_light_bounding_spheres_visible =
         diagnostics.direct_light_bounding_spheres_visible;
+    project_.plant_workspace.diagnostics.accumulated_light_flow_visible =
+        diagnostics.accumulated_light_flow_visible;
+    project_.plant_workspace.diagnostics.vigor_flow_visible = diagnostics.vigor_flow_visible;
+    project_.plant_workspace.diagnostics.mature_terminal_markers_visible =
+        diagnostics.mature_terminal_markers_visible;
     return save_project();
 }
 

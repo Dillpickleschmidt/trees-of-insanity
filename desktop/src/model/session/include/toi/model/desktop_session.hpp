@@ -109,6 +109,9 @@ struct PlantStateView {
     std::string plant_type_id;
     bool module_diagnostic_labels_visible = false;
     bool direct_light_bounding_spheres_visible = false;
+    bool accumulated_light_flow_visible = false;
+    bool vigor_flow_visible = false;
+    bool mature_terminal_markers_visible = false;
     float direct_light_exposure = 0.0F;
     float accumulated_light = 0.0F;
     float vigor = 0.0F;
@@ -124,6 +127,9 @@ struct PlantPreviewSnapshot {
 struct PlantDiagnosticsUpdate {
     bool module_diagnostic_labels_visible = false;
     bool direct_light_bounding_spheres_visible = false;
+    bool accumulated_light_flow_visible = false;
+    bool vigor_flow_visible = false;
+    bool mature_terminal_markers_visible = false;
 };
 
 struct PreviewEnvironment {

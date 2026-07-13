@@ -3,6 +3,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -12,7 +13,7 @@ toi::growth::BranchModulePrototype make_root_prototype(std::size_t id)
     using namespace toi::growth;
     BranchModulePrototype prototype;
     prototype.id = id;
-    prototype.name = "root";
+    prototype.name = "prototype-" + std::to_string(id);
     prototype.root_node = 0;
     prototype.nodes = {
         {{5.0F, 0.0F, 2.0F}, 0.0F},
@@ -33,7 +34,9 @@ toi::growth::BranchModulePrototype make_root_prototype(std::size_t id)
 
 toi::growth::BranchModulePrototypeLibrary make_library()
 {
-    return {.prototypes = {make_root_prototype(7)}};
+    toi::growth::BranchModulePrototypeLibrary library;
+    for (std::size_t id = 0; id < 9; ++id) library.prototypes.push_back(make_root_prototype(id));
+    return library;
 }
 
 toi::growth::PlantTypeParameters make_plant_type()
@@ -43,123 +46,172 @@ toi::growth::PlantTypeParameters make_plant_type()
     return plant_type;
 }
 
+const toi::growth::PlantModuleSnapshot& module_by_id(const toi::growth::PlantSnapshot& snapshot, std::size_t id)
+{
+    return *std::ranges::find(snapshot.modules, id, &toi::growth::PlantModuleSnapshot::id);
+}
+
+std::span<const toi::growth::PlantSegmentSnapshot> module_segments(const toi::growth::PlantSnapshot& snapshot,
+                                                                   const toi::growth::PlantModuleSnapshot& module)
+{
+    return snapshot.segments.subspan(module.segments.offset, module.segments.count);
+}
+
 } // namespace
 
-TEST_CASE("root-only plant starts at the world origin with committed diagnostics")
+TEST_CASE("root-only plant starts at origin with stable flat snapshot storage")
 {
     using namespace toi::growth;
     const auto plant_type = make_plant_type();
     auto simulation = PlantSimulation::create(make_library(), plant_type, 7);
     REQUIRE(simulation);
-
     const auto snapshot = simulation->snapshot();
-    CHECK(snapshot.plant_age == Catch::Approx(0.0F));
+    const auto repeated = simulation->snapshot();
     REQUIRE(snapshot.modules.size() == 1);
+    CHECK(snapshot.modules.data() == repeated.modules.data());
+    CHECK(snapshot.segments.data() == repeated.segments.data());
     const auto& root = snapshot.modules.front();
     CHECK(root.id == 0);
     CHECK(root.prototype_id == 7);
     CHECK(root.root_position.x == Catch::Approx(0.0F));
-    CHECK(root.root_position.y == Catch::Approx(0.0F));
     CHECK(root.root_position.z == Catch::Approx(0.0F));
     CHECK(root.physiological_age == Catch::Approx(0.0F));
-    CHECK(root.segments.empty());
-    CHECK(root.collision_sphere.center.x == Catch::Approx(0.0F));
-    CHECK(root.collision_sphere.center.y == Catch::Approx(0.0F));
-    CHECK(root.collision_sphere.center.z == Catch::Approx(0.0F));
+    CHECK(root.segments.count == 3);
     CHECK(root.collision_sphere.radius == Catch::Approx(0.0F));
     CHECK(root.direct_light_exposure == Catch::Approx(1.0F));
     CHECK(root.accumulated_light == Catch::Approx(1.0F));
     CHECK(root.vigor == Catch::Approx(kMaximumModuleVigor));
     CHECK(root.growth_rate == Catch::Approx(plant_type.plant_growth_rate));
+    CHECK(snapshot.mature_terminals.empty());
+    CHECK(snapshot.flow_paths.empty());
+    CHECK(snapshot.attachment_events.empty());
 }
 
-TEST_CASE("root budget and module vigor remain separate")
+TEST_CASE("root budget remains separate from module vigor")
 {
     using namespace toi::growth;
     auto plant_type = make_plant_type();
     plant_type.root_max_vigor = 0.5F;
     auto simulation = PlantSimulation::create(make_library(), plant_type, 7);
     REQUIRE(simulation);
-
     const auto& root = simulation->snapshot().modules.front();
-    const float normalized_vigor = (0.5F - kMinimumModuleVigor) / (kMaximumModuleVigor - kMinimumModuleVigor);
-    const float expected_rate =
-        (3.0F * normalized_vigor * normalized_vigor - 2.0F * normalized_vigor * normalized_vigor * normalized_vigor) *
-        plant_type.plant_growth_rate;
+    const float normalized = (0.5F - kMinimumModuleVigor) / (kMaximumModuleVigor - kMinimumModuleVigor);
+    const float expected_rate = (3.0F * normalized * normalized - 2.0F * normalized * normalized * normalized) *
+                                plant_type.plant_growth_rate;
     CHECK(root.vigor == Catch::Approx(0.5F));
     CHECK(root.growth_rate == Catch::Approx(expected_rate));
 }
 
-TEST_CASE("plant step atomically advances calendar and physiological age")
-{
-    using namespace toi::growth;
-    auto simulation = PlantSimulation::create(make_library(), make_plant_type(), 7);
-    REQUIRE(simulation);
-    const float initial_rate = simulation->snapshot().modules.front().growth_rate;
-
-    REQUIRE(simulation->step(2.0F));
-    const auto snapshot = simulation->snapshot();
-    REQUIRE(snapshot.modules.size() == 1);
-    CHECK(snapshot.plant_age == Catch::Approx(2.0F));
-    CHECK(snapshot.modules.front().physiological_age == Catch::Approx(initial_rate * 2.0F));
-    CHECK(snapshot.modules.front().collision_sphere.radius > 0.0F);
-    CHECK(snapshot.modules.front().direct_light_exposure == Catch::Approx(1.0F));
-    CHECK(snapshot.modules.front().accumulated_light == Catch::Approx(1.0F));
-}
-
-TEST_CASE("plant collision sphere uses unique developed topology nodes")
+TEST_CASE("maturity crossing atomically attaches every eligible root terminal")
 {
     using namespace toi::growth;
     auto simulation = PlantSimulation::create(make_library(), make_plant_type(), 7);
     REQUIRE(simulation);
     REQUIRE(simulation->step(10'000.0F));
+    auto attached = simulation->snapshot();
+    REQUIRE(attached.modules.size() == 3);
+    REQUIRE(attached.attachment_events.size() == 2);
+    CHECK(attached.attachment_events[0].child_module_id == 1);
+    CHECK(attached.attachment_events[1].child_module_id == 2);
+    CHECK(attached.attachment_events[0].parent_terminal_node == 2);
+    CHECK(attached.attachment_events[1].parent_terminal_node == 3);
+    CHECK(attached.attachment_events[0].prototype_id == attached.attachment_events[1].prototype_id);
+    for (std::size_t id = 1; id <= 2; ++id) {
+        const auto& child = module_by_id(attached, id);
+        CHECK(child.parent_module_id == 0);
+        CHECK(child.physiological_age == Catch::Approx(0.0F));
+        CHECK(child.direct_light_exposure == Catch::Approx(0.0F));
+        CHECK(child.vigor == Catch::Approx(0.0F));
+    }
+    REQUIRE(attached.mature_terminals.size() == 2);
+    CHECK(attached.mature_terminals[0].child_module_id == 1);
+    CHECK(attached.mature_terminals[1].child_module_id == 2);
+    CHECK(module_by_id(attached, 1).root_position.x ==
+          Catch::Approx(attached.mature_terminals[0].position.x));
+    CHECK(module_by_id(attached, 1).root_position.z ==
+          Catch::Approx(attached.mature_terminals[0].position.z));
 
-    const auto& root = simulation->snapshot().modules.front();
-    REQUIRE(root.segments.size() == 3);
-    CHECK(root.collision_sphere.center.x == Catch::Approx(0.0F));
-    CHECK(root.collision_sphere.center.y == Catch::Approx(0.0F));
-    CHECK(root.collision_sphere.center.z == Catch::Approx(0.75F));
-    CHECK(root.collision_sphere.radius == Catch::Approx(std::sqrt(1.0625F)));
+    const auto child_transform = module_by_id(attached, 1).transform;
+    REQUIRE(simulation->step(1.0F));
+    const auto activated = simulation->snapshot();
+    CHECK(activated.modules.size() == 3);
+    CHECK(activated.attachment_events.empty());
+    CHECK(module_by_id(activated, 1).physiological_age > 0.0F);
+    CHECK(module_by_id(activated, 1).direct_light_exposure > 0.0F);
+    CHECK(module_by_id(activated, 1).transform.z_axis.x == Catch::Approx(child_transform.z_axis.x));
+    CHECK_FALSE(activated.flow_paths.empty());
 }
 
-TEST_CASE("root-only plant snapshots are stable between mutations and never attach")
+TEST_CASE("continuous pipe crosses parent and child module attachment")
+{
+    using namespace toi::growth;
+    auto simulation = PlantSimulation::create(make_library(), make_plant_type(), 7);
+    REQUIRE(simulation);
+    REQUIRE(simulation->step(10'000.0F));
+    const auto snapshot = simulation->snapshot();
+    const auto& root = module_by_id(snapshot, 0);
+    const auto& child = module_by_id(snapshot, 1);
+    const auto root_segments = module_segments(snapshot, root);
+    const auto child_segments = module_segments(snapshot, child);
+    CHECK(root_segments[1].target_diameter == Catch::Approx(child_segments[0].target_diameter));
+    CHECK(root_segments[0].target_diameter > child_segments[0].target_diameter);
+    CHECK(root_segments[0].main_continuation_segment == root.segments.offset + 1);
+}
+
+TEST_CASE("root vigor budget can exceed one module's vigor")
+{
+    using namespace toi::growth;
+    auto plant_type = make_plant_type();
+    plant_type.root_max_vigor = 2.0F;
+    auto simulation = PlantSimulation::create(make_library(), plant_type, 7);
+    REQUIRE(simulation);
+    REQUIRE(simulation->step(10'000.0F));
+    REQUIRE(simulation->step(1.0F));
+    const auto snapshot = simulation->snapshot();
+    CHECK(module_by_id(snapshot, 0).vigor == Catch::Approx(kMaximumModuleVigor));
+    CHECK(module_by_id(snapshot, 1).vigor == Catch::Approx(kMaximumModuleVigor));
+    const auto vigor_path = std::ranges::find(snapshot.flow_paths, FlowKind::Vigor, &PlantFlowPath::kind);
+    REQUIRE(vigor_path != snapshot.flow_paths.end());
+    CHECK(vigor_path->root_total == Catch::Approx(2.0F));
+}
+
+TEST_CASE("accumulated-light and vigor flow remain deterministic without grandchildren")
 {
     using namespace toi::growth;
     auto first = PlantSimulation::create(make_library(), make_plant_type(), 7);
     auto second = PlantSimulation::create(make_library(), make_plant_type(), 7);
     REQUIRE(first);
     REQUIRE(second);
-    REQUIRE(first->step(4.0F));
-    REQUIRE(second->step(4.0F));
-
-    const auto before = first->snapshot();
-    const auto repeated = first->snapshot();
-    CHECK(before.modules.data() == repeated.modules.data());
-    CHECK(before.modules.front().segments.data() == repeated.modules.front().segments.data());
-    CHECK(before.modules.front().physiological_age ==
-          Catch::Approx(second->snapshot().modules.front().physiological_age));
-
-    REQUIRE(first->step(10'000.0F));
-    const float mature_age = first->snapshot().modules.front().physiological_age;
-    const auto mature_segments = first->snapshot().modules.front().segments.size();
-    REQUIRE(first->step(10.0F));
-    const auto mature = first->snapshot();
-    CHECK(mature.modules.size() == 1);
-    CHECK(mature.modules.front().physiological_age == Catch::Approx(mature_age));
-    CHECK(mature.modules.front().segments.size() == mature_segments);
-    CHECK(mature.plant_age == Catch::Approx(10'014.0F));
+    for (const float timestep : {10'000.0F, 100.0F, 10'000.0F}) {
+        REQUIRE(first->step(timestep));
+        REQUIRE(second->step(timestep));
+    }
+    const auto left = first->snapshot();
+    const auto right = second->snapshot();
+    REQUIRE(left.modules.size() == 3);
+    REQUIRE(left.modules.size() == right.modules.size());
+    CHECK(left.flow_paths.size() == right.flow_paths.size());
+    CHECK(module_by_id(left, 1).physiological_age == Catch::Approx(module_by_id(right, 1).physiological_age));
+    CHECK(left.mature_terminals.size() >= 6);
+    for (const auto& terminal : left.mature_terminals) {
+        if (terminal.module_id != 0) CHECK_FALSE(terminal.child_module_id);
+    }
 }
 
-TEST_CASE("plant simulation rejects invalid creation and step inputs")
+TEST_CASE("plant simulation rejects invalid inputs without mutation")
 {
     using namespace toi::growth;
-    auto invalid_type = make_plant_type();
-    invalid_type.length_growth_scale = 0.0F;
-    CHECK_FALSE(PlantSimulation::create(make_library(), invalid_type, 7));
+    auto incomplete_library = make_library();
+    incomplete_library.prototypes.pop_back();
+    CHECK_FALSE(PlantSimulation::create(incomplete_library, make_plant_type(), 7));
     CHECK_FALSE(PlantSimulation::create(make_library(), make_plant_type(), 99));
 
     auto simulation = PlantSimulation::create(make_library(), make_plant_type(), 7);
     REQUIRE(simulation);
+    const auto before = simulation->snapshot();
     CHECK_FALSE(simulation->step(0.0F));
     CHECK_FALSE(simulation->step(-1.0F));
+    const auto after = simulation->snapshot();
+    CHECK(after.plant_age == Catch::Approx(before.plant_age));
+    CHECK(after.modules.data() == before.modules.data());
 }
