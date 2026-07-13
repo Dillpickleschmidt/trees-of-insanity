@@ -99,6 +99,33 @@ struct ModulePreviewSnapshot {
     growth::BranchModulePrototype prepared_prototype;
 };
 
+struct PlantStateView {
+    float plant_age = 0.0F;
+    float root_physiological_age = 0.0F;
+    float root_fully_grown_age = 0.0F;
+    float timestep = 1.0F;
+    bool paused = true;
+    std::size_t root_prototype_id = 0;
+    std::string plant_type_id;
+    bool module_diagnostic_labels_visible = false;
+    bool direct_light_bounding_spheres_visible = false;
+    float direct_light_exposure = 0.0F;
+    float accumulated_light = 0.0F;
+    float vigor = 0.0F;
+    float growth_rate = 0.0F;
+};
+
+struct PlantPreviewSnapshot {
+    growth::PlantSnapshot snapshot;
+    growth::GrowthSnapshot mature_root_snapshot;
+    growth::BranchModulePrototype prepared_root;
+};
+
+struct PlantDiagnosticsUpdate {
+    bool module_diagnostic_labels_visible = false;
+    bool direct_light_bounding_spheres_visible = false;
+};
+
 struct PreviewEnvironment {
     std::filesystem::path asset_search_path;
     std::filesystem::path hdri_texture_path;
@@ -124,6 +151,8 @@ public:
     [[nodiscard]] Result<growth::GrowthSnapshot> growth_snapshot() const;
     [[nodiscard]] Result<GrowthSnapshotSummary> growth_snapshot_summary() const;
     [[nodiscard]] Result<ModulePreviewSnapshot> module_preview_snapshot() const;
+    [[nodiscard]] Result<PlantStateView> plant_state() const;
+    [[nodiscard]] Result<PlantPreviewSnapshot> plant_preview_snapshot() const;
     [[nodiscard]] Result<project::PlantType> plant_type(std::string_view plant_type_id) const;
 
     [[nodiscard]] Result<void> set_active_prototype(std::size_t prototype_id);
@@ -132,24 +161,35 @@ public:
 
     [[nodiscard]] PreviewEnvironment preview_environment() const;
     [[nodiscard]] Result<void> set_active_workspace(std::string_view workspace);
+    [[nodiscard]] Result<void> plant_step();
+    [[nodiscard]] Result<void> plant_reset();
+    [[nodiscard]] Result<void> set_plant_timestep(float timestep);
+    [[nodiscard]] Result<void> update_plant_diagnostics(PlantDiagnosticsUpdate diagnostics);
 
     [[nodiscard]] Result<project::PlantType> create_plant_type(std::string name, char preset_key);
     [[nodiscard]] Result<void> delete_plant_type(std::string_view plant_type_id);
     [[nodiscard]] Result<void> update_plant_type(project::PlantType plant_type);
 
     [[nodiscard]] ViewportAppearance viewport_preferences() const;
+    [[nodiscard]] project::OrbitState active_orbit() const;
+    [[nodiscard]] bool active_camera_needs_frame() const;
     [[nodiscard]] std::vector<HdriEnvironment> hdri_environments() const;
     [[nodiscard]] Result<void> update_viewport_preferences(ViewportAppearance appearance);
+    [[nodiscard]] Result<void> update_active_orbit(project::OrbitState orbit);
 
 private:
     DesktopSession(DesktopSessionOptions options, import::BranchModulePrototypeLibrary prototype_library,
-                   project::Project project);
+                   project::Project project, growth::PlantSimulation plant_simulation);
 
     [[nodiscard]] Result<void> clamp_module_age_to_active_range();
+    [[nodiscard]] Result<void> reset_plant_simulation();
 
     DesktopSessionOptions options_;
     import::BranchModulePrototypeLibrary prototype_library_;
     project::Project project_;
+    growth::PlantSimulation plant_simulation_;
+    bool module_camera_needs_frame_ = true;
+    bool plant_camera_needs_frame_ = true;
 };
 
 [[nodiscard]] std::string to_string(PrototypeTreeItem::Kind kind);

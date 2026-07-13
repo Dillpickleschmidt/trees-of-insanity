@@ -435,6 +435,7 @@ namespace {
         {"world_origin_axes_visible", viewport.world_origin_axes_visible},
         {"hdri_backdrop_visible", viewport.hdri_backdrop_visible},
         {"active_hdri_environment_id", viewport.active_hdri_environment_id},
+        {"orbit_initialized", viewport.orbit_initialized},
         {"orbit",
          {
              {"target",
@@ -455,6 +456,7 @@ namespace {
     auto axes = bool_from_json(value, "world_origin_axes_visible");
     auto backdrop = bool_from_json(value, "hdri_backdrop_visible");
     auto hdri = string_from_json(value, "active_hdri_environment_id");
+    auto orbit_initialized = bool_from_json(value, "orbit_initialized");
     if (!guides)
         return std::unexpected(guides.error());
     if (!axes)
@@ -463,6 +465,8 @@ namespace {
         return std::unexpected(backdrop.error());
     if (!hdri)
         return std::unexpected(hdri.error());
+    if (!orbit_initialized)
+        return std::unexpected(orbit_initialized.error());
     if (!value.contains("orbit") || !value.at("orbit").is_object()) {
         return std::unexpected(invalid_project("viewport orbit must be an object"));
     }
@@ -498,6 +502,7 @@ namespace {
                   .radius = *radius,
                   .azimuth_radians = *azimuth,
                   .elevation_radians = *elevation},
+        .orbit_initialized = *orbit_initialized,
     };
 }
 

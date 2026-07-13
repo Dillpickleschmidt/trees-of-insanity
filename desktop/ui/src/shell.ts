@@ -1,5 +1,10 @@
 import type { CommandRequest, CommandResponse } from "./shared/desktopActions";
-import type { Rect, ViewportCameraInput, ViewportStatus } from "./shared/desktopBridge";
+import type {
+	ProjectedPlantDiagnosticLabel,
+	Rect,
+	ViewportCameraInput,
+	ViewportStatus,
+} from "./shared/desktopBridge";
 import { createAppClient } from "./appClient";
 
 type QtSignal<T extends unknown[]> = {
@@ -14,6 +19,7 @@ type DesktopBridge = {
 	setViewportRect(x: number, y: number, width: number, height: number, devicePixelRatio: number): void;
 	cameraInput(kind: string, dx: number, dy: number, viewportHeight: number): void;
 	viewportStatusChanged: QtSignal<[string]>;
+	plantDiagnosticLabelsChanged: QtSignal<[string]>;
 };
 
 declare global {
@@ -62,6 +68,16 @@ export function updateViewportRect(rect: Rect) {
 
 export function sendViewportCameraInput(input: ViewportCameraInput) {
 	void bridgePromise.then((bridge) => bridge.cameraInput(input.kind, input.dx, input.dy, input.viewportHeight));
+}
+
+export function onPlantDiagnosticLabels(listener: (labels: ProjectedPlantDiagnosticLabel[]) => void) {
+	let bridge: DesktopBridge | undefined;
+	const receive = (serialized: string) => listener(JSON.parse(serialized) as ProjectedPlantDiagnosticLabel[]);
+	void bridgePromise.then((resolved) => {
+		bridge = resolved;
+		bridge.plantDiagnosticLabelsChanged.connect(receive);
+	});
+	return () => bridge?.plantDiagnosticLabelsChanged.disconnect(receive);
 }
 
 export function onViewportStatus(listener: (status: ViewportStatus) => void) {

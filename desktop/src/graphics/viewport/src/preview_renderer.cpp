@@ -38,12 +38,26 @@ OverlayCamera to_overlay_camera(const render::GrowthPreviewCamera& camera)
     };
 }
 
-std::vector<OverlayLine> build_overlay_lines(const render::GrowthPreviewCamera& camera)
+std::vector<OverlayLine> build_overlay_lines(const render::GrowthPreviewCamera& camera,
+                                             std::span<const render::DiagnosticOverlayLine> diagnostics,
+                                             bool include_guides)
 {
-    const auto guides = render::make_growth_preview_guides(camera);
     std::vector<OverlayLine> lines;
-    lines.reserve(guides.lines.size());
-    for (const auto& line : guides.lines) {
+    if (include_guides) {
+        const auto guides = render::make_growth_preview_guides(camera);
+        lines.reserve(guides.lines.size() + diagnostics.size());
+        for (const auto& line : guides.lines) {
+            lines.push_back({
+                .start = {line.start.x, line.start.y, line.start.z},
+                .end = {line.end.x, line.end.y, line.end.z},
+                .color = {line.color.x, line.color.y, line.color.z},
+                .alpha = line.alpha,
+            });
+        }
+    } else {
+        lines.reserve(diagnostics.size());
+    }
+    for (const auto& line : diagnostics) {
         lines.push_back({
             .start = {line.start.x, line.start.y, line.start.z},
             .end = {line.end.x, line.end.y, line.end.z},
@@ -52,6 +66,39 @@ std::vector<OverlayLine> build_overlay_lines(const render::GrowthPreviewCamera& 
         });
     }
     return lines;
+}
+
+std::vector<ProjectedPlantDiagnosticLabel> project_diagnostic_labels(
+    std::span<const render::PlantDiagnosticLabel> labels, const render::GrowthPreviewCamera& camera)
+{
+    const auto dot = [](growth::Vec3 left, growth::Vec3 right) {
+        return left.x * right.x + left.y * right.y + left.z * right.z;
+    };
+    const auto forward = growth::scale(camera.negative_forward, -1.0F);
+    std::vector<ProjectedPlantDiagnosticLabel> projected;
+    projected.reserve(labels.size());
+    for (const auto& label : labels) {
+        const auto relative = growth::subtract(label.world_position, camera.eye);
+        const float depth = dot(relative, forward);
+        const float normalized_x = depth > camera.near_clip
+                                       ? 0.5F + static_cast<float>(camera.focal_length / camera.horizontal_aperture) *
+                                                    dot(relative, camera.right) / depth
+                                       : 0.0F;
+        const float normalized_y = depth > camera.near_clip
+                                       ? 0.5F - static_cast<float>(camera.focal_length / camera.vertical_aperture) *
+                                                    dot(relative, camera.up) / depth
+                                       : 0.0F;
+        projected.push_back({
+            .x = normalized_x,
+            .y = normalized_y,
+            .visible = depth > camera.near_clip && normalized_x >= 0.0F && normalized_x <= 1.0F &&
+                       normalized_y >= 0.0F && normalized_y <= 1.0F,
+            .direct_light_exposure = label.direct_light_exposure,
+            .accumulated_light = label.accumulated_light,
+            .vigor = label.vigor,
+        });
+    }
+    return projected;
 }
 
 float overlay_depth_bias(const render::GrowthPreviewCamera& camera)
@@ -105,13 +152,16 @@ struct PreviewRenderer::Slot {
     bool rendering = false;
     bool ready = false;
     bool has_distance = false;
+    std::vector<OverlayLine> overlay_lines;
+    std::vector<ProjectedPlantDiagnosticLabel> projected_labels;
 };
 
 Result<std::unique_ptr<PreviewRenderer>> PreviewRenderer::create(
-    PreviewRendererDevice device, render::GrowthPreviewStageProjection initial_stage)
+    PreviewRendererDevice device, render::GrowthPreviewStageProjection initial_stage, render::OrbitView initial_orbit)
 {
     auto renderer = std::unique_ptr<PreviewRenderer>(new PreviewRenderer);
-    if (auto initialized = renderer->initialize(std::move(device), std::move(initial_stage)); !initialized) {
+    if (auto initialized =
+            renderer->initialize(std::move(device), std::move(initial_stage), initial_orbit); !initialized) {
         return std::unexpected(initialized.error());
     }
     return renderer;
@@ -154,17 +204,12 @@ PreviewRenderer::~PreviewRenderer()
     }
 }
 
-void PreviewRenderer::set_stage(render::GrowthPreviewStageProjection stage)
+void PreviewRenderer::set_stage(render::GrowthPreviewStageProjection stage, render::OrbitView orbit)
 {
     {
         std::lock_guard lock(mutex_);
         base_camera_ = stage.camera;
-        const auto framed_orbit = render::orbit_view_from_camera(stage.camera);
-        if (!orbit_) {
-            orbit_ = framed_orbit;
-        } else {
-            orbit_->target = framed_orbit.target;
-        }
+        orbit_ = orbit;
         pending_stage_ = std::move(stage);
         stage_dirty_ = true;
         camera_dirty_ = true;
@@ -173,14 +218,26 @@ void PreviewRenderer::set_stage(render::GrowthPreviewStageProjection stage)
     condition_.notify_all();
 }
 
-void PreviewRenderer::apply_camera_input(std::string_view kind, float dx, float dy, int viewport_height)
+void PreviewRenderer::set_orbit(render::OrbitView orbit)
 {
     {
         std::lock_guard lock(mutex_);
-        if (!base_camera_) {
-            return;
+        orbit_ = orbit;
+        camera_dirty_ = true;
+        dirty_ = true;
+    }
+    condition_.notify_all();
+}
+
+std::optional<render::OrbitView> PreviewRenderer::apply_camera_input(std::string_view kind, float dx, float dy,
+                                                                     int viewport_height)
+{
+    std::optional<render::OrbitView> result;
+    {
+        std::lock_guard lock(mutex_);
+        if (!base_camera_ || !orbit_) {
+            return std::nullopt;
         }
-        orbit_ = orbit_.value_or(render::orbit_view_from_camera(*base_camera_));
         if (kind == "orbit") {
             const float radians_per_pixel = kTwoPi / static_cast<float>(std::max(1, viewport_height));
             orbit_ = render::rotate_orbit_view(*orbit_, -dx * radians_per_pixel, dy * radians_per_pixel);
@@ -197,12 +254,14 @@ void PreviewRenderer::apply_camera_input(std::string_view kind, float dx, float 
         } else if (kind == "wheel") {
             orbit_ = render::dolly_orbit_view(*orbit_, std::exp(-dy * kWheelDollyLogRadiusPerStep));
         } else {
-            return;
+            return std::nullopt;
         }
         camera_dirty_ = true;
         dirty_ = true;
+        result = orbit_;
     }
     condition_.notify_all();
+    return result;
 }
 
 void PreviewRenderer::set_guide_options(bool guides_visible, bool world_origin_axes_visible)
@@ -220,6 +279,13 @@ void PreviewRenderer::set_frame_ready_callback(std::function<void()> callback)
 {
     std::lock_guard lock(mutex_);
     frame_ready_callback_ = std::move(callback);
+}
+
+void PreviewRenderer::set_diagnostic_labels_callback(
+    std::function<void(std::vector<ProjectedPlantDiagnosticLabel>)> callback)
+{
+    std::lock_guard lock(mutex_);
+    diagnostic_labels_callback_ = std::move(callback);
 }
 
 bool PreviewRenderer::prepare_frame_on_render_thread()
@@ -303,12 +369,11 @@ bool PreviewRenderer::prepare_frame_on_render_thread()
                VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
     if (slot.has_distance) {
-        const auto lines = build_overlay_lines(slot.camera);
         if (auto recorded = overlay_.record(
                 slot.command_buffer,
                 {static_cast<std::uint32_t>(width_), static_cast<std::uint32_t>(height_)},
                 {{0, 0}, {static_cast<std::uint32_t>(width_), static_cast<std::uint32_t>(height_)}},
-                to_overlay_camera(slot.camera), lines, overlay_depth_bias(slot.camera),
+                to_overlay_camera(slot.camera), slot.overlay_lines, overlay_depth_bias(slot.camera),
                 static_cast<std::uint32_t>(slot_index)); !recorded) {
             vkEndCommandBuffer(slot.command_buffer);
             set_error("Vulkan guide overlay failed: " + recorded.error().message);
@@ -341,6 +406,8 @@ bool PreviewRenderer::prepare_frame_on_render_thread()
         return false;
     }
 
+    std::function<void(std::vector<ProjectedPlantDiagnosticLabel>)> labels_callback;
+    std::vector<ProjectedPlantDiagnosticLabel> projected_labels;
     {
         std::lock_guard lock(mutex_);
         presented_width_ = width_;
@@ -348,10 +415,13 @@ bool PreviewRenderer::prepare_frame_on_render_thread()
         status_.phase = "ready";
         status_.message = "Qt RTX viewport ready";
         status_.frame_generation = slot.timeline_value;
+        labels_callback = diagnostic_labels_callback_;
+        projected_labels = slot.projected_labels;
         if (old_displayed_slot >= 0) {
             condition_.notify_all();
         }
     }
+    if (labels_callback) labels_callback(std::move(projected_labels));
     return true;
 }
 
@@ -369,7 +439,8 @@ PreviewRendererStatus PreviewRenderer::status() const
 }
 
 Result<void> PreviewRenderer::initialize(PreviewRendererDevice device,
-                                         render::GrowthPreviewStageProjection initial_stage)
+                                         render::GrowthPreviewStageProjection initial_stage,
+                                         render::OrbitView initial_orbit)
 {
     width_ = std::clamp(initial_stage.usd_stage.width, 1, kDisplayTextureExtent);
     height_ = std::clamp(initial_stage.usd_stage.height, 1, kDisplayTextureExtent);
@@ -512,7 +583,7 @@ Result<void> PreviewRenderer::initialize(PreviewRendererDevice device,
         .height = height_,
     };
     base_camera_ = initial_stage.camera;
-    orbit_ = render::orbit_view_from_camera(initial_stage.camera);
+    orbit_ = initial_orbit;
     pending_stage_ = std::move(initial_stage);
     stage_dirty_ = true;
     camera_dirty_ = true;
@@ -575,6 +646,7 @@ void PreviewRenderer::render_loop()
         bool submit_stage = false;
         bool update_camera = false;
         bool draw_guides = false;
+        bool draw_overlay = false;
         int slot_index = -1;
         {
             std::unique_lock lock(mutex_);
@@ -617,6 +689,7 @@ void PreviewRenderer::render_loop()
             }
             camera_dirty_ = false;
             draw_guides = guides_visible_ && world_origin_axes_visible_;
+            draw_overlay = draw_guides || !stage.diagnostic_lines.empty();
             dirty_ = false;
             slots_[slot_index].rendering = true;
             status_.phase = "rendering";
@@ -645,7 +718,7 @@ void PreviewRenderer::render_loop()
             }
         }
         auto rendered = renderer_->render_cuda_frame(
-            draw_guides ? ovrtx::RenderFrameOutputs::ColorAndDistance : ovrtx::RenderFrameOutputs::Color);
+            draw_overlay ? ovrtx::RenderFrameOutputs::ColorAndDistance : ovrtx::RenderFrameOutputs::Color);
         if (!rendered) {
             fail("ovrtx frame render failed: " + rendered.error().message);
             continue;
@@ -660,7 +733,7 @@ void PreviewRenderer::render_loop()
             continue;
         }
         slot.has_distance = false;
-        if (draw_guides && rendered->scene_distance_cuda_array != nullptr) {
+        if (draw_overlay && rendered->scene_distance_cuda_array != nullptr) {
             if (auto copied = slot.distance.copy_from_cuda_array(rendered->scene_distance_cuda_array,
                                                                  rendered->width, rendered->height,
                                                                  rendered->sync_stream); !copied) {
@@ -670,6 +743,8 @@ void PreviewRenderer::render_loop()
             slot.has_distance = true;
         }
         slot.camera = camera.value_or(stage.camera);
+        slot.overlay_lines = build_overlay_lines(slot.camera, stage.diagnostic_lines, draw_guides);
+        slot.projected_labels = project_diagnostic_labels(stage.diagnostic_labels, slot.camera);
         const std::uint64_t timeline_value = ++next_timeline_value_;
         if (auto signaled = frames_ready_.signal_from_ovrtx_stream(timeline_value, rendered->sync_stream); !signaled) {
             fail("CUDA preview timeline signal failed: " + signaled.error().message);

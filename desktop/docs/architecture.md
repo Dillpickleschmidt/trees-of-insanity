@@ -2,7 +2,7 @@
 
 ## Model
 
-`DesktopSession` owns one Project and transient runtime simulations. The Project contains project-wide authored content plus complete typed Module, Plant, and Ecosystem workspace states, each with independent viewport state and no fallback inheritance. Import and persistence are private adapters. Model has no Qt, CUDA, Vulkan, ovrtx, or render-projection dependency. `toi::growth::PlantSimulation` owns single-plant behavior; Plant is the next implemented workspace and Ecosystem remains a placeholder.
+`DesktopSession` owns one Project and transient runtime simulations. The Project contains project-wide authored content plus complete typed Module, Plant, and Ecosystem workspace states, each with independent viewport state and no fallback inheritance. Import and persistence are private adapters. Model has no Qt, CUDA, Vulkan, ovrtx, or render-projection dependency. `toi::growth::PlantSimulation` owns the implemented root-only Plant behavior; Ecosystem remains a placeholder.
 
 ## Graphics
 

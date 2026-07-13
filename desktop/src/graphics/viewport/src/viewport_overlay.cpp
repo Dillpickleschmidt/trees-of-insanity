@@ -16,7 +16,7 @@ extern unsigned int overlay_lines_frag_spv_len;
 namespace toi::viewport {
 namespace {
 
-constexpr std::uint32_t kMaxLines = 64;
+constexpr std::uint32_t kMaxLines = 256;
 
 struct OverlayVertex {
     float position[3];

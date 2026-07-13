@@ -1,6 +1,6 @@
 # Trees of Insanity Growth
 
-Standalone C++23 library for deterministic branch-module growth, paper-derived equations, and staged single-plant simulation. The current reset point retains module growth and equation primitives; whole-plant behavior is added through the accepted incremental milestones.
+Standalone C++23 library for deterministic branch-module growth, paper-derived equations, and staged single-plant simulation. `PlantSimulation` currently implements the root-only plant slice; attachment and repeated topology growth follow in later milestones.
 
 ```sh
 cmake -S . -B build -G Ninja

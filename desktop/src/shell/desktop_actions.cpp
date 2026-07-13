@@ -218,8 +218,9 @@ void apply_parameter_update(project::PlantType& plant_type, const json& paramete
 bool action_changes_preview(std::string_view method)
 {
     return method == "module.set_age" || method == "module.set_active_prototype" ||
-           method == "module.set_active_plant_type" || method == "workspace.set" ||
-           method == "plant_types.create" || method == "plant_types.update" || method == "plant_types.delete" ||
+           method == "module.set_active_plant_type" || method == "plant.reset" || method == "plant.step" ||
+           method == "plant.set_diagnostics" || method == "workspace.set" || method == "plant_types.create" ||
+           method == "plant_types.update" || method == "plant_types.delete" ||
            method == "viewport.set_preferences";
 }
 
@@ -271,6 +272,25 @@ bool action_changes_preview(std::string_view method)
         {"module_physiological_age", state.module_physiological_age},
         {"fully_grown_age", state.fully_grown_age},
         {"plant_type_parameter_descriptors", parameter_descriptors_to_json()},
+    };
+}
+
+[[nodiscard]] static json to_json(const PlantStateView& state)
+{
+    return json{
+        {"plant_age", state.plant_age},
+        {"root_physiological_age", state.root_physiological_age},
+        {"root_fully_grown_age", state.root_fully_grown_age},
+        {"timestep", state.timestep},
+        {"paused", state.paused},
+        {"root_prototype_id", state.root_prototype_id},
+        {"plant_type_id", state.plant_type_id},
+        {"module_diagnostic_labels_visible", state.module_diagnostic_labels_visible},
+        {"direct_light_bounding_spheres_visible", state.direct_light_bounding_spheres_visible},
+        {"direct_light_exposure", state.direct_light_exposure},
+        {"accumulated_light", state.accumulated_light},
+        {"vigor", state.vigor},
+        {"growth_rate", state.growth_rate},
     };
 }
 
@@ -371,6 +391,34 @@ json dispatch_action(DesktopSession& session, const json& request)
         if (method == "module.get_growth_snapshot") {
             auto snapshot = session.growth_snapshot();
             return snapshot ? response_ok(id, to_json(*snapshot)) : response_error(id, snapshot.error());
+        }
+        if (method == "plant.get_state") {
+            auto state = session.plant_state();
+            return state ? response_ok(id, to_json(*state)) : response_error(id, state.error());
+        }
+        if (method == "plant.reset") {
+            auto result = session.plant_reset();
+            return result ? response_ok(id, json::object()) : response_error(id, result.error());
+        }
+        if (method == "plant.step") {
+            auto result = session.plant_step();
+            return result ? response_ok(id, json::object()) : response_error(id, result.error());
+        }
+        if (method == "plant.set_timestep") {
+            auto result = session.set_plant_timestep(json_float(params, "timestep"));
+            return result ? response_ok(id, json::object()) : response_error(id, result.error());
+        }
+        if (method == "plant.set_diagnostics") {
+            auto state = session.plant_state();
+            if (!state) return response_error(id, state.error());
+            PlantDiagnosticsUpdate diagnostics{
+                .module_diagnostic_labels_visible = optional_json_bool(
+                    params, "module_diagnostic_labels_visible", state->module_diagnostic_labels_visible),
+                .direct_light_bounding_spheres_visible = optional_json_bool(
+                    params, "direct_light_bounding_spheres_visible", state->direct_light_bounding_spheres_visible),
+            };
+            auto result = session.update_plant_diagnostics(diagnostics);
+            return result ? response_ok(id, json::object()) : response_error(id, result.error());
         }
         if (method == "workspace.set") {
             auto result = session.set_active_workspace(json_string(params, "workspace"));

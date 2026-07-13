@@ -29,6 +29,7 @@ struct MeshGeometry;
 [[nodiscard]] GrowthPreviewMeshStats stats_for(const std::vector<MeshGeometry>& meshes, std::size_t chain_count);
 [[nodiscard]] GrowthPreviewCamera make_growth_preview_camera(const growth::GrowthSnapshot& camera_snapshot, int width,
                                                              int height);
+void append_collision_sphere_lines(std::vector<DiagnosticOverlayLine>& lines, const growth::Sphere& sphere);
 [[nodiscard]] GrowthPreviewUsdStage make_growth_preview_usd_stage(const std::vector<MeshGeometry>& meshes,
                                                                   const GrowthPreviewCamera& camera,
                                                                   GrowthPreviewStageOptions options);
@@ -49,6 +50,33 @@ GrowthPreviewStageProjection make_growth_preview_stage_projection(
     const growth::BranchModulePrototype& prepared_prototype, GrowthPreviewStageOptions options)
 {
     return make_growth_preview_stage_projection_impl(snapshot, camera_snapshot, prepared_prototype, options);
+}
+
+GrowthPreviewStageProjection make_plant_preview_stage_projection(
+    const growth::PlantSnapshot& snapshot, const growth::GrowthSnapshot& mature_root_snapshot,
+    const growth::BranchModulePrototype& prepared_root, bool show_collision_sphere, bool show_diagnostic_label,
+    GrowthPreviewStageOptions options)
+{
+    const auto& root = snapshot.modules.front();
+    growth::GrowthSnapshot root_snapshot{
+        .module_physiological_age = root.physiological_age,
+        .growth_rate = root.growth_rate,
+        .segments = std::vector<growth::GrowthSnapshotSegment>(root.segments.begin(), root.segments.end()),
+    };
+    auto projection =
+        make_growth_preview_stage_projection_impl(root_snapshot, mature_root_snapshot, prepared_root, options);
+    if (show_collision_sphere && root.collision_sphere.radius > 0.0F) {
+        append_collision_sphere_lines(projection.diagnostic_lines, root.collision_sphere);
+    }
+    if (show_diagnostic_label) {
+        projection.diagnostic_labels.push_back({
+            .world_position = root.root_position,
+            .direct_light_exposure = root.direct_light_exposure,
+            .accumulated_light = root.accumulated_light,
+            .vigor = root.vigor,
+        });
+    }
+    return projection;
 }
 
 std::array<double, 16> growth_preview_camera_transform_matrix(const GrowthPreviewCamera& camera)
@@ -300,6 +328,34 @@ GrowthPreviewStageProjection make_growth_preview_stage_projection_impl(
                                                              int requested_width, int requested_height)
 {
     return make_camera_from_bounds(snapshot_bounds(camera_snapshot), requested_width, requested_height);
+}
+
+void append_collision_sphere_lines(std::vector<DiagnosticOverlayLine>& lines, const growth::Sphere& sphere)
+{
+    constexpr int segment_count = 32;
+    const std::array planes{
+        std::pair{growth::Vec3{1.0F, 0.0F, 0.0F}, growth::Vec3{0.0F, 1.0F, 0.0F}},
+        std::pair{growth::Vec3{1.0F, 0.0F, 0.0F}, growth::Vec3{0.0F, 0.0F, 1.0F}},
+        std::pair{growth::Vec3{0.0F, 1.0F, 0.0F}, growth::Vec3{0.0F, 0.0F, 1.0F}},
+    };
+    const auto point_at = [&](growth::Vec3 first_axis, growth::Vec3 second_axis, float angle) {
+        const auto radial = growth::add(growth::scale(first_axis, std::cos(angle)),
+                                        growth::scale(second_axis, std::sin(angle)));
+        return growth::add(sphere.center, growth::scale(radial, sphere.radius));
+    };
+    lines.reserve(lines.size() + planes.size() * segment_count);
+    for (const auto& [first_axis, second_axis] : planes) {
+        for (int index = 0; index < segment_count; ++index) {
+            const float start_angle = kTwoPi * static_cast<float>(index) / static_cast<float>(segment_count);
+            const float end_angle = kTwoPi * static_cast<float>(index + 1) / static_cast<float>(segment_count);
+            lines.push_back({
+                .start = point_at(first_axis, second_axis, start_angle),
+                .end = point_at(first_axis, second_axis, end_angle),
+                .color = {.x = 0.15F, .y = 0.85F, .z = 1.0F},
+                .alpha = 0.7F,
+            });
+        }
+    }
 }
 
 void write_vec3(std::ostream& out, growth::Vec3 value)

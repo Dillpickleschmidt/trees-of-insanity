@@ -21,6 +21,15 @@ export type ViewportExtent = {
 	height: number;
 };
 
+export type ProjectedPlantDiagnosticLabel = {
+	x: number;
+	y: number;
+	visible: boolean;
+	direct_light_exposure: number;
+	accumulated_light: number;
+	vigor: number;
+};
+
 export type ViewportStatus = {
 	phase: ViewportPhase;
 	message: string;

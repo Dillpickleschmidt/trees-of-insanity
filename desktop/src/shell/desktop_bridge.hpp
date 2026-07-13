@@ -21,9 +21,11 @@ public:
 
     toi::model::DesktopSession& session();
     void publishViewportStatus(const QString& status);
+    void publishPlantDiagnosticLabels(const QString& labels);
 
 signals:
     void viewportStatusChanged(const QString& status);
+    void plantDiagnosticLabelsChanged(const QString& labels);
     void viewportRectChanged(double x, double y, double width, double height, double devicePixelRatio);
     void viewportCameraInput(QString kind, double dx, double dy, int viewportHeight);
     void previewInvalidated();

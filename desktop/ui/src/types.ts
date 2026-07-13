@@ -5,6 +5,8 @@ export type {
 	AppState,
 	GrowthSnapshotSummary,
 	HdriEnvironment,
+	PlantDiagnostics,
+	PlantState,
 	PlantTypeParameterDescriptor as ParameterDescriptor,
 	PlantTypeSummary,
 	PrototypeSummary,

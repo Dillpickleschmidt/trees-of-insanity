@@ -165,14 +165,15 @@ TEST_CASE("application session opens default module workspace")
     CHECK(state->active_plant_type_id == "plant-type-1");
     CHECK(state->module_physiological_age == state->fully_grown_age);
 
-    bool plant_is_disabled = false;
+    bool plant_is_enabled = false;
     for (const auto& preview : state->workspace_previews) {
         if (preview.workspace == "plant") {
-            plant_is_disabled = !preview.implemented;
+            plant_is_enabled = preview.implemented;
         }
     }
-    CHECK(plant_is_disabled);
-    CHECK_FALSE(session->set_active_workspace("plant").has_value());
+    CHECK(plant_is_enabled);
+    CHECK(session->set_active_workspace("plant").has_value());
+    CHECK_FALSE(session->set_active_workspace("ecosystem").has_value());
 }
 
 TEST_CASE("Module and viewport state persist through session reopen")
@@ -230,6 +231,111 @@ TEST_CASE("session rejects missing prototype assets")
     missing_root.plant_workspace.root_prototype_id = 999;
     REQUIRE(save_project(missing_root_path, missing_root));
     CHECK_FALSE(toi::model::DesktopSession::create(session_options(missing_root_path)));
+}
+
+TEST_CASE("Plant workspace steps and resets one diagnosed root")
+{
+    const auto project_path = fresh_project_path("root-only-plant-workspace");
+    auto session = toi::model::DesktopSession::create(session_options(project_path));
+    REQUIRE(session);
+    REQUIRE(session->active_camera_needs_frame());
+    REQUIRE(session->update_active_orbit({
+        .target = {.x = 1.0F, .y = 2.0F, .z = 3.0F},
+        .radius = 4.0F,
+        .azimuth_radians = 0.5F,
+        .elevation_radians = 0.25F,
+    }));
+    REQUIRE(session->set_active_workspace("plant"));
+    REQUIRE(session->active_camera_needs_frame());
+    REQUIRE(session->update_active_orbit({
+        .target = {.x = 0.0F, .y = 0.0F, .z = 0.5F},
+        .radius = 2.0F,
+        .azimuth_radians = -0.5F,
+        .elevation_radians = 0.1F,
+    }));
+
+    auto initial = session->plant_state();
+    REQUIRE(initial);
+    CHECK(initial->paused);
+    CHECK(initial->plant_age == Catch::Approx(0.0F));
+    CHECK(initial->root_physiological_age == Catch::Approx(0.0F));
+    CHECK(initial->direct_light_exposure == Catch::Approx(1.0F));
+    CHECK(initial->accumulated_light == Catch::Approx(1.0F));
+    CHECK(initial->vigor == Catch::Approx(1.0F));
+
+    auto initial_preview = session->plant_preview_snapshot();
+    REQUIRE(initial_preview);
+    REQUIRE(initial_preview->snapshot.modules.size() == 1);
+    CHECK(initial_preview->snapshot.modules.front().segments.empty());
+    const auto seed_projection = toi::render::make_plant_preview_stage_projection(
+        initial_preview->snapshot, initial_preview->mature_root_snapshot, initial_preview->prepared_root, true, true);
+    CHECK(seed_projection.diagnostic_lines.empty());
+    REQUIRE(seed_projection.diagnostic_labels.size() == 1);
+
+    REQUIRE(session->set_plant_timestep(2.0F));
+    REQUIRE(session->plant_step());
+    CHECK_FALSE(session->active_camera_needs_frame());
+    CHECK(session->active_orbit().target.z == Catch::Approx(0.5F));
+    CHECK(session->active_orbit().radius == Catch::Approx(2.0F));
+    CHECK(session->active_orbit().azimuth_radians == Catch::Approx(-0.5F));
+    CHECK(session->active_orbit().elevation_radians == Catch::Approx(0.1F));
+    auto stepped = session->plant_state();
+    REQUIRE(stepped);
+    CHECK(stepped->plant_age == Catch::Approx(2.0F));
+    CHECK(stepped->root_physiological_age == Catch::Approx(initial->growth_rate * 2.0F));
+    auto developed_preview = session->plant_preview_snapshot();
+    REQUIRE(developed_preview);
+    const auto developed_projection = toi::render::make_plant_preview_stage_projection(
+        developed_preview->snapshot, developed_preview->mature_root_snapshot, developed_preview->prepared_root,
+        true, true);
+    CHECK_FALSE(developed_projection.diagnostic_lines.empty());
+    CHECK(developed_projection.camera.eye.x == Catch::Approx(seed_projection.camera.eye.x));
+    CHECK(developed_projection.camera.eye.y == Catch::Approx(seed_projection.camera.eye.y));
+    CHECK(developed_projection.camera.eye.z == Catch::Approx(seed_projection.camera.eye.z));
+
+    REQUIRE(session->update_plant_diagnostics({
+        .module_diagnostic_labels_visible = true,
+        .direct_light_bounding_spheres_visible = true,
+    }));
+    CHECK(session->plant_state()->plant_age == Catch::Approx(2.0F));
+    REQUIRE(session->plant_reset());
+    CHECK(session->active_camera_needs_frame());
+    CHECK(session->plant_state()->plant_age == Catch::Approx(0.0F));
+    CHECK(session->plant_state()->root_physiological_age == Catch::Approx(0.0F));
+
+    auto reopened = toi::model::DesktopSession::create(session_options(project_path));
+    REQUIRE(reopened);
+    auto reopened_state = reopened->plant_state();
+    REQUIRE(reopened_state);
+    CHECK(reopened_state->plant_age == Catch::Approx(0.0F));
+    CHECK(reopened_state->timestep == Catch::Approx(2.0F));
+    CHECK(reopened_state->module_diagnostic_labels_visible);
+    CHECK(reopened_state->direct_light_bounding_spheres_visible);
+    REQUIRE(reopened->set_active_workspace("module"));
+    CHECK(reopened->active_orbit().radius == Catch::Approx(4.0F));
+}
+
+TEST_CASE("Plant-selected type changes reset the transient simulation")
+{
+    auto session = toi::model::DesktopSession::create(
+        session_options(fresh_project_path("plant-type-reset")));
+    REQUIRE(session);
+    REQUIRE(session->plant_step());
+    CHECK(session->plant_state()->plant_age > 0.0F);
+
+    auto selected = session->plant_type("plant-type-1");
+    REQUIRE(selected);
+    selected->parameters.plant_growth_rate *= 0.5F;
+    REQUIRE(session->update_plant_type(*selected));
+    CHECK(session->plant_state()->plant_age == Catch::Approx(0.0F));
+    CHECK(session->active_camera_needs_frame());
+
+    auto second = session->create_plant_type("Second", 'a');
+    REQUIRE(second);
+    REQUIRE(session->plant_step());
+    REQUIRE(session->delete_plant_type("plant-type-1"));
+    CHECK(session->plant_state()->plant_age == Catch::Approx(0.0F));
+    CHECK(session->plant_state()->plant_type_id == second->id);
 }
 
 TEST_CASE("age scrubbing keeps the growth-preview stage topology stable")

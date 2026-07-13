@@ -193,14 +193,44 @@ module_workspace_facts(const import::BranchModulePrototypeLibrary& prototype_lib
     };
 }
 
+[[nodiscard]] Result<ModuleWorkspaceFacts>
+plant_workspace_facts(const import::BranchModulePrototypeLibrary& prototype_library, const project::Project& project)
+{
+    const auto* prototype = prototype_by_id(prototype_library, project.plant_workspace.root_prototype_id);
+    if (prototype == nullptr) {
+        return std::unexpected(make_error(ApplicationError::Code::NotFound, "Plant root prototype does not exist"));
+    }
+    const auto* plant_type = project::plant_type_by_id(project, project.plant_workspace.plant_type_id);
+    if (plant_type == nullptr) {
+        return std::unexpected(make_error(ApplicationError::Code::NotFound, "Plant plant type does not exist"));
+    }
+    auto prepared = growth::prepare_branch_module_prototype(*prototype, plant_type->parameters);
+    if (!prepared) {
+        return std::unexpected(from_growth_error(prepared.error()));
+    }
+    auto fully_grown = growth::fully_grown_age(*prepared, plant_type->parameters);
+    if (!fully_grown) {
+        return std::unexpected(from_growth_error(fully_grown.error()));
+    }
+    return ModuleWorkspaceFacts{
+        .plant_type = *plant_type,
+        .prepared_prototype = std::move(*prepared),
+        .fully_grown_age = *fully_grown,
+    };
+}
+
 } // namespace
 
 DesktopSession::DesktopSession(DesktopSessionOptions options,
-                               import::BranchModulePrototypeLibrary prototype_library, project::Project project)
+                               import::BranchModulePrototypeLibrary prototype_library, project::Project project,
+                               growth::PlantSimulation plant_simulation)
     : options_(std::move(options))
     , prototype_library_(std::move(prototype_library))
     , project_(std::move(project))
+    , plant_simulation_(std::move(plant_simulation))
 {
+    module_camera_needs_frame_ = !project_.module_workspace.viewport.orbit_initialized;
+    plant_camera_needs_frame_ = !project_.plant_workspace.viewport.orbit_initialized;
 }
 
 Result<DesktopSession> DesktopSession::create(DesktopSessionOptions options)
@@ -264,7 +294,15 @@ Result<DesktopSession> DesktopSession::create(DesktopSessionOptions options)
         }
     }
 
-    return DesktopSession(std::move(options), std::move(*library), std::move(*loaded_project));
+    const auto* plant_type = project::plant_type_by_id(*loaded_project, loaded_project->plant_workspace.plant_type_id);
+    auto plant_simulation = growth::PlantSimulation::create(
+        *library, plant_type->parameters, loaded_project->plant_workspace.root_prototype_id);
+    if (!plant_simulation) {
+        return std::unexpected(from_growth_error(plant_simulation.error()));
+    }
+
+    return DesktopSession(std::move(options), std::move(*library), std::move(*loaded_project),
+                          std::move(*plant_simulation));
 }
 
 Result<void> DesktopSession::save_project() const
@@ -286,7 +324,7 @@ Result<AppStateView> DesktopSession::state() const
     AppStateView view;
     view.active_workspace = project::to_string(project_.active_workspace);
     view.workspace_previews = {
-        {.workspace = "plant", .implemented = false},
+        {.workspace = "plant", .implemented = true},
         {.workspace = "ecosystem", .implemented = false},
     };
     view.active_prototype_id = project_.module_workspace.prototype_id;
@@ -382,6 +420,52 @@ Result<ModulePreviewSnapshot> DesktopSession::module_preview_snapshot() const
     };
 }
 
+Result<PlantStateView> DesktopSession::plant_state() const
+{
+    const auto snapshot = plant_simulation_.snapshot();
+    const auto& root = snapshot.modules.front();
+    const auto& diagnostics = project_.plant_workspace.diagnostics;
+    return PlantStateView{
+        .plant_age = snapshot.plant_age,
+        .root_physiological_age = root.physiological_age,
+        .root_fully_grown_age = root.fully_grown_age,
+        .timestep = project_.plant_workspace.simulation_timestep,
+        .paused = true,
+        .root_prototype_id = project_.plant_workspace.root_prototype_id,
+        .plant_type_id = project_.plant_workspace.plant_type_id,
+        .module_diagnostic_labels_visible = diagnostics.module_diagnostic_labels_visible,
+        .direct_light_bounding_spheres_visible = diagnostics.direct_light_bounding_spheres_visible,
+        .direct_light_exposure = root.direct_light_exposure,
+        .accumulated_light = root.accumulated_light,
+        .vigor = root.vigor,
+        .growth_rate = root.growth_rate,
+    };
+}
+
+Result<PlantPreviewSnapshot> DesktopSession::plant_preview_snapshot() const
+{
+    auto facts = plant_workspace_facts(prototype_library_, project_);
+    if (!facts) {
+        return std::unexpected(facts.error());
+    }
+    auto mature_root =
+        growth::make_growth_snapshot(facts->prepared_prototype, facts->plant_type.parameters, facts->fully_grown_age);
+    if (!mature_root) {
+        return std::unexpected(from_growth_error(mature_root.error()));
+    }
+    const auto root_offset =
+        growth::scale(facts->prepared_prototype.nodes[facts->prepared_prototype.root_node].position, -1.0F);
+    for (auto& segment : mature_root->segments) {
+        segment.parent_position = growth::add(segment.parent_position, root_offset);
+        segment.child_position = growth::add(segment.child_position, root_offset);
+    }
+    return PlantPreviewSnapshot{
+        .snapshot = plant_simulation_.snapshot(),
+        .mature_root_snapshot = std::move(*mature_root),
+        .prepared_root = std::move(facts->prepared_prototype),
+    };
+}
+
 PreviewEnvironment DesktopSession::preview_environment() const
 {
     const auto& viewport = active_viewport(project_);
@@ -400,12 +484,54 @@ Result<void> DesktopSession::set_active_workspace(std::string_view workspace)
         project_.active_workspace = project::Workspace::Module;
         return save_project();
     }
-    if (workspace == "plant" || workspace == "ecosystem") {
+    if (workspace == "plant") {
+        project_.active_workspace = project::Workspace::Plant;
+        return save_project();
+    }
+    if (workspace == "ecosystem") {
         return std::unexpected(make_error(ApplicationError::Code::InvalidCommand,
                                           "workspace is not implemented: " + std::string(workspace)));
     }
     return std::unexpected(
         make_error(ApplicationError::Code::InvalidCommand, "unknown workspace " + std::string(workspace)));
+}
+
+Result<void> DesktopSession::plant_step()
+{
+    auto stepped = plant_simulation_.step(project_.plant_workspace.simulation_timestep);
+    if (!stepped) {
+        return std::unexpected(from_growth_error(stepped.error()));
+    }
+    return {};
+}
+
+Result<void> DesktopSession::plant_reset()
+{
+    auto reset = reset_plant_simulation();
+    if (!reset) {
+        return std::unexpected(reset.error());
+    }
+    plant_camera_needs_frame_ = true;
+    return {};
+}
+
+Result<void> DesktopSession::set_plant_timestep(float timestep)
+{
+    if (!std::isfinite(timestep) || timestep <= 0.0F) {
+        return std::unexpected(
+            make_error(ApplicationError::Code::InvalidCommand, "Plant timestep must be finite and positive"));
+    }
+    project_.plant_workspace.simulation_timestep = timestep;
+    return save_project();
+}
+
+Result<void> DesktopSession::update_plant_diagnostics(PlantDiagnosticsUpdate diagnostics)
+{
+    project_.plant_workspace.diagnostics.module_diagnostic_labels_visible =
+        diagnostics.module_diagnostic_labels_visible;
+    project_.plant_workspace.diagnostics.direct_light_bounding_spheres_visible =
+        diagnostics.direct_light_bounding_spheres_visible;
+    return save_project();
 }
 
 Result<project::PlantType> DesktopSession::plant_type(std::string_view plant_type_id) const
@@ -478,6 +604,7 @@ Result<project::PlantType> DesktopSession::create_plant_type(std::string name, c
 Result<void> DesktopSession::delete_plant_type(std::string_view plant_type_id)
 {
     const bool module_selected = project_.module_workspace.plant_type_id == plant_type_id;
+    const bool plant_selected = project_.plant_workspace.plant_type_id == plant_type_id;
     auto deleted = project::delete_plant_type(project_, plant_type_id);
     if (!deleted) {
         return std::unexpected(from_project_error(deleted.error()));
@@ -486,6 +613,12 @@ Result<void> DesktopSession::delete_plant_type(std::string_view plant_type_id)
         auto clamped = clamp_module_age_to_active_range();
         if (!clamped) {
             return std::unexpected(clamped.error());
+        }
+    }
+    if (plant_selected) {
+        auto reset = reset_plant_simulation();
+        if (!reset) {
+            return std::unexpected(reset.error());
         }
     }
     return save_project();
@@ -501,11 +634,18 @@ Result<void> DesktopSession::update_plant_type(project::PlantType plant_type)
         return std::unexpected(make_error(ApplicationError::Code::NotFound, "unknown plant type id " + plant_type.id));
     }
     const bool module_selected = project_.module_workspace.plant_type_id == plant_type.id;
+    const bool plant_selected = project_.plant_workspace.plant_type_id == plant_type.id;
     *existing = std::move(plant_type);
     if (module_selected) {
         auto clamped = clamp_module_age_to_active_range();
         if (!clamped) {
             return std::unexpected(clamped.error());
+        }
+    }
+    if (plant_selected) {
+        auto reset = reset_plant_simulation();
+        if (!reset) {
+            return std::unexpected(reset.error());
         }
     }
     return save_project();
@@ -520,6 +660,24 @@ ViewportAppearance DesktopSession::viewport_preferences() const
         .hdri_backdrop_visible = viewport.hdri_backdrop_visible,
         .active_hdri_environment_id = viewport.active_hdri_environment_id,
     };
+}
+
+project::OrbitState DesktopSession::active_orbit() const
+{
+    return active_viewport(project_).orbit;
+}
+
+bool DesktopSession::active_camera_needs_frame() const
+{
+    switch (project_.active_workspace) {
+    case project::Workspace::Module:
+        return module_camera_needs_frame_;
+    case project::Workspace::Plant:
+        return plant_camera_needs_frame_;
+    case project::Workspace::Ecosystem:
+        return false;
+    }
+    std::unreachable();
 }
 
 std::vector<HdriEnvironment> DesktopSession::hdri_environments() const
@@ -549,6 +707,24 @@ Result<void> DesktopSession::update_viewport_preferences(ViewportAppearance appe
     return {};
 }
 
+Result<void> DesktopSession::update_active_orbit(project::OrbitState orbit)
+{
+    auto updated_project = project_;
+    active_viewport(updated_project).orbit = orbit;
+    active_viewport(updated_project).orbit_initialized = true;
+    auto saved = project::save_project(options_.project_path, updated_project);
+    if (!saved) {
+        return std::unexpected(from_project_error(saved.error()));
+    }
+    project_ = std::move(updated_project);
+    if (project_.active_workspace == project::Workspace::Module) {
+        module_camera_needs_frame_ = false;
+    } else if (project_.active_workspace == project::Workspace::Plant) {
+        plant_camera_needs_frame_ = false;
+    }
+    return {};
+}
+
 Result<void> DesktopSession::clamp_module_age_to_active_range()
 {
     auto facts = module_workspace_facts(prototype_library_, project_);
@@ -557,6 +733,20 @@ Result<void> DesktopSession::clamp_module_age_to_active_range()
     }
     project_.module_workspace.physiological_age =
         std::min(project_.module_workspace.physiological_age, facts->fully_grown_age);
+    return {};
+}
+
+Result<void> DesktopSession::reset_plant_simulation()
+{
+    const auto* plant_type =
+        project::plant_type_by_id(project_, project_.plant_workspace.plant_type_id);
+    auto simulation = growth::PlantSimulation::create(
+        prototype_library_, plant_type->parameters, project_.plant_workspace.root_prototype_id);
+    if (!simulation) {
+        return std::unexpected(from_growth_error(simulation.error()));
+    }
+    plant_simulation_ = std::move(*simulation);
+    plant_camera_needs_frame_ = true;
     return {};
 }
 

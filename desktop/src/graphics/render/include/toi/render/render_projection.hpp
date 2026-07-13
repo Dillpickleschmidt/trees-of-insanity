@@ -57,16 +57,36 @@ struct GrowthPreviewCamera {
     int height = 0;
 };
 
+struct DiagnosticOverlayLine {
+    growth::Vec3 start;
+    growth::Vec3 end;
+    growth::Vec3 color;
+    float alpha = 1.0F;
+};
+
+struct PlantDiagnosticLabel {
+    growth::Vec3 world_position;
+    float direct_light_exposure = 0.0F;
+    float accumulated_light = 0.0F;
+    float vigor = 0.0F;
+};
+
 struct GrowthPreviewStageProjection {
     GrowthPreviewUsdStage usd_stage;
     GrowthPreviewMeshStats mesh;
     GrowthPreviewCamera camera;
     std::vector<GrowthPreviewMeshAttributes> mesh_attributes;
+    std::vector<DiagnosticOverlayLine> diagnostic_lines;
+    std::vector<PlantDiagnosticLabel> diagnostic_labels;
 };
 
 [[nodiscard]] GrowthPreviewStageProjection make_growth_preview_stage_projection(
     const growth::GrowthSnapshot& snapshot, const growth::GrowthSnapshot& camera_snapshot,
     const growth::BranchModulePrototype& prepared_prototype, GrowthPreviewStageOptions options = {});
+[[nodiscard]] GrowthPreviewStageProjection make_plant_preview_stage_projection(
+    const growth::PlantSnapshot& snapshot, const growth::GrowthSnapshot& mature_root_snapshot,
+    const growth::BranchModulePrototype& prepared_root, bool show_collision_sphere, bool show_diagnostic_label,
+    GrowthPreviewStageOptions options = {});
 [[nodiscard]] std::array<double, 16> growth_preview_camera_transform_matrix(const GrowthPreviewCamera& camera);
 
 } // namespace toi::render

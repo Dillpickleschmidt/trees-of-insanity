@@ -150,6 +150,53 @@ struct Sphere {
     float radius = 0.0F;
 };
 
+inline constexpr float kMinimumModuleVigor = 0.02F;
+inline constexpr float kMaximumModuleVigor = 1.0F;
+
+struct PlantModuleSnapshot {
+    std::size_t id = 0;
+    std::size_t prototype_id = 0;
+    Vec3 root_position;
+    float physiological_age = 0.0F;
+    float fully_grown_age = 0.0F;
+    float direct_light_exposure = 0.0F;
+    float accumulated_light = 0.0F;
+    float vigor = 0.0F;
+    float growth_rate = 0.0F;
+    Sphere collision_sphere;
+    std::span<const GrowthSnapshotSegment> segments;
+};
+
+struct PlantSnapshot {
+    float plant_age = 0.0F;
+    std::span<const PlantModuleSnapshot> modules;
+};
+
+class PlantSimulation {
+public:
+    [[nodiscard]] static Result<PlantSimulation> create(const BranchModulePrototypeLibrary& prototype_library,
+                                                        const PlantTypeParameters& plant_type,
+                                                        std::size_t root_prototype_id);
+
+    [[nodiscard]] Result<void> step(float timestep);
+
+    // Views remain valid until the next step or simulation destruction.
+    [[nodiscard]] PlantSnapshot snapshot() const;
+
+private:
+    PlantSimulation() = default;
+
+    [[nodiscard]] Result<void> rebuild_snapshot(float plant_age, float root_physiological_age);
+
+    PlantTypeParameters plant_type_;
+    BranchModulePrototype prepared_root_;
+    float fully_grown_age_ = 0.0F;
+    float plant_age_ = 0.0F;
+    float root_physiological_age_ = 0.0F;
+    std::vector<GrowthSnapshotSegment> root_segments_;
+    std::vector<PlantModuleSnapshot> modules_;
+};
+
 struct VigorSplit {
     float main_axis = 0.0F;
     float lateral_axis = 0.0F;

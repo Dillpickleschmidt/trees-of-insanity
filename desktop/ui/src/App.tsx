@@ -1,6 +1,8 @@
 import { TriangleAlert } from "lucide-solid";
 import { createEffect, createMemo, createSignal, onCleanup, onMount, Show } from "solid-js";
 
+import { PlantDiagnosticLabels } from "~/components/PlantDiagnosticLabels";
+import { PlantPanel } from "~/components/PlantPanel";
 import { PlantTypesDialog } from "~/components/PlantTypesDialog";
 import { Field, PlantTypeOption, PrototypeOption, Readout, Section } from "~/components/panelPrimitives";
 import { PrototypeTreeView } from "~/components/PrototypeTree";
@@ -10,11 +12,13 @@ import { ViewportControls } from "~/components/ViewportControls";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "~/components/ui/select";
 import { Slider } from "~/components/ui/slider";
 import { Viewport } from "~/components/Viewport";
-import { appClient, onViewportStatus, reportUiEvent } from "~/shell";
-import type { ViewportStatus } from "./shared/desktopBridge";
+import { appClient, onPlantDiagnosticLabels, onViewportStatus, reportUiEvent } from "~/shell";
+import type { ProjectedPlantDiagnosticLabel, ViewportStatus } from "./shared/desktopBridge";
 import type {
 	AppState,
 	GrowthSnapshotSummary,
+	PlantDiagnostics,
+	PlantState,
 	PlantTypeSummary,
 	PrototypeSummary,
 	PrototypeTree,
@@ -40,7 +44,7 @@ const maxPanelWidth = 720;
 const initialState: AppState = {
 	active_workspace: "module",
 	workspace_previews: [
-		{ workspace: "plant", implemented: false },
+		{ workspace: "plant", implemented: true },
 		{ workspace: "ecosystem", implemented: false },
 	],
 	prototypes: [],
@@ -79,6 +83,7 @@ export function App() {
 	const [state, setState] = createSignal(initialState);
 	const [tree, setTree] = createSignal<PrototypeTree | null>(null);
 	const [summary, setSummary] = createSignal(initialSummary);
+	const [plantState, setPlantState] = createSignal<PlantState>();
 	const [viewport, setViewport] = createSignal<ViewportPreferencesView>();
 	const [status, setStatus] = createSignal("Starting");
 	const [error, setError] = createSignal<string | null>(null);
@@ -91,7 +96,9 @@ export function App() {
 	const [panelWidth, setPanelWidth] = createSignal(384);
 	const [dragSliderValue, setDragSliderValue] = createSignal<number | null>(null);
 	const [nativeViewportStatus, setNativeViewportStatus] = createSignal(initialViewportStatus);
+	const [plantLabels, setPlantLabels] = createSignal<ProjectedPlantDiagnosticLabel[]>([]);
 	let disposeViewportStatus = () => {};
+	let disposePlantLabels = () => {};
 	let latestAgeGeneration = 0;
 	let pendingAgeUpdate: { age: number; generation: number } | null = null;
 	let ageRequestInFlight = false;
@@ -125,15 +132,24 @@ export function App() {
 		setBusy(true);
 		setError(null);
 		try {
-			const [nextState, nextTree, nextViewport] = await Promise.all([
+			const [nextState, nextViewport] = await Promise.all([
 				appClient.command("app.get_state"),
-				appClient.command("module.get_prototype_tree"),
 				appClient.command("viewport.get_preferences"),
 			]);
 			setState(nextState);
-			setTree(nextTree);
 			setViewport(nextViewport);
-			setSummary(await appClient.command("module.get_growth_snapshot_summary"));
+			if (nextState.active_workspace === "module") {
+				const [nextTree, nextSummary] = await Promise.all([
+					appClient.command("module.get_prototype_tree"),
+					appClient.command("module.get_growth_snapshot_summary"),
+				]);
+				setTree(nextTree);
+				setSummary(nextSummary);
+				setPlantState(undefined);
+			} else if (nextState.active_workspace === "plant") {
+				setPlantState(await appClient.command("plant.get_state"));
+				setTree(null);
+			}
 			setStatus("Connected");
 			reportUiEvent("app-state-loaded", {
 				active_workspace: nextState.active_workspace,
@@ -165,6 +181,15 @@ export function App() {
 
 	function setViewportPreference(patch: Partial<ViewportPreferences>) {
 		void runCommand(() => appClient.command("viewport.set_preferences", patch));
+	}
+
+	function setPlantTimestep(timestep: number) {
+		if (!Number.isFinite(timestep) || timestep <= 0) return;
+		void runCommand(() => appClient.command("plant.set_timestep", { timestep }));
+	}
+
+	function setPlantDiagnostics(patch: Partial<PlantDiagnostics>) {
+		void runCommand(() => appClient.command("plant.set_diagnostics", patch));
 	}
 
 	async function createPlantType() {
@@ -265,6 +290,7 @@ export function App() {
 
 	onCleanup(() => {
 		disposeViewportStatus();
+		disposePlantLabels();
 		if (ageSubmitTimer !== undefined) {
 			window.clearTimeout(ageSubmitTimer);
 		}
@@ -281,6 +307,7 @@ export function App() {
 			reportUiEvent("js-rejection", { message: String((event.reason as Error)?.stack ?? event.reason) }),
 		);
 		disposeViewportStatus = onViewportStatus(setNativeViewportStatus);
+		disposePlantLabels = onPlantDiagnosticLabels(setPlantLabels);
 		reportUiEvent("app-mounted");
 		void refreshAll();
 	});
@@ -313,6 +340,19 @@ export function App() {
 						</div>
 					</Show>
 
+					<Show
+						when={state().active_workspace === "module"}
+						fallback={
+							<PlantPanel
+								state={plantState()}
+								busy={busy()}
+								onReset={() => void runCommand(() => appClient.command("plant.reset"))}
+								onStep={() => void runCommand(() => appClient.command("plant.step"))}
+								onTimestep={setPlantTimestep}
+								onDiagnostics={setPlantDiagnostics}
+							/>
+						}
+					>
 					<div class="space-y-6">
 						{/* SOURCE — what is being grown */}
 						<Section eyebrow="Source">
@@ -446,6 +486,7 @@ export function App() {
 							</div>
 						</Section>
 					</div>
+					</Show>
 				</main>
 
 				<PlantTypesDialog
@@ -469,6 +510,9 @@ export function App() {
 
 			<div class="relative min-w-0 flex-1">
 				<Viewport />
+				<Show when={state().active_workspace === "plant"}>
+					<PlantDiagnosticLabels labels={plantLabels()} />
+				</Show>
 				<ViewportControls
 					view={viewport()}
 					status={nativeViewportStatus()}

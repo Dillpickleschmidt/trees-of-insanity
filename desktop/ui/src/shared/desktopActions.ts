@@ -78,6 +78,27 @@ export type GrowthSnapshot = {
 	segments: GrowthSnapshotSegment[];
 };
 
+export type PlantState = {
+	plant_age: number;
+	root_physiological_age: number;
+	root_fully_grown_age: number;
+	timestep: number;
+	paused: boolean;
+	root_prototype_id: number;
+	plant_type_id: string;
+	module_diagnostic_labels_visible: boolean;
+	direct_light_bounding_spheres_visible: boolean;
+	direct_light_exposure: number;
+	accumulated_light: number;
+	vigor: number;
+	growth_rate: number;
+};
+
+export type PlantDiagnostics = Pick<
+	PlantState,
+	"module_diagnostic_labels_visible" | "direct_light_bounding_spheres_visible"
+>;
+
 export type PlantTypeParameters = {
 	plant_max_age: number;
 	root_max_vigor: number;
@@ -135,6 +156,11 @@ export type CommandMap = {
 	"module.get_prototype_tree": { params: NoParams; result: PrototypeTree };
 	"module.get_growth_snapshot_summary": { params: NoParams; result: GrowthSnapshotSummary };
 	"module.get_growth_snapshot": { params: NoParams; result: GrowthSnapshot };
+	"plant.get_state": { params: NoParams; result: PlantState };
+	"plant.reset": { params: NoParams; result: NoParams };
+	"plant.step": { params: NoParams; result: NoParams };
+	"plant.set_timestep": { params: { timestep: number }; result: NoParams };
+	"plant.set_diagnostics": { params: Partial<PlantDiagnostics>; result: NoParams };
 	"workspace.set": { params: { workspace: Workspace }; result: NoParams };
 	"plant_types.list": { params: NoParams; result: PlantTypeSummary[] };
 	"plant_types.get": { params: { plant_type_id: string }; result: PlantType };

@@ -49,6 +49,7 @@ struct ViewportState {
     bool hdri_backdrop_visible = true;
     std::string active_hdri_environment_id;
     OrbitState orbit;
+    bool orbit_initialized = false;
 };
 
 struct PlantType {

@@ -1,6 +1,6 @@
 # Growth model and equation library
 
-Reference for the retained Synthetic Silviculture math and its source model in Palubicki et al. 2009. The library currently develops one branch module; it does not orchestrate a whole plant.
+Reference for the retained Synthetic Silviculture math and its source model in Palubicki et al. 2009. The library develops branch modules and currently simulates one root-only plant architecture.
 
 ## Module development
 
@@ -98,9 +98,9 @@ The 16 presets retain Synthetic Silviculture Table 4 exactly:
 
 `parameter_for_plant_age` selects young or mature values at flowering age. The paper's Eq. 10 `g₁`/`g₂` labels and Table 4's single signed `g₁` column are inconsistent; module growth retains the existing interpretation: the table value controls signed strength while per-segment falloff controls decay.
 
-## Current reset point
+## Current implementation
 
-The source interface currently retains module development and pure equation primitives; `PlantSimulation`, placed-module topology, traversal, attachment, orientation search, and plant snapshots enter through the accepted incremental milestones. The ADRs in this directory define their agreed behavior before implementation.
+`PlantSimulation` owns one root module, atomic stepping, committed-state light/vigor diagnostics, and zero-copy plant snapshots. Child attachment, multi-module traversal, orientation, shedding, and senescence enter through later milestones.
 
 ## Sources
 

@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace toi::ovrtx {
 class RendererSession;
@@ -35,6 +36,15 @@ struct PreviewRendererDevice {
     std::string device_name;
 };
 
+struct ProjectedPlantDiagnosticLabel {
+    float x = 0.0F;
+    float y = 0.0F;
+    bool visible = false;
+    float direct_light_exposure = 0.0F;
+    float accumulated_light = 0.0F;
+    float vigor = 0.0F;
+};
+
 struct PreviewRendererStatus {
     std::string phase = "starting";
     std::string message = "Qt Vulkan viewport starting";
@@ -46,16 +56,21 @@ struct PreviewRendererStatus {
 class PreviewRenderer final {
 public:
     [[nodiscard]] static Result<std::unique_ptr<PreviewRenderer>> create(
-        PreviewRendererDevice device, render::GrowthPreviewStageProjection initial_stage);
+        PreviewRendererDevice device, render::GrowthPreviewStageProjection initial_stage,
+        render::OrbitView initial_orbit);
 
     PreviewRenderer(const PreviewRenderer&) = delete;
     PreviewRenderer& operator=(const PreviewRenderer&) = delete;
     ~PreviewRenderer();
 
-    void set_stage(render::GrowthPreviewStageProjection stage);
-    void apply_camera_input(std::string_view kind, float dx, float dy, int viewport_height);
+    void set_stage(render::GrowthPreviewStageProjection stage, render::OrbitView orbit);
+    void set_orbit(render::OrbitView orbit);
+    [[nodiscard]] std::optional<render::OrbitView> apply_camera_input(std::string_view kind, float dx, float dy,
+                                                                      int viewport_height);
     void set_guide_options(bool guides_visible, bool world_origin_axes_visible);
     void set_frame_ready_callback(std::function<void()> callback);
+    void set_diagnostic_labels_callback(
+        std::function<void(std::vector<ProjectedPlantDiagnosticLabel>)> callback);
 
     // Called only from Qt's scene-graph render thread. Enqueues native
     // precomposition before Qt submits the frame that samples display_image().
@@ -74,7 +89,8 @@ private:
 
     PreviewRenderer() = default;
     [[nodiscard]] Result<void> initialize(PreviewRendererDevice device,
-                                          render::GrowthPreviewStageProjection initial_stage);
+                                          render::GrowthPreviewStageProjection initial_stage,
+                                          render::OrbitView initial_orbit);
     void render_loop();
     [[nodiscard]] Result<void> resize_frame_resources_on_render_thread(int width, int height);
     void set_error(std::string message);
@@ -111,6 +127,7 @@ private:
     int displayed_slot_ = -1;
     std::uint64_t next_timeline_value_ = 0;
     std::function<void()> frame_ready_callback_;
+    std::function<void(std::vector<ProjectedPlantDiagnosticLabel>)> diagnostic_labels_callback_;
     PreviewRendererStatus status_;
 };
 

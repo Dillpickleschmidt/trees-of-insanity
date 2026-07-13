@@ -71,6 +71,11 @@ void DesktopBridge::publishViewportStatus(const QString& status)
     emit viewportStatusChanged(status);
 }
 
+void DesktopBridge::publishPlantDiagnosticLabels(const QString& labels)
+{
+    emit plantDiagnosticLabelsChanged(labels);
+}
+
 DesktopBridge::DesktopBridge(toi::model::DesktopSession session, QObject* parent)
     : QObject(parent), session_(std::move(session))
 {

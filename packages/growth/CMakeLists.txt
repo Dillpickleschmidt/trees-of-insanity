@@ -5,6 +5,7 @@ project(toi_growth VERSION 0.1.0 LANGUAGES CXX)
 add_library(toi_growth
     src/equations.cpp
     src/growth.cpp
+    src/plant_simulation.cpp
 )
 add_library(toi::growth ALIAS toi_growth)
 target_include_directories(toi_growth
@@ -41,7 +42,10 @@ if(PROJECT_IS_TOP_LEVEL)
         FetchContent_MakeAvailable(Catch2)
     endif()
 
-    add_executable(toi_growth_tests tests/growth_tests.cpp)
+    add_executable(toi_growth_tests
+        tests/growth_tests.cpp
+        tests/plant_simulation_tests.cpp
+    )
     target_link_libraries(toi_growth_tests PRIVATE toi::growth Catch2::Catch2WithMain)
 
     include(Catch)
