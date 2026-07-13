@@ -26,6 +26,7 @@ struct MeshGeometry;
 [[nodiscard]] growth::Vec3 safe_normalize(growth::Vec3 value, growth::Vec3 fallback);
 [[nodiscard]] growth::Vec3 subtract_projection(growth::Vec3 value, growth::Vec3 axis);
 [[nodiscard]] growth::Vec3 fallback_normal_for(growth::Vec3 tangent);
+[[nodiscard]] growth::Vec3 weight_map_color(float weight);
 [[nodiscard]] GrowthPreviewStageProjection make_growth_preview_stage_projection_impl(
     const growth::GrowthSnapshot& snapshot, const growth::GrowthSnapshot& camera_snapshot,
     const growth::BranchModulePrototype& prepared_prototype, GrowthPreviewStageOptions options);
@@ -96,13 +97,12 @@ GrowthPreviewStageProjection make_plant_preview_stage_projection(
             continue;
         }
         const int half_width = static_cast<int>(std::round(2.0F * flow.fraction));
+        const auto color = weight_map_color(flow.fraction);
         for (int offset = -half_width; offset <= half_width; ++offset) {
             projection.diagnostic_lines.push_back({
                 .start = flow.start,
                 .end = flow.end,
-                .color = flow.kind == growth::FlowKind::AccumulatedLight
-                             ? growth::Vec3{.x = 0.1F, .y = 0.85F, .z = 1.0F}
-                             : growth::Vec3{.x = 1.0F, .y = 0.65F, .z = 0.1F},
+                .color = color,
                 .alpha = 0.45F + 0.55F * flow.fraction,
                 .dash_direction = 1.0F,
                 .surface_tangent = flow.tangent,
@@ -256,6 +256,24 @@ GrowthPreviewStageProjection make_growth_preview_stage_projection_impl(
     const growth::Vec3 x_axis{.x = 1.0F, .y = 0.0F, .z = 0.0F};
     const growth::Vec3 reference = std::abs(dot(tangent, z_axis)) > 0.9F ? x_axis : z_axis;
     return safe_normalize(cross(reference, tangent), {.x = 1.0F, .y = 0.0F, .z = 0.0F});
+}
+
+[[nodiscard]] growth::Vec3 weight_map_color(float weight)
+{
+    weight = std::clamp(weight, 0.0F, 1.0F);
+    if (weight <= 0.25F) {
+        return {.x = 0.0F, .y = weight * 4.0F, .z = 1.0F};
+    }
+    if (weight <= 0.5F) {
+        const float interpolation = (weight - 0.25F) * 4.0F;
+        return {.x = 0.0F, .y = 1.0F, .z = 1.0F - interpolation};
+    }
+    if (weight <= 0.75F) {
+        const float interpolation = (weight - 0.5F) * 4.0F;
+        return {.x = interpolation, .y = 1.0F, .z = 0.0F};
+    }
+    const float interpolation = (weight - 0.75F) * 4.0F;
+    return {.x = 1.0F, .y = 1.0F - interpolation, .z = 0.0F};
 }
 
 [[nodiscard]] growth::Vec3 ring_direction(const TubeFrame& frame, int radial_index)
