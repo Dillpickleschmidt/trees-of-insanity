@@ -259,7 +259,7 @@ private:
     struct ModuleRecord {
         std::size_t id = 0;
         std::size_t prototype_index = 0;
-        std::optional<std::size_t> parent_module_id;
+        std::optional<std::size_t> parent_module_index;
         std::optional<std::size_t> parent_terminal_node;
         RigidTransform transform;
         float physiological_age = 0.0F;

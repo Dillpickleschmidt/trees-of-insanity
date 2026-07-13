@@ -29,17 +29,17 @@ struct ModuleGeometry {
 [[nodiscard]] Vec3 rotate_about_axis(Vec3 value, Vec3 axis, float angle);
 [[nodiscard]] RigidTransform rotated_transform(const RigidTransform& transform, Vec3 axis, float angle);
 [[nodiscard]] Sphere sphere_for_points(std::span<const Vec3> points);
+[[nodiscard]] float segment_diameter_maturity(const BranchModulePrototype& prototype,
+                                              const BranchSegment& segment,
+                                              float module_physiological_age);
 [[nodiscard]] Result<ModuleGeometry> build_geometry(const BranchModulePrototype& prototype,
                                                     const PlantTypeParameters& plant_type,
                                                     const RigidTransform& transform,
                                                     float physiological_age);
-template <class Records>
-[[nodiscard]] std::optional<std::size_t> child_index_at(const Records& records,
-                                                        std::size_t parent_id, std::size_t terminal_node);
-template <class Records>
 [[nodiscard]] std::vector<float> dynamic_pipe_factors(
-    const BranchModulePrototype& prototype, std::size_t module_id,
-    const Records& records, std::span<const float> child_root_supplies);
+    const BranchModulePrototype& prototype,
+    std::span<const std::optional<std::size_t>> child_module_by_node,
+    std::span<const float> child_root_supplies);
 [[nodiscard]] RigidTransform orient_child(const RigidTransform& inherited, Vec3 translation,
                                           const BranchModulePrototype& child_prototype,
                                           const PlantTypeParameters& plant_type,
@@ -199,7 +199,7 @@ Result<void> PlantSimulation::step(float timestep)
                 next.module_records_.push_back({
                     .id = child_id,
                     .prototype_index = selected_index,
-                    .parent_module_id = 0,
+                    .parent_module_index = root_record_index,
                     .parent_terminal_node = terminal_node,
                     .transform = child_transform,
                     .physiological_age = 0.0F,
@@ -245,6 +245,18 @@ PlantSnapshot PlantSimulation::snapshot() const
 Result<void> PlantSimulation::rebuild_snapshot(bool emit_flows)
 {
     const std::size_t module_count = module_records_.size();
+    std::vector<std::size_t> module_node_offsets(module_count + 1, 0);
+    for (std::size_t module = 0; module < module_count; ++module) {
+        module_node_offsets[module + 1] = module_node_offsets[module] +
+            prepared_prototypes_[module_records_[module].prototype_index].nodes.size();
+    }
+    std::vector<std::optional<std::size_t>> child_module_by_node(module_node_offsets.back());
+    for (std::size_t child = 1; child < module_count; ++child) {
+        const auto& record = module_records_[child];
+        child_module_by_node[module_node_offsets[*record.parent_module_index] +
+                             *record.parent_terminal_node] = child;
+    }
+
     std::vector<ModuleGeometry> geometries;
     geometries.reserve(module_count);
     for (const auto& module : module_records_) {
@@ -289,7 +301,7 @@ Result<void> PlantSimulation::rebuild_snapshot(bool emit_flows)
         const float terminal_share = direct_light[module] / static_cast<float>(prototype.terminal_nodes.size());
         for (const auto terminal : prototype.terminal_nodes) {
             float terminal_light = terminal_share;
-            if (const auto child = child_index_at(module_records_, record.id, terminal)) {
+            if (const auto child = child_module_by_node[module_node_offsets[module] + terminal]) {
                 terminal_light += accumulated[*child];
             }
             node_light[module][terminal] = terminal_light;
@@ -377,7 +389,7 @@ Result<void> PlantSimulation::rebuild_snapshot(bool emit_flows)
         }
         if (record.physiological_age + kEpsilon >= record.fully_grown_age) {
             for (const auto terminal : prototype.terminal_nodes) {
-                if (const auto child = child_index_at(module_records_, record.id, terminal)) {
+                if (const auto child = child_module_by_node[module_node_offsets[module] + terminal]) {
                     if (module_records_[*child].diagnostics_active) {
                         module_vigor[*child] = std::min(node_vigor[module][terminal], kMaximumModuleVigor);
                     }
@@ -391,11 +403,19 @@ Result<void> PlantSimulation::rebuild_snapshot(bool emit_flows)
     for (std::size_t reverse = module_count; reverse > 0; --reverse) {
         const std::size_t module = reverse - 1;
         const auto& prototype = prepared_prototypes_[module_records_[module].prototype_index];
-        pipe_factors[module] = dynamic_pipe_factors(prototype, module_records_[module].id,
-                                                    module_records_, root_supplies);
+        pipe_factors[module] = dynamic_pipe_factors(
+            prototype,
+            std::span<const std::optional<std::size_t>>(child_module_by_node).subspan(
+                module_node_offsets[module], prototype.nodes.size()),
+            root_supplies);
         float root_sum = 0.0F;
-        for (const auto segment : prototype.child_segments_by_node[prototype.root_node]) {
-            root_sum += pipe_factors[module][segment] * pipe_factors[module][segment];
+        for (const auto segment_index : prototype.child_segments_by_node[prototype.root_node]) {
+            const auto& segment = prototype.segments[segment_index];
+            const float maturity = segment_diameter_maturity(
+                prototype, segment, module_records_[module].physiological_age);
+            const float target = pipe_factors[module][segment_index];
+            const float developed = 1.0F + (target - 1.0F) * maturity;
+            root_sum += developed * developed;
         }
         root_supplies[module] = root_sum > 0.0F ? std::sqrt(root_sum) : 1.0F;
     }
@@ -416,11 +436,8 @@ Result<void> PlantSimulation::rebuild_snapshot(bool emit_flows)
         for (std::size_t source = 0; source < prototype.segments.size(); ++source) {
             const auto& definition = prototype.segments[source];
             const auto& current = geometries[module].current_segments[source];
-            const float segment_age = std::max(0.0F, record.physiological_age -
-                                                         prototype.nodes[definition.parent_node].physiological_age);
-            const float maturity = definition.inverse_remaining_diameter_age <= 0.0F
-                ? 1.0F
-                : std::clamp(segment_age * definition.inverse_remaining_diameter_age, 0.0F, 1.0F);
+            const float maturity = segment_diameter_maturity(
+                prototype, definition, record.physiological_age);
             const float target_diameter = pipe_factors[module][source] * terminal_thickness;
             const float diameter = terminal_thickness + (target_diameter - terminal_thickness) * maturity;
             std::optional<std::size_t> continuation;
@@ -477,6 +494,7 @@ Result<void> PlantSimulation::rebuild_snapshot(bool emit_flows)
             for (const auto terminal : prototype.terminal_nodes) {
                 const auto incoming = prototype.incoming_segment_by_node[terminal];
                 const auto& segment = next_segments[range_offset + *incoming];
+                const auto child = child_module_by_node[module_node_offsets[module] + terminal];
                 next_terminals.push_back({
                     .module_id = record.id,
                     .terminal_node = terminal,
@@ -484,8 +502,8 @@ Result<void> PlantSimulation::rebuild_snapshot(bool emit_flows)
                     .tangent = normalize(subtract(segment.mature_child_position, segment.mature_parent_position)),
                     .host_radius = segment.target_diameter * 0.5F,
                     .vigor = node_vigor[module][terminal],
-                    .child_module_id = child_index_at(module_records_, record.id, terminal)
-                        ? std::optional<std::size_t>{module_records_[*child_index_at(module_records_, record.id, terminal)].id}
+                    .child_module_id = child
+                        ? std::optional<std::size_t>{module_records_[*child].id}
                         : std::nullopt,
                 });
             }
@@ -493,7 +511,9 @@ Result<void> PlantSimulation::rebuild_snapshot(bool emit_flows)
         next_modules.push_back({
             .id = record.id,
             .prototype_id = prototype.id,
-            .parent_module_id = record.parent_module_id,
+            .parent_module_id = record.parent_module_index
+                ? std::optional<std::size_t>{module_records_[*record.parent_module_index].id}
+                : std::nullopt,
             .parent_terminal_node = record.parent_terminal_node,
             .transform = record.transform,
             .root_position = record.transform.translation,
@@ -617,38 +637,38 @@ Result<ModuleGeometry> build_geometry(const BranchModulePrototype& prototype,
     return geometry;
 }
 
-template <class Records>
-std::optional<std::size_t> child_index_at(const Records& records, std::size_t parent_id,
-                                          std::size_t terminal_node)
+float segment_diameter_maturity(const BranchModulePrototype& prototype,
+                                const BranchSegment& segment,
+                                float module_physiological_age)
 {
-    for (std::size_t index = 0; index < records.size(); ++index) {
-        if (records[index].parent_module_id == parent_id && records[index].parent_terminal_node == terminal_node) {
-            return index;
-        }
-    }
-    return std::nullopt;
+    const float segment_age = std::max(
+        0.0F, module_physiological_age - prototype.nodes[segment.parent_node].physiological_age);
+    return segment.inverse_remaining_diameter_age <= 0.0F
+        ? 1.0F
+        : std::clamp(segment_age * segment.inverse_remaining_diameter_age, 0.0F, 1.0F);
 }
 
-template <class Records>
-std::vector<float> dynamic_pipe_factors(const BranchModulePrototype& prototype, std::size_t module_id,
-                                        const Records& records, std::span<const float> child_root_supplies)
+std::vector<float> dynamic_pipe_factors(
+    const BranchModulePrototype& prototype,
+    std::span<const std::optional<std::size_t>> child_module_by_node,
+    std::span<const float> child_root_supplies)
 {
-    std::vector<float> memo(prototype.segments.size(), -1.0F);
+    std::vector<float> factors(prototype.segments.size(), -1.0F);
     const auto factor = [&](auto&& self, std::size_t segment_index) -> float {
-        if (memo[segment_index] >= 0.0F) return memo[segment_index];
+        if (factors[segment_index] >= 0.0F) return factors[segment_index];
         const auto& segment = prototype.segments[segment_index];
-        if (const auto child = child_index_at(records, module_id, segment.child_node)) {
-            return memo[segment_index] = child_root_supplies[*child];
+        if (const auto child = child_module_by_node[segment.child_node]) {
+            return factors[segment_index] = child_root_supplies[*child];
         }
         float sum = 0.0F;
         for (const auto next : prototype.child_segments_by_node[segment.child_node]) {
             const float child_factor = self(self, next);
             sum += child_factor * child_factor;
         }
-        return memo[segment_index] = sum > 0.0F ? std::sqrt(sum) : 1.0F;
+        return factors[segment_index] = sum > 0.0F ? std::sqrt(sum) : 1.0F;
     };
     for (std::size_t index = 0; index < prototype.segments.size(); ++index) (void)factor(factor, index);
-    return memo;
+    return factors;
 }
 
 RigidTransform orient_child(const RigidTransform& inherited, Vec3 translation,

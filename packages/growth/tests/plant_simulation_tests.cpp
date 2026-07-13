@@ -22,9 +22,9 @@ toi::growth::BranchModulePrototype make_root_prototype(std::size_t id)
         {{4.0F, 0.0F, 3.0F}, 0.0F},
     };
     prototype.segments = {
-        {0, 1, {0.0F, 0.0F, 1.0F}, std::sqrt(2.0F), 0.0F, 1.0F, 1.0F},
-        {1, 2, {1.0F, 0.0F, 0.0F}, 1.0F, 0.0F, 1.0F, 1.0F},
-        {1, 3, {-1.0F, 0.0F, 0.0F}, 1.0F, 0.0F, 1.0F, 1.0F},
+        {0, 1, {0.0F, 0.0F, 1.0F}, std::sqrt(2.0F), 1.0F, 1.0F, 1.0F},
+        {1, 2, {1.0F, 0.0F, 0.0F}, 1.0F, 1.0F, 1.0F, 1.0F},
+        {1, 3, {-1.0F, 0.0F, 0.0F}, 1.0F, 1.0F, 1.0F, 1.0F},
     };
     prototype.terminal_nodes = {2, 3};
     prototype.child_segments_by_node = {{0}, {1, 2}, {}, {}};
@@ -145,7 +145,8 @@ TEST_CASE("maturity crossing atomically attaches every eligible root terminal")
 TEST_CASE("continuous pipe crosses parent and child module attachment")
 {
     using namespace toi::growth;
-    auto simulation = PlantSimulation::create(make_library(), make_plant_type(), 7);
+    const auto plant_type = make_plant_type();
+    auto simulation = PlantSimulation::create(make_library(), plant_type, 7);
     REQUIRE(simulation);
     REQUIRE(simulation->step(10'000.0F));
     const auto snapshot = simulation->snapshot();
@@ -153,9 +154,18 @@ TEST_CASE("continuous pipe crosses parent and child module attachment")
     const auto& child = module_by_id(snapshot, 1);
     const auto root_segments = module_segments(snapshot, root);
     const auto child_segments = module_segments(snapshot, child);
-    CHECK(root_segments[1].target_diameter == Catch::Approx(child_segments[0].target_diameter));
-    CHECK(root_segments[0].target_diameter > child_segments[0].target_diameter);
+    CHECK(child_segments[0].diameter == Catch::Approx(plant_type.terminal_thickness * 0.01F));
+    CHECK(root_segments[1].diameter == Catch::Approx(child_segments[0].diameter));
+    CHECK(root_segments[0].diameter == Catch::Approx(std::sqrt(2.0F) * root_segments[1].diameter));
     CHECK(root_segments[0].main_continuation_segment == root.segments.offset + 1);
+
+    const float attachment_diameter = root_segments[1].diameter;
+    REQUIRE(simulation->step(1.0F));
+    const auto growing = simulation->snapshot();
+    const auto growing_root_segments = module_segments(growing, module_by_id(growing, 0));
+    const auto growing_child_segments = module_segments(growing, module_by_id(growing, 1));
+    CHECK(growing_root_segments[1].diameter == Catch::Approx(growing_child_segments[0].diameter));
+    CHECK(growing_root_segments[1].diameter > attachment_diameter);
 }
 
 TEST_CASE("root vigor budget can exceed one module's vigor")

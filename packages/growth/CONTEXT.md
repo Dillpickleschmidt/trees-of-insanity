@@ -28,7 +28,7 @@ This package implements renderer-independent branch-module development, paper eq
 - **Lateral group**: all non-main children at one fork, treated as one side of the Borchert-Honda split before their shared vigor is divided proportionally by accumulated light.
 - **Module orientation**: rigid transform selected once when a new module attaches, starting from its parent module's orientation and evaluating the new module's mature prototype extent. Collision weight is the fixed baseline `ω₁ = 1`; plant-type `ω₂` controls tropism relative to it. Search uses at most three iterations with a provisional 10-degree perturbation.
 - **Tropism adaptation**: Eq. 10 developmental bending of branch segments as a module grows; it does not rerun rigid module-orientation search.
-- **Continuous pipe model**: basipetal Eq. 8 diameter calculation crossing module attachments, where child root diameter supplies its parent terminal and contributes toward the plant root.
+- **Continuous pipe model**: basipetal Eq. 8 diameter calculation crossing module attachments, where the child's currently developed root diameter supplies its parent terminal and contributes toward the plant root.
 - **Plant space**: canonical meter-based coordinates used by plant growth and placement.
 - **Prototype geometry scale**: one prototype-library-specific conversion from its arbitrarily authored coordinates into plant space. It is not a universal OBJ import scale; all nine prototypes in the current library share the same scale.
 
