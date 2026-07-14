@@ -102,7 +102,7 @@ struct BranchModulePrototype {
     std::vector<std::vector<std::size_t>> child_segments_by_node;
     std::vector<std::optional<std::size_t>> incoming_segment_by_node;
     std::vector<std::optional<std::size_t>> main_child_segment_by_node;
-    std::optional<std::size_t> main_axis_terminal_node;
+    std::size_t main_axis_terminal_node = 0;
 };
 
 struct BranchModulePrototypeLibrary {
@@ -228,7 +228,6 @@ struct PlantFlowPath {
     std::size_t source_segment_id = 0;
     Vec3 start;
     Vec3 end;
-    Vec3 tangent;
     float host_radius = 0.0F;
     float amount = 0.0F;
     float root_total = 0.0F;

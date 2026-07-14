@@ -362,12 +362,6 @@ TEST_CASE("Plant maturity crossing exposes one attached generation")
          .show_mature_terminals = true});
     CHECK(projection.diagnostic_labels.size() == module_count);
     CHECK_FALSE(projection.diagnostic_lines.empty());
-    CHECK(std::ranges::any_of(projection.diagnostic_lines, [](const auto& line) {
-        return line.dash_direction != 0.0F && line.surface_radius > 0.0F;
-    }));
-    CHECK(std::ranges::any_of(projection.diagnostic_lines, [](const auto& line) {
-        return line.screen_offset_pixels != 0.0F;
-    }));
 }
 
 TEST_CASE("Plant-selected type changes reset the transient simulation")

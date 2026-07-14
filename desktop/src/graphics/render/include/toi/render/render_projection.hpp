@@ -62,10 +62,13 @@ struct DiagnosticOverlayLine {
     growth::Vec3 end;
     growth::Vec3 color;
     float alpha = 1.0F;
-    float dash_direction = 0.0F;
-    growth::Vec3 surface_tangent{};
-    float surface_radius = 0.0F;
-    float screen_offset_pixels = 0.0F;
+};
+
+struct DiagnosticOverlayPath {
+    growth::Vec3 start;
+    growth::Vec3 end;
+    growth::Vec3 color;
+    float host_radius = 0.0F;
 };
 
 struct PlantDiagnosticOptions {
@@ -89,6 +92,7 @@ struct GrowthPreviewStageProjection {
     GrowthPreviewCamera camera;
     std::vector<GrowthPreviewMeshAttributes> mesh_attributes;
     std::vector<DiagnosticOverlayLine> diagnostic_lines;
+    std::vector<DiagnosticOverlayPath> diagnostic_paths;
     std::vector<PlantDiagnosticLabel> diagnostic_labels;
 };
 

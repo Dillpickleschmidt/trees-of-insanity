@@ -18,16 +18,18 @@ namespace toi::viewport {
 namespace {
 
 constexpr std::uint32_t kMaxLines = 4096;
+constexpr std::uint32_t kMaxPaths = 4096;
+constexpr std::uint32_t kVertexCapacity = kMaxLines * 2 + kMaxPaths * 6;
+constexpr float kPathAlpha = 0.9F;
 
 struct OverlayVertex {
     float position[3];
     float color[3];
     float alpha;
     float path_distance;
-    float dash_direction;
     float surface_tangent[3];
     float surface_radius;
-    float screen_offset_pixels;
+    float ribbon_side;
 };
 
 struct OverlayPushConstants {
@@ -226,15 +228,14 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     stages[1].pName = "main";
 
     VkVertexInputBindingDescription binding{0, sizeof(OverlayVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-    std::array<VkVertexInputAttributeDescription, 8> attributes{{
+    std::array<VkVertexInputAttributeDescription, 7> attributes{{
         {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(OverlayVertex, position)},
         {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(OverlayVertex, color)},
         {2, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlayVertex, alpha)},
         {3, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlayVertex, path_distance)},
-        {4, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlayVertex, dash_direction)},
-        {5, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(OverlayVertex, surface_tangent)},
-        {6, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlayVertex, surface_radius)},
-        {7, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlayVertex, screen_offset_pixels)},
+        {4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(OverlayVertex, surface_tangent)},
+        {5, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlayVertex, surface_radius)},
+        {6, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlayVertex, ribbon_side)},
     }};
     VkPipelineVertexInputStateCreateInfo vertex_input{};
     vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -299,21 +300,32 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     pipeline_info.renderPass = overlay.render_pass_;
     pipeline_info.subpass = 0;
 
-    auto pipeline_result = require_vk(vkCreateGraphicsPipelines(overlay.device_, VK_NULL_HANDLE, 1, &pipeline_info,
-                                                               nullptr, &overlay.pipeline_),
-                                      "vkCreateGraphicsPipelines");
+    auto line_pipeline_result = require_vk(
+        vkCreateGraphicsPipelines(overlay.device_, VK_NULL_HANDLE, 1, &pipeline_info,
+                                  nullptr, &overlay.line_pipeline_),
+        "vkCreateGraphicsPipelines(line overlay)");
+    if (!line_pipeline_result) {
+        vkDestroyShaderModule(overlay.device_, *vert, nullptr);
+        vkDestroyShaderModule(overlay.device_, *frag, nullptr);
+        overlay.reset();
+        return std::unexpected(line_pipeline_result.error());
+    }
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    auto path_pipeline_result = require_vk(
+        vkCreateGraphicsPipelines(overlay.device_, VK_NULL_HANDLE, 1, &pipeline_info,
+                                  nullptr, &overlay.path_pipeline_),
+        "vkCreateGraphicsPipelines(path overlay)");
     vkDestroyShaderModule(overlay.device_, *vert, nullptr);
     vkDestroyShaderModule(overlay.device_, *frag, nullptr);
-    if (!pipeline_result) {
+    if (!path_pipeline_result) {
         overlay.reset();
-        return std::unexpected(pipeline_result.error());
+        return std::unexpected(path_pipeline_result.error());
     }
 
-    // Host-visible vertex buffer for the guide lines (uploaded per frame).
-    overlay.vertex_capacity_ = kMaxLines * 2;
+    // Host-visible vertex buffer for guides, diagnostics, and flow ribbons.
     VkBufferCreateInfo buffer_info{};
     buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_info.size = sizeof(OverlayVertex) * overlay.vertex_capacity_;
+    buffer_info.size = sizeof(OverlayVertex) * kVertexCapacity;
     buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (auto result = require_vk(vkCreateBuffer(overlay.device_, &buffer_info, nullptr, &overlay.vertex_buffer_),
@@ -399,7 +411,8 @@ Result<void> ViewportOverlay::set_scene_distance(std::uint32_t distance_slot, Vk
 
 Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D extent, VkRect2D content_rect,
                                      const OverlayCamera& camera, std::span<const OverlayLine> lines,
-                                     float depth_bias, float animation_time, std::uint32_t distance_slot)
+                                     std::span<const OverlayPath> paths, float depth_bias,
+                                     float animation_time, std::uint32_t distance_slot)
 {
     if (distance_slot >= kDistanceSlotCount) {
         return std::unexpected(make_error("overlay distance slot out of range"));
@@ -411,31 +424,52 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D 
     if (lines.size() > kMaxLines) {
         return std::unexpected(make_error("overlay line capacity exceeded"));
     }
+    if (paths.size() > kMaxPaths) {
+        return std::unexpected(make_error("overlay path capacity exceeded"));
+    }
     const std::uint32_t line_count = static_cast<std::uint32_t>(lines.size());
+    const std::uint32_t path_count = static_cast<std::uint32_t>(paths.size());
     auto* vertices = static_cast<OverlayVertex*>(vertex_mapped_);
+    const float no_tangent[3]{};
+    const auto write_vertex = [&](std::uint32_t vertex_index, const float position[3],
+                                  const float color[3], float alpha, float path_distance,
+                                  const float surface_tangent[3], float surface_radius,
+                                  float ribbon_side) {
+        auto& vertex = vertices[vertex_index];
+        std::memcpy(vertex.position, position, sizeof(vertex.position));
+        std::memcpy(vertex.color, color, sizeof(vertex.color));
+        vertex.alpha = alpha;
+        vertex.path_distance = path_distance;
+        std::memcpy(vertex.surface_tangent, surface_tangent, sizeof(vertex.surface_tangent));
+        vertex.surface_radius = surface_radius;
+        vertex.ribbon_side = ribbon_side;
+    };
     for (std::uint32_t index = 0; index < line_count; ++index) {
         const auto& line = lines[index];
-        OverlayVertex& start = vertices[index * 2];
-        OverlayVertex& end = vertices[index * 2 + 1];
-        std::memcpy(start.position, line.start, sizeof(line.start));
-        std::memcpy(start.color, line.color, sizeof(line.color));
-        start.alpha = line.alpha;
-        start.path_distance = 0.0F;
-        start.dash_direction = line.dash_direction;
-        std::memcpy(start.surface_tangent, line.surface_tangent, sizeof(line.surface_tangent));
-        start.surface_radius = line.surface_radius;
-        start.screen_offset_pixels = line.screen_offset_pixels;
-        std::memcpy(end.position, line.end, sizeof(line.end));
-        std::memcpy(end.color, line.color, sizeof(line.color));
-        end.alpha = line.alpha;
-        const float dx = line.end[0] - line.start[0];
-        const float dy = line.end[1] - line.start[1];
-        const float dz = line.end[2] - line.start[2];
-        end.path_distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-        end.dash_direction = line.dash_direction;
-        std::memcpy(end.surface_tangent, line.surface_tangent, sizeof(line.surface_tangent));
-        end.surface_radius = line.surface_radius;
-        end.screen_offset_pixels = line.screen_offset_pixels;
+        write_vertex(index * 2, line.start, line.color, line.alpha, 0.0F,
+                     no_tangent, 0.0F, 0.0F);
+        write_vertex(index * 2 + 1, line.end, line.color, line.alpha, 0.0F,
+                     no_tangent, 0.0F, 0.0F);
+    }
+    constexpr std::array<std::pair<bool, float>, 6> ribbon_vertices{{
+        {false, -1.0F}, {true, -1.0F}, {true, 1.0F},
+        {false, -1.0F}, {true, 1.0F}, {false, 1.0F},
+    }};
+    const std::uint32_t path_vertex_offset = line_count * 2;
+    for (std::uint32_t index = 0; index < path_count; ++index) {
+        const auto& path = paths[index];
+        const float dx = path.end[0] - path.start[0];
+        const float dy = path.end[1] - path.start[1];
+        const float dz = path.end[2] - path.start[2];
+        const float path_length = std::sqrt(dx * dx + dy * dy + dz * dz);
+        const float surface_tangent[3]{dx / path_length, dy / path_length, dz / path_length};
+        for (std::uint32_t corner = 0; corner < ribbon_vertices.size(); ++corner) {
+            const auto [at_end, side] = ribbon_vertices[corner];
+            write_vertex(path_vertex_offset + index * 6 + corner,
+                         at_end ? path.end : path.start, path.color, kPathAlpha,
+                         at_end ? path_length : 0.0F, surface_tangent,
+                         path.host_radius, side);
+        }
     }
 
     VkRenderPassBeginInfo begin{};
@@ -445,13 +479,12 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D 
     begin.renderArea.extent = extent;
     vkCmdBeginRenderPass(command_buffer, &begin, VK_SUBPASS_CONTENTS_INLINE);
 
-    if (line_count > 0) {
+    if (line_count > 0 || path_count > 0) {
         VkViewport viewport{static_cast<float>(content_rect.offset.x), static_cast<float>(content_rect.offset.y),
                             static_cast<float>(content_rect.extent.width),
                             static_cast<float>(content_rect.extent.height), 0.0F, 1.0F};
         vkCmdSetViewport(command_buffer, 0, 1, &viewport);
         vkCmdSetScissor(command_buffer, 0, 1, &content_rect);
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1,
                                 &descriptor_sets_[distance_slot], 0, nullptr);
 
@@ -476,7 +509,14 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D 
 
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer_, &offset);
-        vkCmdDraw(command_buffer, line_count * 2, 1, 0, 0);
+        if (line_count > 0) {
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, line_pipeline_);
+            vkCmdDraw(command_buffer, line_count * 2, 1, 0, 0);
+        }
+        if (path_count > 0) {
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, path_pipeline_);
+            vkCmdDraw(command_buffer, path_count * 6, 1, path_vertex_offset, 0);
+        }
     }
 
     vkCmdEndRenderPass(command_buffer);
@@ -514,9 +554,13 @@ void ViewportOverlay::reset()
         vkFreeMemory(device_, vertex_memory_, nullptr);
         vertex_memory_ = VK_NULL_HANDLE;
     }
-    if (pipeline_ != VK_NULL_HANDLE) {
-        vkDestroyPipeline(device_, pipeline_, nullptr);
-        pipeline_ = VK_NULL_HANDLE;
+    if (line_pipeline_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(device_, line_pipeline_, nullptr);
+        line_pipeline_ = VK_NULL_HANDLE;
+    }
+    if (path_pipeline_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(device_, path_pipeline_, nullptr);
+        path_pipeline_ = VK_NULL_HANDLE;
     }
     if (pipeline_layout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
@@ -555,11 +599,11 @@ void ViewportOverlay::move_from(ViewportOverlay& other) noexcept
     }
     sampler_ = std::exchange(other.sampler_, VK_NULL_HANDLE);
     pipeline_layout_ = std::exchange(other.pipeline_layout_, VK_NULL_HANDLE);
-    pipeline_ = std::exchange(other.pipeline_, VK_NULL_HANDLE);
+    line_pipeline_ = std::exchange(other.line_pipeline_, VK_NULL_HANDLE);
+    path_pipeline_ = std::exchange(other.path_pipeline_, VK_NULL_HANDLE);
     vertex_buffer_ = std::exchange(other.vertex_buffer_, VK_NULL_HANDLE);
     vertex_memory_ = std::exchange(other.vertex_memory_, VK_NULL_HANDLE);
     vertex_mapped_ = std::exchange(other.vertex_mapped_, nullptr);
-    vertex_capacity_ = std::exchange(other.vertex_capacity_, 0);
     target_view_ = std::exchange(other.target_view_, VK_NULL_HANDLE);
     framebuffer_ = std::exchange(other.framebuffer_, VK_NULL_HANDLE);
 }

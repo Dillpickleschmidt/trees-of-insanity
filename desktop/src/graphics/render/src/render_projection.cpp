@@ -96,20 +96,12 @@ GrowthPreviewStageProjection make_plant_preview_stage_projection(
             (flow.kind == growth::FlowKind::Vigor && !diagnostics.show_vigor_flow)) {
             continue;
         }
-        const int half_width = static_cast<int>(std::round(2.0F * flow.fraction));
-        const auto color = weight_map_color(flow.fraction);
-        for (int offset = -half_width; offset <= half_width; ++offset) {
-            projection.diagnostic_lines.push_back({
-                .start = flow.start,
-                .end = flow.end,
-                .color = color,
-                .alpha = 0.45F + 0.55F * flow.fraction,
-                .dash_direction = 1.0F,
-                .surface_tangent = flow.tangent,
-                .surface_radius = flow.host_radius,
-                .screen_offset_pixels = static_cast<float>(offset),
-            });
-        }
+        projection.diagnostic_paths.push_back({
+            .start = flow.start,
+            .end = flow.end,
+            .color = weight_map_color(flow.fraction),
+            .host_radius = flow.host_radius,
+        });
     }
     if (diagnostics.show_mature_terminals) {
         for (const auto& terminal : snapshot.mature_terminals) {

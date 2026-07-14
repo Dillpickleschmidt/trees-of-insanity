@@ -16,7 +16,8 @@ layout(push_constant) uniform PushConstants {
 layout(location = 0) in vec3 fragment_world_position;
 layout(location = 1) in vec4 fragment_color;
 layout(location = 2) in float fragment_path_distance;
-layout(location = 3) flat in float fragment_dash_direction;
+layout(location = 3) flat in float fragment_path_animation;
+layout(location = 4) flat in float fragment_surface_radius;
 
 layout(location = 0) out vec4 out_color;
 
@@ -27,13 +28,13 @@ void main()
     vec2 uv = (gl_FragCoord.xy - pc.viewport.xy) / pc.viewport.zw;
     float scene_distance = texture(scene_distance_to_camera, uv).r;
     float guide_distance = length(fragment_world_position - pc.eye.xyz);
-    float depth_bias = pc.depth.y;
+    float depth_bias = pc.depth.y + fragment_surface_radius * 4.0;
     if (scene_distance > 0.0 && scene_distance < 3.402823e38 && guide_distance > scene_distance + depth_bias) {
         discard;
     }
 
-    if (fragment_dash_direction != 0.0) {
-        float phase = fragment_path_distance * 24.0 - pc.depth.z * 2.0 * fragment_dash_direction;
+    if (fragment_path_animation != 0.0) {
+        float phase = fragment_path_distance * 24.0 - pc.depth.z * 2.0;
         if (fract(phase) > 0.55) {
             discard;
         }

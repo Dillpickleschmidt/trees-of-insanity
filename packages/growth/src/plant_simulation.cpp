@@ -460,7 +460,6 @@ Result<void> PlantSimulation::rebuild_snapshot(bool emit_flows)
             if (emit_flows && current && record.diagnostics_active) {
                 const float light_amount = node_light[module][definition.child_node];
                 const float vigor_amount = node_vigor[module][definition.child_node];
-                const Vec3 tangent = normalize(subtract(current->child_position, current->parent_position));
                 if (light_amount > kEpsilon && root_light_total > kEpsilon) {
                     next_flows.push_back({
                         .kind = FlowKind::AccumulatedLight,
@@ -468,7 +467,6 @@ Result<void> PlantSimulation::rebuild_snapshot(bool emit_flows)
                         .source_segment_id = source,
                         .start = current->child_position,
                         .end = current->parent_position,
-                        .tangent = scale(tangent, -1.0F),
                         .host_radius = diameter * 0.5F,
                         .amount = light_amount,
                         .root_total = root_light_total,
@@ -482,7 +480,6 @@ Result<void> PlantSimulation::rebuild_snapshot(bool emit_flows)
                         .source_segment_id = source,
                         .start = current->parent_position,
                         .end = current->child_position,
-                        .tangent = tangent,
                         .host_radius = diameter * 0.5F,
                         .amount = vigor_amount,
                         .root_total = root_vigor_total,
@@ -504,7 +501,7 @@ Result<void> PlantSimulation::rebuild_snapshot(bool emit_flows)
                     .tangent = normalize(subtract(segment.mature_child_position, segment.mature_parent_position)),
                     .host_radius = segment.target_diameter * 0.5F,
                     .vigor = node_vigor[module][terminal],
-                    .axis_role = terminal == *prototype.main_axis_terminal_node
+                    .axis_role = terminal == prototype.main_axis_terminal_node
                         ? TerminalAxisRole::Main
                         : TerminalAxisRole::Lateral,
                     .child_module_id = child
