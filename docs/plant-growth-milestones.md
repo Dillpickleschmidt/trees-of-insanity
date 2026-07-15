@@ -60,7 +60,6 @@ Replace private deterministic all-pairs sphere evaluation with an exact-result s
 ## Provisional calibration values
 
 - Minimum module vigor: `0.02`.
-- Orientation perturbation: `10°`.
 - Senescence decline rate: unresolved.
 
 Revisit only with whole-plant evidence; do not add per-workspace or legacy behavior.

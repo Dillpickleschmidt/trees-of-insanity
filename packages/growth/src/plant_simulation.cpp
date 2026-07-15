@@ -22,12 +22,25 @@ struct ModuleGeometry {
     Sphere sphere;
 };
 
+struct OrientedChild {
+    RigidTransform transform;
+    Sphere mature_sphere;
+};
+
+struct EulerAngles {
+    float x = 0.0F;
+    float y = 0.0F;
+    float z = 0.0F;
+};
+
 [[nodiscard]] GrowthError invalid_input(std::string message);
 [[nodiscard]] GrowthError invalid_prototype(std::string message);
 [[nodiscard]] float dot(Vec3 left, Vec3 right);
 [[nodiscard]] Vec3 cross(Vec3 left, Vec3 right);
 [[nodiscard]] Vec3 rotate_about_axis(Vec3 value, Vec3 axis, float angle);
 [[nodiscard]] RigidTransform rotated_transform(const RigidTransform& transform, Vec3 axis, float angle);
+[[nodiscard]] EulerAngles euler_angles(const RigidTransform& transform);
+[[nodiscard]] RigidTransform transform_for_euler(EulerAngles angles, Vec3 translation);
 [[nodiscard]] Sphere sphere_for_points(std::span<const Vec3> points);
 [[nodiscard]] float segment_diameter_maturity(const BranchModulePrototype& prototype,
                                               const BranchSegment& segment,
@@ -40,11 +53,11 @@ struct ModuleGeometry {
     const BranchModulePrototype& prototype,
     std::span<const std::optional<std::size_t>> child_module_by_node,
     std::span<const float> child_root_supplies);
-[[nodiscard]] RigidTransform orient_child(const RigidTransform& inherited, Vec3 translation,
-                                          Vec3 terminal_tangent,
-                                          const BranchModulePrototype& child_prototype,
-                                          const PlantTypeParameters& plant_type,
-                                          std::span<const Sphere> existing_spheres);
+[[nodiscard]] OrientedChild orient_child(const RigidTransform& inherited, Vec3 translation,
+                                         Vec3 terminal_tangent,
+                                         const BranchModulePrototype& child_prototype, Sphere mature_local_sphere,
+                                         const PlantTypeParameters& plant_type,
+                                         std::span<const Sphere> existing_spheres);
 
 } // namespace
 
@@ -70,6 +83,7 @@ Result<PlantSimulation> PlantSimulation::create(const BranchModulePrototypeLibra
     PlantSimulation simulation;
     simulation.plant_type_ = plant_type;
     simulation.prepared_prototypes_.reserve(prototype_library.prototypes.size());
+    simulation.prototype_orientation_data_.reserve(prototype_library.prototypes.size());
     for (const auto& prototype : prototype_library.prototypes) {
         if (std::ranges::any_of(simulation.prepared_prototypes_, [&](const auto& prepared) {
                 return prepared.id == prototype.id;
@@ -83,6 +97,35 @@ Result<PlantSimulation> PlantSimulation::create(const BranchModulePrototypeLibra
         if (prepared->child_segments_by_node[prepared->root_node].size() > 1) {
             return std::unexpected(invalid_prototype("prototype root forks require an allocation policy"));
         }
+        auto mature_geometry = build_geometry(*prepared, plant_type, {}, prepared->max_physiological_age);
+        if (!mature_geometry) {
+            return std::unexpected(mature_geometry.error());
+        }
+        const auto terminal_tangent = [&](std::size_t terminal_node) {
+            const auto incoming_segment = *prepared->incoming_segment_by_node[terminal_node];
+            const auto& segment = mature_geometry->mature_segments[incoming_segment];
+            return normalize(subtract(segment.child_position, segment.parent_position));
+        };
+        const Vec3 main_tangent = terminal_tangent(prepared->main_axis_terminal_node);
+        auto ordered_terminal_nodes = prepared->terminal_nodes;
+        std::ranges::sort(ordered_terminal_nodes, [&](std::size_t left, std::size_t right) {
+            if (left == right) {
+                return false;
+            }
+            if (left == prepared->main_axis_terminal_node) {
+                return true;
+            }
+            if (right == prepared->main_axis_terminal_node) {
+                return false;
+            }
+            const float left_alignment = dot(main_tangent, terminal_tangent(left));
+            const float right_alignment = dot(main_tangent, terminal_tangent(right));
+            return left_alignment != right_alignment ? left_alignment > right_alignment : left < right;
+        });
+        simulation.prototype_orientation_data_.push_back({
+            .mature_sphere = mature_geometry->sphere,
+            .ordered_terminal_nodes = std::move(ordered_terminal_nodes),
+        });
         simulation.prepared_prototypes_.push_back(std::move(*prepared));
     }
     for (std::size_t id = 0; id < 9; ++id) {
@@ -142,10 +185,10 @@ Result<void> PlantSimulation::step(float timestep)
         }
         const auto precommit_root = std::ranges::find(next.snapshot_modules_, 0, &PlantModuleSnapshot::id);
         const float precommit_root_vigor = precommit_root->vigor;
-        std::vector<Sphere> precommit_spheres;
-        precommit_spheres.reserve(next.snapshot_modules_.size());
+        std::vector<Sphere> orientation_spheres;
+        orientation_spheres.reserve(next.snapshot_modules_.size() + next.snapshot_terminals_.size());
         for (const auto& module : next.snapshot_modules_) {
-            precommit_spheres.push_back(module.collision_sphere);
+            orientation_spheres.push_back(module.collision_sphere);
         }
 
         std::vector<float> old_ages;
@@ -161,6 +204,7 @@ Result<void> PlantSimulation::step(float timestep)
 
         const auto root_record = std::ranges::find(next.module_records_, 0, &ModuleRecord::id);
         const std::size_t root_record_index = static_cast<std::size_t>(root_record - next.module_records_.begin());
+        const RigidTransform root_transform = root_record->transform;
         const bool root_crossed = old_ages[root_record_index] < root_record->fully_grown_age &&
                                   root_record->physiological_age >= root_record->fully_grown_age;
         if (root_crossed) {
@@ -185,8 +229,9 @@ Result<void> PlantSimulation::step(float timestep)
                 return std::unexpected(selected_mature_age.error());
             }
 
-            const auto& root_prototype = next.prepared_prototypes_[root_record->prototype_index];
-            for (const auto terminal_node : root_prototype.terminal_nodes) {
+            const auto& ordered_terminal_nodes =
+                next.prototype_orientation_data_[root_record->prototype_index].ordered_terminal_nodes;
+            for (const auto terminal_node : ordered_terminal_nodes) {
                 const auto terminal = std::ranges::find_if(next.snapshot_terminals_, [&](const auto& value) {
                     return value.module_id == 0 && value.terminal_node == terminal_node;
                 });
@@ -195,15 +240,16 @@ Result<void> PlantSimulation::step(float timestep)
                     continue;
                 }
                 const std::size_t child_id = next.next_module_id_++;
-                const RigidTransform child_transform = orient_child(
-                    root_record->transform, terminal->position, terminal->tangent,
-                    *selected, next.plant_type_, precommit_spheres);
+                const OrientedChild oriented = orient_child(
+                    root_transform, terminal->position, terminal->tangent, *selected,
+                    next.prototype_orientation_data_[selected_index].mature_sphere,
+                    next.plant_type_, orientation_spheres);
                 next.module_records_.push_back({
                     .id = child_id,
                     .prototype_index = selected_index,
                     .parent_module_index = root_record_index,
                     .parent_terminal_node = terminal_node,
-                    .transform = child_transform,
+                    .transform = oriented.transform,
                     .physiological_age = 0.0F,
                     .fully_grown_age = *selected_mature_age,
                     .diagnostics_active = false,
@@ -214,6 +260,7 @@ Result<void> PlantSimulation::step(float timestep)
                     .parent_terminal_node = terminal_node,
                     .prototype_id = selected_id,
                 });
+                orientation_spheres.push_back(oriented.mature_sphere);
             }
         }
 
@@ -579,6 +626,44 @@ RigidTransform rotated_transform(const RigidTransform& transform, Vec3 axis, flo
     return result;
 }
 
+EulerAngles euler_angles(const RigidTransform& transform)
+{
+    const float y = std::asin(std::clamp(-transform.x_axis.z, -1.0F, 1.0F));
+    const float y_cosine = std::cos(y);
+    if (std::abs(y_cosine) > kEpsilon) {
+        return {
+            .x = std::atan2(transform.y_axis.z, transform.z_axis.z),
+            .y = y,
+            .z = std::atan2(transform.x_axis.y, transform.x_axis.x),
+        };
+    }
+    return {
+        .x = 0.0F,
+        .y = y,
+        .z = std::atan2(-transform.y_axis.x, transform.y_axis.y),
+    };
+}
+
+RigidTransform transform_for_euler(EulerAngles angles, Vec3 translation)
+{
+    const float x_sine = std::sin(angles.x);
+    const float x_cosine = std::cos(angles.x);
+    const float y_sine = std::sin(angles.y);
+    const float y_cosine = std::cos(angles.y);
+    const float z_sine = std::sin(angles.z);
+    const float z_cosine = std::cos(angles.z);
+    return {
+        .x_axis = {z_cosine * y_cosine, z_sine * y_cosine, -y_sine},
+        .y_axis = {z_cosine * y_sine * x_sine - z_sine * x_cosine,
+                   z_sine * y_sine * x_sine + z_cosine * x_cosine,
+                   y_cosine * x_sine},
+        .z_axis = {z_cosine * y_sine * x_cosine + z_sine * x_sine,
+                   z_sine * y_sine * x_cosine - z_cosine * x_sine,
+                   y_cosine * x_cosine},
+        .translation = translation,
+    };
+}
+
 Sphere sphere_for_points(std::span<const Vec3> points)
 {
     Vec3 center;
@@ -673,10 +758,10 @@ std::vector<float> dynamic_pipe_factors(
     return factors;
 }
 
-RigidTransform orient_child(const RigidTransform& inherited, Vec3 translation,
-                            Vec3 terminal_tangent,
-                            const BranchModulePrototype& child_prototype,
-                            const PlantTypeParameters& plant_type, std::span<const Sphere> existing_spheres)
+OrientedChild orient_child(const RigidTransform& inherited, Vec3 translation,
+                           Vec3 terminal_tangent, const BranchModulePrototype& child_prototype,
+                           Sphere mature_local_sphere, const PlantTypeParameters& plant_type,
+                           std::span<const Sphere> existing_spheres)
 {
     const auto root_segment = child_prototype.child_segments_by_node[child_prototype.root_node].front();
     const Vec3 inherited_root_direction = normalize(
@@ -699,12 +784,13 @@ RigidTransform orient_child(const RigidTransform& inherited, Vec3 translation,
                                      std::acos(alignment));
     }
 
+    const auto sphere_for_transform = [&](RigidTransform transform) {
+        return Sphere{.center = transform_point(transform, mature_local_sphere.center),
+                      .radius = mature_local_sphere.radius};
+    };
     auto scored = [&](RigidTransform transform) {
         transform.translation = translation;
-        const auto geometry = build_geometry(child_prototype, plant_type, transform,
-                                             child_prototype.max_physiological_age);
-        const Sphere sphere = geometry->sphere;
-        const float collisions = collision_measure(sphere, existing_spheres);
+        const float collisions = collision_measure(sphere_for_transform(transform), existing_spheres);
         const float tropism = orientation_tropism_cost(plant_type.tropism_angle, transform.z_axis,
                                                        {0.0F, 0.0F, 1.0F});
         return orientation_distribution_cost(collisions, 1.0F, tropism, plant_type.tropism_weight);
@@ -712,27 +798,30 @@ RigidTransform orient_child(const RigidTransform& inherited, Vec3 translation,
 
     RigidTransform best = baseline;
     best.translation = translation;
+    EulerAngles best_angles = euler_angles(best);
     float best_cost = scored(best);
     for (int iteration = 0; iteration < kOrientationIterations; ++iteration) {
+        // Paper: rho perturbations, interpreting DirectX coordinates as Y-up and plant space as Z-up.
         const std::array candidates{
-            rotated_transform(best, best.x_axis, kOrientationStep),
-            rotated_transform(best, best.x_axis, -kOrientationStep),
-            rotated_transform(best, best.z_axis, kOrientationStep),
-            rotated_transform(best, best.z_axis, -kOrientationStep),
+            EulerAngles{best_angles.x + kOrientationStep, best_angles.y, best_angles.z},
+            EulerAngles{best_angles.x - kOrientationStep, best_angles.y, best_angles.z},
+            EulerAngles{best_angles.x, best_angles.y + kOrientationStep, best_angles.z},
+            EulerAngles{best_angles.x, best_angles.y - kOrientationStep, best_angles.z},
         };
         bool improved = false;
-        for (auto candidate : candidates) {
-            candidate.translation = translation;
+        for (const auto candidate_angles : candidates) {
+            const RigidTransform candidate = transform_for_euler(candidate_angles, translation);
             const float cost = scored(candidate);
             if (cost + kEpsilon < best_cost) {
                 best = candidate;
+                best_angles = candidate_angles;
                 best_cost = cost;
                 improved = true;
             }
         }
         if (!improved) break;
     }
-    return best;
+    return {.transform = best, .mature_sphere = sphere_for_transform(best)};
 }
 
 } // namespace

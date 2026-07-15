@@ -262,6 +262,11 @@ public:
     [[nodiscard]] PlantSnapshot snapshot() const;
 
 private:
+    struct PrototypeOrientationData {
+        Sphere mature_sphere;
+        std::vector<std::size_t> ordered_terminal_nodes;
+    };
+
     struct ModuleRecord {
         std::size_t id = 0;
         std::size_t prototype_index = 0;
@@ -279,6 +284,7 @@ private:
 
     PlantTypeParameters plant_type_;
     std::vector<BranchModulePrototype> prepared_prototypes_;
+    std::vector<PrototypeOrientationData> prototype_orientation_data_;
     std::vector<ModuleRecord> module_records_;
     std::size_t next_module_id_ = 1;
     float plant_age_ = 0.0F;

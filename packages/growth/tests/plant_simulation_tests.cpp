@@ -39,6 +39,28 @@ toi::growth::BranchModulePrototypeLibrary make_library()
     return library;
 }
 
+toi::growth::BranchModulePrototypeLibrary make_colliding_sibling_library()
+{
+    auto library = make_library();
+    auto& root = library.prototypes[7];
+    root.nodes[3].position = root.nodes[2].position;
+    root.segments[2].direction = root.segments[1].direction;
+    return library;
+}
+
+toi::growth::BranchModulePrototypeLibrary make_unordered_terminal_library()
+{
+    auto library = make_library();
+    auto& root = library.prototypes[7];
+    root.nodes.push_back({{5.5F, 0.8660254F, 3.0F}, 0.0F});
+    root.segments.push_back({1, 4, {0.5F, 0.8660254F, 0.0F}, 1.0F, 1.0F, 1.0F, 1.0F});
+    root.terminal_nodes = {3, 4, 2};
+    root.child_segments_by_node[1].push_back(3);
+    root.child_segments_by_node.push_back({});
+    root.incoming_segment_by_node.push_back(3);
+    return library;
+}
+
 toi::growth::PlantTypeParameters make_plant_type()
 {
     auto plant_type = *toi::growth::plant_type_preset_by_key('a');
@@ -152,6 +174,37 @@ TEST_CASE("maturity crossing atomically attaches every eligible root terminal")
     CHECK(module_by_id(activated, 1).direct_light_exposure > 0.0F);
     CHECK(module_by_id(activated, 1).transform.z_axis.x == Catch::Approx(child_transform.z_axis.x));
     CHECK_FALSE(activated.flow_paths.empty());
+}
+
+TEST_CASE("same-step siblings avoid each other's mature bounds")
+{
+    using namespace toi::growth;
+    auto plant_type = make_plant_type();
+    plant_type.tropism_weight = 0.0F;
+    auto simulation = PlantSimulation::create(make_colliding_sibling_library(), plant_type, 7);
+    REQUIRE(simulation);
+    REQUIRE(simulation->step(10'000.0F));
+    const auto snapshot = simulation->snapshot();
+    REQUIRE(snapshot.modules.size() == 3);
+    const auto& first = module_by_id(snapshot, 1);
+    const auto& second = module_by_id(snapshot, 2);
+    const float axis_alignment = first.transform.z_axis.x * second.transform.z_axis.x +
+        first.transform.z_axis.y * second.transform.z_axis.y +
+        first.transform.z_axis.z * second.transform.z_axis.z;
+    CHECK(axis_alignment < 0.99F);
+}
+
+TEST_CASE("same-step siblings orient from main terminal to least aligned lateral")
+{
+    using namespace toi::growth;
+    auto simulation = PlantSimulation::create(make_unordered_terminal_library(), make_plant_type(), 7);
+    REQUIRE(simulation);
+    REQUIRE(simulation->step(10'000.0F));
+    const auto snapshot = simulation->snapshot();
+    REQUIRE(snapshot.attachment_events.size() == 3);
+    CHECK(snapshot.attachment_events[0].parent_terminal_node == 2);
+    CHECK(snapshot.attachment_events[1].parent_terminal_node == 4);
+    CHECK(snapshot.attachment_events[2].parent_terminal_node == 3);
 }
 
 TEST_CASE("continuous pipe crosses parent and child module attachment")
