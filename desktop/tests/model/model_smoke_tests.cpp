@@ -373,6 +373,43 @@ TEST_CASE("Plant maturity crossing exposes one attached generation")
          .show_vigor_flow = true,
          .show_mature_terminals = true});
     CHECK(projection.diagnostic_labels.size() == module_count);
+    REQUIRE_FALSE(projection.diagnostic_surface_vertices.empty());
+    CHECK(projection.diagnostic_surface_vertices.size() % 6 == 0);
+    CHECK(std::ranges::any_of(projection.diagnostic_surface_vertices, [](const auto& vertex) {
+        return vertex.animation_direction < 0.0F;
+    }));
+    CHECK(std::ranges::any_of(projection.diagnostic_surface_vertices, [](const auto& vertex) {
+        return vertex.animation_direction > 0.0F;
+    }));
+    const auto light_flow_count = static_cast<std::size_t>(std::ranges::count(
+        flowing->snapshot.flow_diagnostics, toi::growth::FlowKind::AccumulatedLight,
+        &toi::growth::PlantFlowDiagnostic::kind));
+    const auto vigor_flow_count = static_cast<std::size_t>(std::ranges::count(
+        flowing->snapshot.flow_diagnostics, toi::growth::FlowKind::Vigor,
+        &toi::growth::PlantFlowDiagnostic::kind));
+    CHECK(projection.diagnostic_surface_vertices.size() == (light_flow_count + vigor_flow_count) * 60);
+    for (const auto& vertex : projection.diagnostic_surface_vertices) {
+        CHECK(std::ranges::any_of(projection.mesh_attributes, [&](const auto& mesh) {
+            return std::ranges::any_of(mesh.points, [&](const auto& point) {
+                return point.x == vertex.position.x && point.y == vertex.position.y && point.z == vertex.position.z;
+            });
+        }));
+    }
+    const auto light_only_projection = toi::render::make_plant_preview_stage_projection(
+        flowing->snapshot, flowing->mature_root_snapshot, {.show_accumulated_light_flow = true});
+    CHECK(light_only_projection.diagnostic_surface_vertices.size() == light_flow_count * 60);
+    CHECK(std::ranges::all_of(light_only_projection.diagnostic_surface_vertices, [](const auto& vertex) {
+        return vertex.animation_direction < 0.0F;
+    }));
+    const auto vigor_only_projection = toi::render::make_plant_preview_stage_projection(
+        flowing->snapshot, flowing->mature_root_snapshot, {.show_vigor_flow = true});
+    CHECK(vigor_only_projection.diagnostic_surface_vertices.size() == vigor_flow_count * 60);
+    CHECK(std::ranges::all_of(vigor_only_projection.diagnostic_surface_vertices, [](const auto& vertex) {
+        return vertex.animation_direction > 0.0F;
+    }));
+    const auto hidden_flow_projection = toi::render::make_plant_preview_stage_projection(
+        flowing->snapshot, flowing->mature_root_snapshot);
+    CHECK(hidden_flow_projection.diagnostic_surface_vertices.empty());
     std::vector<bool> continuation_targets(flowing->snapshot.segments.size(), false);
     for (const auto& segment : flowing->snapshot.segments) {
         if (segment.main_continuation_segment) continuation_targets[*segment.main_continuation_segment] = true;

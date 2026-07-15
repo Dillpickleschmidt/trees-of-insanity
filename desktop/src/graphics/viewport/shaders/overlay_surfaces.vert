@@ -3,6 +3,8 @@
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_color;
 layout(location = 2) in float in_alpha;
+layout(location = 3) in float in_distance_from_root;
+layout(location = 4) in float in_animation_direction;
 
 layout(push_constant) uniform PushConstants {
     vec4 eye;
@@ -10,12 +12,14 @@ layout(push_constant) uniform PushConstants {
     vec4 up;
     vec4 negative_forward;
     vec4 projection; // focal_length, horizontal_aperture, vertical_aperture, near_clip
-    vec4 depth;      // far_clip, depth_bias, animation_time, unused
+    vec4 depth;      // far_clip, guide_depth_bias, animation_time, surface_depth_tolerance
     vec4 viewport;   // x, y, width, height of the contained rendered image
 } pc;
 
 layout(location = 0) out vec3 fragment_world_position;
 layout(location = 1) out vec4 fragment_color;
+layout(location = 2) out float fragment_distance_from_root;
+layout(location = 3) flat out float fragment_animation_direction;
 
 void main()
 {
@@ -38,4 +42,6 @@ void main()
     gl_Position = vec4(clip_x, clip_y, clip_z, forward_distance);
     fragment_world_position = in_position;
     fragment_color = vec4(in_color, in_alpha);
+    fragment_distance_from_root = in_distance_from_root;
+    fragment_animation_direction = in_animation_direction;
 }

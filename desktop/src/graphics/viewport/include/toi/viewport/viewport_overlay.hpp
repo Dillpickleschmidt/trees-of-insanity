@@ -5,6 +5,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 
@@ -29,11 +30,12 @@ struct OverlayLine {
     float alpha = 1.0F;
 };
 
-struct OverlayPath {
-    float start[3]{};
-    float end[3]{};
+struct OverlaySurfaceVertex {
+    float position[3]{};
     float color[3]{};
-    float host_radius = 0.0F;
+    float alpha = 1.0F;
+    float distance_from_root = 0.0F;
+    float animation_direction = 0.0F;
 };
 
 struct OverlaySphere {
@@ -59,14 +61,17 @@ public:
     [[nodiscard]] Result<void> set_scene_distance(std::uint32_t slot, VkImageView distance_view);
     [[nodiscard]] Result<void> record(VkCommandBuffer command_buffer, VkExtent2D extent, VkRect2D content_rect,
                                       const OverlayCamera& camera, std::span<const OverlayLine> lines,
-                                      std::span<const OverlayPath> paths, std::span<const OverlaySphere> spheres,
-                                      float depth_bias, float animation_time, std::uint32_t distance_slot);
+                                      std::span<const OverlaySurfaceVertex> surface_vertices,
+                                      std::span<const OverlaySphere> spheres, float depth_bias,
+                                      float animation_time, std::uint32_t distance_slot);
     void reset();
 
 private:
+    [[nodiscard]] Result<void> ensure_surface_capacity(std::uint32_t slot, std::size_t vertex_count);
     void reset_target();
     void move_from(ViewportOverlay& other) noexcept;
 
+    VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
     VkRenderPass render_pass_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptor_set_layout_ = VK_NULL_HANDLE;
@@ -75,11 +80,15 @@ private:
     VkSampler sampler_ = VK_NULL_HANDLE;
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline line_pipeline_ = VK_NULL_HANDLE;
-    VkPipeline path_pipeline_ = VK_NULL_HANDLE;
+    VkPipeline surface_pipeline_ = VK_NULL_HANDLE;
     VkPipeline sphere_pipeline_ = VK_NULL_HANDLE;
     VkBuffer vertex_buffer_ = VK_NULL_HANDLE;
     VkDeviceMemory vertex_memory_ = VK_NULL_HANDLE;
     void* vertex_mapped_ = nullptr;
+    VkBuffer surface_buffers_[kDistanceSlotCount]{};
+    VkDeviceMemory surface_memories_[kDistanceSlotCount]{};
+    void* surface_mapped_[kDistanceSlotCount]{};
+    std::size_t surface_capacities_[kDistanceSlotCount]{};
     VkImageView target_view_ = VK_NULL_HANDLE;
     VkFramebuffer framebuffer_ = VK_NULL_HANDLE;
 };

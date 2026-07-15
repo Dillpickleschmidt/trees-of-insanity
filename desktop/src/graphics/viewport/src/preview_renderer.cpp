@@ -68,20 +68,21 @@ std::vector<OverlayLine> build_overlay_lines(const render::GrowthPreviewCamera& 
     return lines;
 }
 
-std::vector<OverlayPath> build_overlay_paths(
-    std::span<const render::DiagnosticOverlayPath> diagnostics)
+std::vector<OverlaySurfaceVertex> build_overlay_surface(
+    std::span<const render::DiagnosticOverlaySurfaceVertex> diagnostics)
 {
-    std::vector<OverlayPath> paths;
-    paths.reserve(diagnostics.size());
-    for (const auto& path : diagnostics) {
-        paths.push_back({
-            .start = {path.start.x, path.start.y, path.start.z},
-            .end = {path.end.x, path.end.y, path.end.z},
-            .color = {path.color.x, path.color.y, path.color.z},
-            .host_radius = path.host_radius,
+    std::vector<OverlaySurfaceVertex> vertices;
+    vertices.reserve(diagnostics.size());
+    for (const auto& vertex : diagnostics) {
+        vertices.push_back({
+            .position = {vertex.position.x, vertex.position.y, vertex.position.z},
+            .color = {vertex.color.x, vertex.color.y, vertex.color.z},
+            .alpha = vertex.alpha,
+            .distance_from_root = vertex.distance_from_root,
+            .animation_direction = vertex.animation_direction,
         });
     }
-    return paths;
+    return vertices;
 }
 
 std::vector<OverlaySphere> build_overlay_spheres(
@@ -195,7 +196,7 @@ struct PreviewRenderer::Slot {
     bool ready = false;
     bool has_distance = false;
     std::vector<OverlayLine> overlay_lines;
-    std::vector<OverlayPath> overlay_paths;
+    std::vector<OverlaySurfaceVertex> overlay_surface_vertices;
     std::vector<OverlaySphere> overlay_spheres;
     std::vector<ProjectedPlantDiagnosticLabel> projected_labels;
 };
@@ -417,7 +418,8 @@ bool PreviewRenderer::prepare_frame_on_render_thread()
                 slot.command_buffer,
                 {static_cast<std::uint32_t>(width_), static_cast<std::uint32_t>(height_)},
                 {{0, 0}, {static_cast<std::uint32_t>(width_), static_cast<std::uint32_t>(height_)}},
-                to_overlay_camera(slot.camera), slot.overlay_lines, slot.overlay_paths, slot.overlay_spheres,
+                to_overlay_camera(slot.camera), slot.overlay_lines, slot.overlay_surface_vertices,
+                slot.overlay_spheres,
                 overlay_depth_bias(slot.camera),
                 std::chrono::duration<float>(std::chrono::steady_clock::now().time_since_epoch()).count(),
                 static_cast<std::uint32_t>(slot_index)); !recorded) {
@@ -464,7 +466,7 @@ bool PreviewRenderer::prepare_frame_on_render_thread()
         status_.frame_generation = slot.timeline_value;
         labels_callback = diagnostic_labels_callback_;
         projected_labels = slot.projected_labels;
-        animate_overlay = !slot.overlay_paths.empty();
+        animate_overlay = !slot.overlay_surface_vertices.empty();
         if (animate_overlay) {
             dirty_ = true;
         }
@@ -741,8 +743,8 @@ void PreviewRenderer::render_loop()
             }
             camera_dirty_ = false;
             draw_guides = guides_visible_ && world_origin_axes_visible_;
-            draw_overlay = draw_guides || !stage.diagnostic_lines.empty() || !stage.diagnostic_paths.empty() ||
-                !stage.diagnostic_spheres.empty();
+            draw_overlay = draw_guides || !stage.diagnostic_lines.empty() ||
+                !stage.diagnostic_surface_vertices.empty() || !stage.diagnostic_spheres.empty();
             dirty_ = false;
             slots_[slot_index].rendering = true;
             status_.phase = "rendering";
@@ -797,7 +799,7 @@ void PreviewRenderer::render_loop()
         }
         slot.camera = camera.value_or(stage.camera);
         slot.overlay_lines = build_overlay_lines(slot.camera, stage.diagnostic_lines, draw_guides);
-        slot.overlay_paths = build_overlay_paths(stage.diagnostic_paths);
+        slot.overlay_surface_vertices = build_overlay_surface(stage.diagnostic_surface_vertices);
         slot.overlay_spheres = build_overlay_spheres(slot.camera, stage.diagnostic_spheres);
         slot.projected_labels = project_diagnostic_labels(stage.diagnostic_labels, slot.camera);
         const std::uint64_t timeline_value = ++next_timeline_value_;

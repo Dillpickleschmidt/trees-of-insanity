@@ -1,9 +1,11 @@
 #include "toi/viewport/viewport_overlay.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstring>
 #include <cmath>
+#include <limits>
 #include <sstream>
 #include <string_view>
 #include <utility>
@@ -13,6 +15,10 @@ extern unsigned char overlay_lines_vert_spv[];
 extern unsigned int overlay_lines_vert_spv_len;
 extern unsigned char overlay_lines_frag_spv[];
 extern unsigned int overlay_lines_frag_spv_len;
+extern unsigned char overlay_surfaces_vert_spv[];
+extern unsigned int overlay_surfaces_vert_spv_len;
+extern unsigned char overlay_surfaces_frag_spv[];
+extern unsigned int overlay_surfaces_frag_spv_len;
 extern unsigned char overlay_spheres_vert_spv[];
 extern unsigned int overlay_spheres_vert_spv_len;
 extern unsigned char overlay_spheres_frag_spv[];
@@ -22,19 +28,13 @@ namespace toi::viewport {
 namespace {
 
 constexpr std::uint32_t kMaxLines = 4096;
-constexpr std::uint32_t kMaxPaths = 4096;
 constexpr std::uint32_t kMaxSpheres = 4096;
-constexpr std::uint32_t kVertexCapacity = kMaxLines * 2 + kMaxPaths * 6;
-constexpr float kPathAlpha = 0.9F;
+constexpr std::uint32_t kVertexCapacity = kMaxLines * 2;
 
 struct OverlayVertex {
     float position[3];
     float color[3];
     float alpha;
-    float path_distance;
-    float surface_tangent[3];
-    float surface_radius;
-    float ribbon_side;
 };
 
 struct OverlaySphereInstance {
@@ -108,6 +108,7 @@ struct OverlayPushConstants {
 Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat viewport_format)
 {
     ViewportOverlay overlay;
+    overlay.physical_device_ = context.physical_device();
     overlay.device_ = context.device();
 
     // Render pass: load the blitted frame, draw lines, present.
@@ -221,10 +222,27 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
         overlay.reset();
         return std::unexpected(line_frag.error());
     }
+    auto surface_vert = create_shader(overlay.device_, overlay_surfaces_vert_spv, overlay_surfaces_vert_spv_len);
+    if (!surface_vert) {
+        vkDestroyShaderModule(overlay.device_, *line_vert, nullptr);
+        vkDestroyShaderModule(overlay.device_, *line_frag, nullptr);
+        overlay.reset();
+        return std::unexpected(surface_vert.error());
+    }
+    auto surface_frag = create_shader(overlay.device_, overlay_surfaces_frag_spv, overlay_surfaces_frag_spv_len);
+    if (!surface_frag) {
+        vkDestroyShaderModule(overlay.device_, *line_vert, nullptr);
+        vkDestroyShaderModule(overlay.device_, *line_frag, nullptr);
+        vkDestroyShaderModule(overlay.device_, *surface_vert, nullptr);
+        overlay.reset();
+        return std::unexpected(surface_frag.error());
+    }
     auto sphere_vert = create_shader(overlay.device_, overlay_spheres_vert_spv, overlay_spheres_vert_spv_len);
     if (!sphere_vert) {
         vkDestroyShaderModule(overlay.device_, *line_vert, nullptr);
         vkDestroyShaderModule(overlay.device_, *line_frag, nullptr);
+        vkDestroyShaderModule(overlay.device_, *surface_vert, nullptr);
+        vkDestroyShaderModule(overlay.device_, *surface_frag, nullptr);
         overlay.reset();
         return std::unexpected(sphere_vert.error());
     }
@@ -232,6 +250,8 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     if (!sphere_frag) {
         vkDestroyShaderModule(overlay.device_, *line_vert, nullptr);
         vkDestroyShaderModule(overlay.device_, *line_frag, nullptr);
+        vkDestroyShaderModule(overlay.device_, *surface_vert, nullptr);
+        vkDestroyShaderModule(overlay.device_, *surface_frag, nullptr);
         vkDestroyShaderModule(overlay.device_, *sphere_vert, nullptr);
         overlay.reset();
         return std::unexpected(sphere_frag.error());
@@ -239,6 +259,8 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     const auto destroy_shaders = [&] {
         vkDestroyShaderModule(overlay.device_, *line_vert, nullptr);
         vkDestroyShaderModule(overlay.device_, *line_frag, nullptr);
+        vkDestroyShaderModule(overlay.device_, *surface_vert, nullptr);
+        vkDestroyShaderModule(overlay.device_, *surface_frag, nullptr);
         vkDestroyShaderModule(overlay.device_, *sphere_vert, nullptr);
         vkDestroyShaderModule(overlay.device_, *sphere_frag, nullptr);
     };
@@ -271,14 +293,10 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     stages[1].pName = "main";
 
     VkVertexInputBindingDescription binding{0, sizeof(OverlayVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-    std::array<VkVertexInputAttributeDescription, 7> attributes{{
+    std::array<VkVertexInputAttributeDescription, 3> attributes{{
         {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(OverlayVertex, position)},
         {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(OverlayVertex, color)},
         {2, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlayVertex, alpha)},
-        {3, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlayVertex, path_distance)},
-        {4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(OverlayVertex, surface_tangent)},
-        {5, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlayVertex, surface_radius)},
-        {6, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlayVertex, ribbon_side)},
     }};
     VkPipelineVertexInputStateCreateInfo vertex_input{};
     vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -353,16 +371,32 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
         return std::unexpected(line_pipeline_result.error());
     }
     input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    auto path_pipeline_result = require_vk(
+    rasterization.cullMode = VK_CULL_MODE_BACK_BIT;
+    stages[0].module = *surface_vert;
+    stages[1].module = *surface_frag;
+    VkVertexInputBindingDescription surface_binding{
+        0, sizeof(OverlaySurfaceVertex), VK_VERTEX_INPUT_RATE_VERTEX};
+    std::array<VkVertexInputAttributeDescription, 5> surface_attributes{{
+        {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(OverlaySurfaceVertex, position)},
+        {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(OverlaySurfaceVertex, color)},
+        {2, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlaySurfaceVertex, alpha)},
+        {3, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlaySurfaceVertex, distance_from_root)},
+        {4, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlaySurfaceVertex, animation_direction)},
+    }};
+    vertex_input.pVertexBindingDescriptions = &surface_binding;
+    vertex_input.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(surface_attributes.size());
+    vertex_input.pVertexAttributeDescriptions = surface_attributes.data();
+    auto surface_pipeline_result = require_vk(
         vkCreateGraphicsPipelines(overlay.device_, VK_NULL_HANDLE, 1, &pipeline_info,
-                                  nullptr, &overlay.path_pipeline_),
-        "vkCreateGraphicsPipelines(path overlay)");
-    if (!path_pipeline_result) {
+                                  nullptr, &overlay.surface_pipeline_),
+        "vkCreateGraphicsPipelines(surface overlay)");
+    if (!surface_pipeline_result) {
         destroy_shaders();
         overlay.reset();
-        return std::unexpected(path_pipeline_result.error());
+        return std::unexpected(surface_pipeline_result.error());
     }
 
+    rasterization.cullMode = VK_CULL_MODE_NONE;
     stages[0].module = *sphere_vert;
     stages[1].module = *sphere_frag;
     VkVertexInputBindingDescription sphere_binding{
@@ -388,7 +422,7 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
         return std::unexpected(sphere_pipeline_result.error());
     }
 
-    // Host-visible data for slot-local line/path vertices and sphere instances.
+    // Host-visible data for slot-local line vertices and sphere instances.
     VkBufferCreateInfo buffer_info{};
     buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     buffer_info.size = kBufferBytes;
@@ -475,10 +509,82 @@ Result<void> ViewportOverlay::set_scene_distance(std::uint32_t distance_slot, Vk
     return {};
 }
 
+Result<void> ViewportOverlay::ensure_surface_capacity(std::uint32_t slot, std::size_t vertex_count)
+{
+    if (vertex_count <= surface_capacities_[slot]) return {};
+    if (vertex_count > std::numeric_limits<VkDeviceSize>::max() / sizeof(OverlaySurfaceVertex)) {
+        return std::unexpected(make_error("overlay surface vertex capacity exhausted"));
+    }
+
+    std::size_t capacity = std::max<std::size_t>(1024, surface_capacities_[slot]);
+    while (capacity < vertex_count) {
+        if (capacity > std::numeric_limits<std::size_t>::max() / 2) {
+            capacity = vertex_count;
+            break;
+        }
+        capacity *= 2;
+    }
+
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    const VkDeviceSize byte_size = sizeof(OverlaySurfaceVertex) * capacity;
+    VkBufferCreateInfo buffer_info{};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = byte_size;
+    buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (auto result = require_vk(vkCreateBuffer(device_, &buffer_info, nullptr, &buffer),
+                                 "vkCreateBuffer(surface overlay)"); !result) {
+        return result;
+    }
+
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(device_, buffer, &requirements);
+    auto memory_type = find_memory_type(physical_device_, requirements.memoryTypeBits,
+                                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (!memory_type) {
+        vkDestroyBuffer(device_, buffer, nullptr);
+        return std::unexpected(memory_type.error());
+    }
+    VkMemoryAllocateInfo allocate_info{};
+    allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocate_info.allocationSize = requirements.size;
+    allocate_info.memoryTypeIndex = *memory_type;
+    if (auto result = require_vk(vkAllocateMemory(device_, &allocate_info, nullptr, &memory),
+                                 "vkAllocateMemory(surface overlay)"); !result) {
+        vkDestroyBuffer(device_, buffer, nullptr);
+        return result;
+    }
+    if (auto result = require_vk(vkBindBufferMemory(device_, buffer, memory, 0),
+                                 "vkBindBufferMemory(surface overlay)"); !result) {
+        vkFreeMemory(device_, memory, nullptr);
+        vkDestroyBuffer(device_, buffer, nullptr);
+        return result;
+    }
+    if (auto result = require_vk(vkMapMemory(device_, memory, 0, byte_size, 0, &mapped),
+                                 "vkMapMemory(surface overlay)"); !result) {
+        vkFreeMemory(device_, memory, nullptr);
+        vkDestroyBuffer(device_, buffer, nullptr);
+        return result;
+    }
+
+    if (surface_mapped_[slot] != nullptr) vkUnmapMemory(device_, surface_memories_[slot]);
+    if (surface_buffers_[slot] != VK_NULL_HANDLE) vkDestroyBuffer(device_, surface_buffers_[slot], nullptr);
+    if (surface_memories_[slot] != VK_NULL_HANDLE) vkFreeMemory(device_, surface_memories_[slot], nullptr);
+    surface_buffers_[slot] = buffer;
+    surface_memories_[slot] = memory;
+    surface_mapped_[slot] = mapped;
+    surface_capacities_[slot] = capacity;
+    return {};
+}
+
 Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D extent, VkRect2D content_rect,
                                      const OverlayCamera& camera, std::span<const OverlayLine> lines,
-                                     std::span<const OverlayPath> paths, std::span<const OverlaySphere> spheres,
-                                     float depth_bias, float animation_time, std::uint32_t distance_slot)
+                                     std::span<const OverlaySurfaceVertex> surface_vertices,
+                                     std::span<const OverlaySphere> spheres, float depth_bias,
+                                     float animation_time, std::uint32_t distance_slot)
 {
     if (distance_slot >= kDistanceSlotCount) {
         return std::unexpected(make_error("overlay distance slot out of range"));
@@ -490,57 +596,34 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D 
     if (lines.size() > kMaxLines) {
         return std::unexpected(make_error("overlay line capacity exceeded"));
     }
-    if (paths.size() > kMaxPaths) {
-        return std::unexpected(make_error("overlay path capacity exceeded"));
+    if (surface_vertices.size() > std::numeric_limits<std::uint32_t>::max()) {
+        return std::unexpected(make_error("overlay surface vertex capacity exhausted"));
     }
     if (spheres.size() > kMaxSpheres) {
         return std::unexpected(make_error("overlay sphere capacity exceeded"));
     }
+    if (auto capacity = ensure_surface_capacity(distance_slot, surface_vertices.size()); !capacity) {
+        return capacity;
+    }
     const std::uint32_t line_count = static_cast<std::uint32_t>(lines.size());
-    const std::uint32_t path_count = static_cast<std::uint32_t>(paths.size());
+    const std::uint32_t surface_vertex_count = static_cast<std::uint32_t>(surface_vertices.size());
     const std::uint32_t sphere_count = static_cast<std::uint32_t>(spheres.size());
     auto* slot_data = static_cast<std::byte*>(vertex_mapped_) + kSlotBytes * distance_slot;
     auto* vertices = reinterpret_cast<OverlayVertex*>(slot_data);
-    const float no_tangent[3]{};
-    const auto write_vertex = [&](std::uint32_t vertex_index, const float position[3],
-                                  const float color[3], float alpha, float path_distance,
-                                  const float surface_tangent[3], float surface_radius,
-                                  float ribbon_side) {
-        auto& vertex = vertices[vertex_index];
-        std::memcpy(vertex.position, position, sizeof(vertex.position));
-        std::memcpy(vertex.color, color, sizeof(vertex.color));
-        vertex.alpha = alpha;
-        vertex.path_distance = path_distance;
-        std::memcpy(vertex.surface_tangent, surface_tangent, sizeof(vertex.surface_tangent));
-        vertex.surface_radius = surface_radius;
-        vertex.ribbon_side = ribbon_side;
-    };
     for (std::uint32_t index = 0; index < line_count; ++index) {
         const auto& line = lines[index];
-        write_vertex(index * 2, line.start, line.color, line.alpha, 0.0F,
-                     no_tangent, 0.0F, 0.0F);
-        write_vertex(index * 2 + 1, line.end, line.color, line.alpha, 0.0F,
-                     no_tangent, 0.0F, 0.0F);
+        auto& start = vertices[index * 2];
+        std::memcpy(start.position, line.start, sizeof(start.position));
+        std::memcpy(start.color, line.color, sizeof(start.color));
+        start.alpha = line.alpha;
+        auto& end = vertices[index * 2 + 1];
+        std::memcpy(end.position, line.end, sizeof(end.position));
+        std::memcpy(end.color, line.color, sizeof(end.color));
+        end.alpha = line.alpha;
     }
-    constexpr std::array<std::pair<bool, float>, 6> ribbon_vertices{{
-        {false, -1.0F}, {true, -1.0F}, {true, 1.0F},
-        {false, -1.0F}, {true, 1.0F}, {false, 1.0F},
-    }};
-    const std::uint32_t path_vertex_offset = line_count * 2;
-    for (std::uint32_t index = 0; index < path_count; ++index) {
-        const auto& path = paths[index];
-        const float dx = path.end[0] - path.start[0];
-        const float dy = path.end[1] - path.start[1];
-        const float dz = path.end[2] - path.start[2];
-        const float path_length = std::sqrt(dx * dx + dy * dy + dz * dz);
-        const float surface_tangent[3]{dx / path_length, dy / path_length, dz / path_length};
-        for (std::uint32_t corner = 0; corner < ribbon_vertices.size(); ++corner) {
-            const auto [at_end, side] = ribbon_vertices[corner];
-            write_vertex(path_vertex_offset + index * 6 + corner,
-                         at_end ? path.end : path.start, path.color, kPathAlpha,
-                         at_end ? path_length : 0.0F, surface_tangent,
-                         path.host_radius, side);
-        }
+    if (surface_vertex_count > 0) {
+        std::memcpy(surface_mapped_[distance_slot], surface_vertices.data(),
+                    sizeof(OverlaySurfaceVertex) * surface_vertices.size());
     }
     auto* sphere_instances = reinterpret_cast<OverlaySphereInstance*>(slot_data + kSphereInstanceOffset);
     for (std::uint32_t index = 0; index < sphere_count; ++index) {
@@ -559,7 +642,7 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D 
     begin.renderArea.extent = extent;
     vkCmdBeginRenderPass(command_buffer, &begin, VK_SUBPASS_CONTENTS_INLINE);
 
-    if (line_count > 0 || path_count > 0 || sphere_count > 0) {
+    if (line_count > 0 || surface_vertex_count > 0 || sphere_count > 0) {
         VkViewport viewport{static_cast<float>(content_rect.offset.x), static_cast<float>(content_rect.offset.y),
                             static_cast<float>(content_rect.extent.width),
                             static_cast<float>(content_rect.extent.height), 0.0F, 1.0F};
@@ -580,6 +663,7 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D 
         push.depth[0] = camera.far_clip;
         push.depth[1] = depth_bias;
         push.depth[2] = animation_time;
+        push.depth[3] = 0.0001F;
         push.viewport[0] = static_cast<float>(content_rect.offset.x);
         push.viewport[1] = static_cast<float>(content_rect.offset.y);
         push.viewport[2] = static_cast<float>(content_rect.extent.width);
@@ -594,15 +678,18 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D 
             vkCmdDraw(command_buffer, 6, sphere_count, 0, 0);
         }
 
-        const VkDeviceSize vertex_offset = kSlotBytes * distance_slot;
-        vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer_, &vertex_offset);
-        if (line_count > 0) {
-            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, line_pipeline_);
-            vkCmdDraw(command_buffer, line_count * 2, 1, 0, 0);
+        if (surface_vertex_count > 0) {
+            const VkDeviceSize surface_offset = 0;
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, surface_pipeline_);
+            vkCmdBindVertexBuffers(command_buffer, 0, 1, &surface_buffers_[distance_slot], &surface_offset);
+            vkCmdDraw(command_buffer, surface_vertex_count, 1, 0, 0);
         }
-        if (path_count > 0) {
-            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, path_pipeline_);
-            vkCmdDraw(command_buffer, path_count * 6, 1, path_vertex_offset, 0);
+
+        if (line_count > 0) {
+            const VkDeviceSize vertex_offset = kSlotBytes * distance_slot;
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, line_pipeline_);
+            vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer_, &vertex_offset);
+            vkCmdDraw(command_buffer, line_count * 2, 1, 0, 0);
         }
     }
 
@@ -641,13 +728,28 @@ void ViewportOverlay::reset()
         vkFreeMemory(device_, vertex_memory_, nullptr);
         vertex_memory_ = VK_NULL_HANDLE;
     }
+    for (std::uint32_t slot = 0; slot < kDistanceSlotCount; ++slot) {
+        if (surface_mapped_[slot] != nullptr) {
+            vkUnmapMemory(device_, surface_memories_[slot]);
+            surface_mapped_[slot] = nullptr;
+        }
+        if (surface_buffers_[slot] != VK_NULL_HANDLE) {
+            vkDestroyBuffer(device_, surface_buffers_[slot], nullptr);
+            surface_buffers_[slot] = VK_NULL_HANDLE;
+        }
+        if (surface_memories_[slot] != VK_NULL_HANDLE) {
+            vkFreeMemory(device_, surface_memories_[slot], nullptr);
+            surface_memories_[slot] = VK_NULL_HANDLE;
+        }
+        surface_capacities_[slot] = 0;
+    }
     if (line_pipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(device_, line_pipeline_, nullptr);
         line_pipeline_ = VK_NULL_HANDLE;
     }
-    if (path_pipeline_ != VK_NULL_HANDLE) {
-        vkDestroyPipeline(device_, path_pipeline_, nullptr);
-        path_pipeline_ = VK_NULL_HANDLE;
+    if (surface_pipeline_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(device_, surface_pipeline_, nullptr);
+        surface_pipeline_ = VK_NULL_HANDLE;
     }
     if (sphere_pipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(device_, sphere_pipeline_, nullptr);
@@ -676,11 +778,13 @@ void ViewportOverlay::reset()
         vkDestroyRenderPass(device_, render_pass_, nullptr);
         render_pass_ = VK_NULL_HANDLE;
     }
+    physical_device_ = VK_NULL_HANDLE;
     device_ = VK_NULL_HANDLE;
 }
 
 void ViewportOverlay::move_from(ViewportOverlay& other) noexcept
 {
+    physical_device_ = std::exchange(other.physical_device_, VK_NULL_HANDLE);
     device_ = std::exchange(other.device_, VK_NULL_HANDLE);
     render_pass_ = std::exchange(other.render_pass_, VK_NULL_HANDLE);
     descriptor_set_layout_ = std::exchange(other.descriptor_set_layout_, VK_NULL_HANDLE);
@@ -691,11 +795,17 @@ void ViewportOverlay::move_from(ViewportOverlay& other) noexcept
     sampler_ = std::exchange(other.sampler_, VK_NULL_HANDLE);
     pipeline_layout_ = std::exchange(other.pipeline_layout_, VK_NULL_HANDLE);
     line_pipeline_ = std::exchange(other.line_pipeline_, VK_NULL_HANDLE);
-    path_pipeline_ = std::exchange(other.path_pipeline_, VK_NULL_HANDLE);
+    surface_pipeline_ = std::exchange(other.surface_pipeline_, VK_NULL_HANDLE);
     sphere_pipeline_ = std::exchange(other.sphere_pipeline_, VK_NULL_HANDLE);
     vertex_buffer_ = std::exchange(other.vertex_buffer_, VK_NULL_HANDLE);
     vertex_memory_ = std::exchange(other.vertex_memory_, VK_NULL_HANDLE);
     vertex_mapped_ = std::exchange(other.vertex_mapped_, nullptr);
+    for (std::uint32_t slot = 0; slot < kDistanceSlotCount; ++slot) {
+        surface_buffers_[slot] = std::exchange(other.surface_buffers_[slot], VK_NULL_HANDLE);
+        surface_memories_[slot] = std::exchange(other.surface_memories_[slot], VK_NULL_HANDLE);
+        surface_mapped_[slot] = std::exchange(other.surface_mapped_[slot], nullptr);
+        surface_capacities_[slot] = std::exchange(other.surface_capacities_[slot], 0);
+    }
     target_view_ = std::exchange(other.target_view_, VK_NULL_HANDLE);
     framebuffer_ = std::exchange(other.framebuffer_, VK_NULL_HANDLE);
 }

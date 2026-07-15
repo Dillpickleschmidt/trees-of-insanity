@@ -118,6 +118,8 @@ if(TOI_ENABLE_OVRTX)
     endfunction()
     toi_compile_shader(TOI_OVERLAY_VERT_SPV_CPP desktop/src/graphics/viewport/shaders/overlay_lines.vert overlay_lines_vert_spv)
     toi_compile_shader(TOI_OVERLAY_FRAG_SPV_CPP desktop/src/graphics/viewport/shaders/overlay_lines.frag overlay_lines_frag_spv)
+    toi_compile_shader(TOI_OVERLAY_SURFACES_VERT_SPV_CPP desktop/src/graphics/viewport/shaders/overlay_surfaces.vert overlay_surfaces_vert_spv)
+    toi_compile_shader(TOI_OVERLAY_SURFACES_FRAG_SPV_CPP desktop/src/graphics/viewport/shaders/overlay_surfaces.frag overlay_surfaces_frag_spv)
     toi_compile_shader(TOI_OVERLAY_SPHERES_VERT_SPV_CPP desktop/src/graphics/viewport/shaders/overlay_spheres.vert overlay_spheres_vert_spv)
     toi_compile_shader(TOI_OVERLAY_SPHERES_FRAG_SPV_CPP desktop/src/graphics/viewport/shaders/overlay_spheres.frag overlay_spheres_frag_spv)
 
@@ -129,6 +131,8 @@ if(TOI_ENABLE_OVRTX)
         desktop/src/graphics/viewport/src/preview_renderer.cpp
         ${TOI_OVERLAY_VERT_SPV_CPP}
         ${TOI_OVERLAY_FRAG_SPV_CPP}
+        ${TOI_OVERLAY_SURFACES_VERT_SPV_CPP}
+        ${TOI_OVERLAY_SURFACES_FRAG_SPV_CPP}
         ${TOI_OVERLAY_SPHERES_VERT_SPV_CPP}
         ${TOI_OVERLAY_SPHERES_FRAG_SPV_CPP}
     )

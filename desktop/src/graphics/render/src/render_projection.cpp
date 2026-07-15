@@ -50,6 +50,9 @@ make_chain_build_requests(const growth::GrowthSnapshot& snapshot,
     const std::vector<ChainBuildRequest>& topology_requests, const growth::GrowthSnapshot& snapshot,
     const growth::GrowthSnapshot& topology_snapshot, const growth::BranchModulePrototype& prepared_prototype);
 [[nodiscard]] std::vector<MeshGeometry> build_meshes(const std::vector<ChainBuildRequest>& requests);
+void append_plant_flow_surface(std::vector<DiagnosticOverlaySurfaceVertex>& vertices,
+                               const std::vector<MeshGeometry>& meshes,
+                               const growth::PlantSnapshot& snapshot, PlantDiagnosticOptions diagnostics);
 [[nodiscard]] std::vector<GrowthPreviewMeshAttributes> mesh_attributes_for(const std::vector<MeshGeometry>& meshes);
 [[nodiscard]] GrowthPreviewCamera make_camera_from_bounds(Bounds bounds, int requested_width, int requested_height);
 
@@ -77,6 +80,7 @@ GrowthPreviewStageProjection make_plant_preview_stage_projection(
         .camera = camera,
         .mesh_attributes = mesh_attributes_for(dynamic_meshes),
     };
+    append_plant_flow_surface(projection.diagnostic_surface_vertices, dynamic_meshes, snapshot, diagnostics);
 
     for (const auto& module : snapshot.modules) {
         if (diagnostics.show_collision_spheres && module.collision_sphere.radius > 0.0F) {
@@ -95,23 +99,6 @@ GrowthPreviewStageProjection make_plant_preview_stage_projection(
                 .vigor = module.vigor,
             });
         }
-    }
-    for (const auto& flow : snapshot.flow_diagnostics) {
-        if ((flow.kind == growth::FlowKind::AccumulatedLight && !diagnostics.show_accumulated_light_flow) ||
-            (flow.kind == growth::FlowKind::Vigor && !diagnostics.show_vigor_flow)) {
-            continue;
-        }
-        const auto& segment = snapshot.segments[flow.segment_index];
-        projection.diagnostic_paths.push_back({
-            .start = flow.kind == growth::FlowKind::AccumulatedLight
-                ? segment.child_position
-                : segment.parent_position,
-            .end = flow.kind == growth::FlowKind::AccumulatedLight
-                ? segment.parent_position
-                : segment.child_position,
-            .color = weight_map_color(std::clamp(flow.amount / flow.root_total, 0.0F, 1.0F)),
-            .host_radius = segment.diameter * 0.5F,
-        });
     }
     if (diagnostics.show_mature_terminals) {
         for (const auto& terminal : snapshot.mature_terminals) {
@@ -919,6 +906,67 @@ std::vector<MeshGeometry> build_meshes(const std::vector<ChainBuildRequest>& req
         }
     }
     return meshes;
+}
+
+void append_plant_flow_surface(std::vector<DiagnosticOverlaySurfaceVertex>& vertices,
+                               const std::vector<MeshGeometry>& meshes,
+                               const growth::PlantSnapshot& snapshot, PlantDiagnosticOptions diagnostics)
+{
+    if ((!diagnostics.show_accumulated_light_flow && !diagnostics.show_vigor_flow) ||
+        snapshot.flow_diagnostics.empty()) {
+        return;
+    }
+
+    struct SegmentFlows {
+        const growth::PlantFlowDiagnostic* light = nullptr;
+        const growth::PlantFlowDiagnostic* vigor = nullptr;
+    };
+    std::vector<SegmentFlows> flows(snapshot.segments.size());
+    for (const auto& flow : snapshot.flow_diagnostics) {
+        if (flow.kind == growth::FlowKind::AccumulatedLight && diagnostics.show_accumulated_light_flow) {
+            flows[flow.segment_index].light = &flow;
+        } else if (flow.kind == growth::FlowKind::Vigor && diagnostics.show_vigor_flow) {
+            flows[flow.segment_index].vigor = &flow;
+        }
+    }
+
+    constexpr std::array<std::size_t, 6> triangle_corners{0, 1, 2, 0, 2, 3};
+    constexpr float kSurfaceAlpha = 0.9F;
+    vertices.reserve(snapshot.flow_diagnostics.size() * kRadialSegmentCount * triangle_corners.size());
+    for (const auto& mesh : meshes) {
+        std::size_t face_vertex_offset = 0;
+        for (std::size_t face = 0; face < mesh.face_vertex_counts.size(); ++face) {
+            const auto face_vertex_count = static_cast<std::size_t>(mesh.face_vertex_counts[face]);
+            if (face_vertex_count == 4) {
+                const auto source_segment = static_cast<std::size_t>(mesh.face_source_segment_ids[face]);
+                const auto append_flow = [&](const growth::PlantFlowDiagnostic* flow, float direction) {
+                    if (flow == nullptr) return;
+                    const auto color = weight_map_color(
+                        std::clamp(flow->amount / flow->root_total, 0.0F, 1.0F));
+                    const std::array<float, 4> distances{
+                        flow->start_distance_from_root,
+                        flow->start_distance_from_root,
+                        flow->end_distance_from_root,
+                        flow->end_distance_from_root,
+                    };
+                    for (const auto corner : triangle_corners) {
+                        const auto point = static_cast<std::size_t>(
+                            mesh.face_vertex_indices[face_vertex_offset + corner]);
+                        vertices.push_back({
+                            .position = mesh.points[point],
+                            .color = color,
+                            .alpha = kSurfaceAlpha,
+                            .distance_from_root = distances[corner],
+                            .animation_direction = direction,
+                        });
+                    }
+                };
+                append_flow(flows[source_segment].light, -1.0F);
+                append_flow(flows[source_segment].vigor, 1.0F);
+            }
+            face_vertex_offset += face_vertex_count;
+        }
+    }
 }
 
 GrowthPreviewMeshStats stats_for(const std::vector<MeshGeometry>& meshes, std::size_t chain_count)
