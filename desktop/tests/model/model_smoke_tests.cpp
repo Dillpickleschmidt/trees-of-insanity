@@ -373,6 +373,12 @@ TEST_CASE("Plant maturity crossing exposes one attached generation")
          .show_vigor_flow = true,
          .show_mature_terminals = true});
     CHECK(projection.diagnostic_labels.size() == module_count);
+    std::vector<bool> continuation_targets(flowing->snapshot.segments.size(), false);
+    for (const auto& segment : flowing->snapshot.segments) {
+        if (segment.main_continuation_segment) continuation_targets[*segment.main_continuation_segment] = true;
+    }
+    CHECK(projection.mesh.chain_count ==
+          static_cast<std::size_t>(std::ranges::count(continuation_targets, false)));
     REQUIRE(projection.diagnostic_spheres.size() == module_count);
     CHECK((projection.diagnostic_spheres[0].color.x != projection.diagnostic_spheres[1].color.x ||
            projection.diagnostic_spheres[0].color.y != projection.diagnostic_spheres[1].color.y ||

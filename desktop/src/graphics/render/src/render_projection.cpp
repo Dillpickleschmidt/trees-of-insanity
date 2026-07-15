@@ -711,41 +711,32 @@ std::vector<ChainBuildRequest> make_dynamic_chain_build_requests(
 std::vector<ChainBuildRequest> make_plant_chain_build_requests(const growth::PlantSnapshot& snapshot,
                                                                bool mature_geometry)
 {
+    std::vector<bool> is_continuation(snapshot.segments.size(), false);
+    for (const auto& segment : snapshot.segments) {
+        if (segment.main_continuation_segment) is_continuation[*segment.main_continuation_segment] = true;
+    }
     std::vector<ChainBuildRequest> requests;
-    for (const auto& module : snapshot.modules) {
-        std::vector<bool> is_continuation(module.segments.count, false);
-        for (std::size_t local = 0; local < module.segments.count; ++local) {
-            const auto& segment = snapshot.segments[module.segments.offset + local];
-            if (segment.main_continuation_segment &&
-                *segment.main_continuation_segment >= module.segments.offset &&
-                *segment.main_continuation_segment < module.segments.offset + module.segments.count) {
-                is_continuation[*segment.main_continuation_segment - module.segments.offset] = true;
-            }
+    requests.reserve(snapshot.segments.size());
+    for (std::size_t first_segment = 0; first_segment < snapshot.segments.size(); ++first_segment) {
+        if (is_continuation[first_segment]) continue;
+        ChainBuildRequest request;
+        request.start_cap = first_segment == snapshot.modules.front().segments.offset;
+        const auto& first = snapshot.segments[first_segment];
+        request.centers.push_back(mature_geometry ? first.mature_parent_position : first.parent_position);
+        request.radii.push_back(first.diameter * 0.5F);
+
+        std::size_t segment_index = first_segment;
+        while (true) {
+            const auto& segment = snapshot.segments[segment_index];
+            request.source_segment_ids.push_back(segment_index);
+            request.centers.push_back(mature_geometry ? segment.mature_child_position : segment.child_position);
+            const bool developed = growth::distance(segment.parent_position, segment.child_position) > kEpsilon;
+            request.radii.push_back(mature_geometry ? segment.diameter * 0.5F
+                                                    : (developed ? segment.diameter * 0.5F : 0.0F));
+            if (!segment.main_continuation_segment) break;
+            segment_index = *segment.main_continuation_segment;
         }
-        for (std::size_t local = 0; local < module.segments.count; ++local) {
-            if (is_continuation[local]) continue;
-            std::size_t segment_index = module.segments.offset + local;
-            ChainBuildRequest request;
-            request.start_cap = local == 0;
-            const auto& first = snapshot.segments[segment_index];
-            request.centers.push_back(mature_geometry ? first.mature_parent_position : first.parent_position);
-            request.radii.push_back(first.diameter * 0.5F);
-            while (true) {
-                const auto& segment = snapshot.segments[segment_index];
-                request.source_segment_ids.push_back(segment_index);
-                request.centers.push_back(mature_geometry ? segment.mature_child_position : segment.child_position);
-                const bool developed = growth::distance(segment.parent_position, segment.child_position) > kEpsilon;
-                request.radii.push_back(mature_geometry ? segment.diameter * 0.5F
-                                                        : (developed ? segment.diameter * 0.5F : 0.0F));
-                if (!segment.main_continuation_segment ||
-                    *segment.main_continuation_segment < module.segments.offset ||
-                    *segment.main_continuation_segment >= module.segments.offset + module.segments.count) {
-                    break;
-                }
-                segment_index = *segment.main_continuation_segment;
-            }
-            requests.push_back(std::move(request));
-        }
+        requests.push_back(std::move(request));
     }
     return requests;
 }
