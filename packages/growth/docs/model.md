@@ -1,6 +1,6 @@
 # Growth model and equation library
 
-Reference for the retained Synthetic Silviculture math and its source model in Palubicki et al. 2009. The library develops branch modules and currently simulates one root-only plant architecture.
+Reference for the retained Synthetic Silviculture math and its source model in Palubicki et al. 2009. The library develops branch modules and currently simulates a root module with one attached generation.
 
 ## Module development
 
@@ -72,7 +72,9 @@ f_tropism(u_α) = |cos(α_tropism) - cos(u_α)|                    Eq. 4
 
 ### Attachment, shedding, and senescence reference
 
-For a mature module, each terminal receives `q(n_i) = Q(u) / #n`. An occupied terminal adds its child's accumulated light and passes allocated vigor into that child; an unoccupied terminal attaches a child when its allocated vigor exceeds `v̄_min`. All eligible attachments commit together when the maturity-crossing step commits. Their orientations are selected main-axis first, then by decreasing mature-tangent alignment with the main tangent, so progressively more lateral siblings account for earlier selected mature bounds. Eq. 8 diameter support continues across parent-terminal/child-root attachments in one basipetal pipe calculation; shedding removes the child's contribution (ADR 0017).
+For a mature module, each terminal receives `q(n_i) = Q(u) / #n`. An occupied terminal adds its child's accumulated light and passes allocated vigor into that child; an unoccupied terminal attaches a child when its allocated vigor exceeds `v̄_min`. All eligible attachments commit together when the maturity-crossing step commits. Their orientations are selected main-axis first, then by decreasing mature-tangent alignment with the main tangent, so progressively more lateral siblings account for earlier selected mature bounds.
+
+Parent terminals and child roots form shared conduit junctions. In one whole-plant postorder, a leaf edge receives support diameter `φ`; every other edge receives `sqrt(sum(child current diameter²))`. Each segment interpolates from `φ` toward that support by its diameter maturity, and retains the greatest diameter it has developed. This produces exact Eq. 8 proportions at mature supported forks, smooth attachment development, and no surviving-pipe shrink after future shedding (ADR 0018). The conduit topology remains derived; only one diameter per architecture edge persists.
 
 The paper does not provide a numerical value for `v̄_min`. Growth, attachment, and shedding provisionally share `v̄_min = 0.02` in the module-vigor range `[0, 1]` until whole-plant calibration is possible.
 
@@ -100,7 +102,7 @@ The 16 presets retain Synthetic Silviculture Table 4 exactly:
 
 ## Current implementation
 
-`PlantSimulation` owns one root module, atomic stepping, committed-state light/vigor diagnostics, and zero-copy plant snapshots. Child attachment, multi-module traversal, orientation, shedding, and senescence enter through later milestones.
+`PlantSimulation` owns plant architecture, one attached generation, atomic stepping, continuous attachment-aware pipe/light/vigor traversal, and zero-copy plant snapshots. Repeated descendant attachment, shedding, and senescence enter through later milestones.
 
 ## Sources
 

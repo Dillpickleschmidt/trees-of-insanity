@@ -724,15 +724,19 @@ std::vector<ChainBuildRequest> make_plant_chain_build_requests(const growth::Pla
             request.start_cap = local == 0;
             const auto& first = snapshot.segments[segment_index];
             request.centers.push_back(mature_geometry ? first.mature_parent_position : first.parent_position);
-            request.radii.push_back((mature_geometry ? first.target_diameter : first.diameter) * 0.5F);
+            request.radii.push_back(first.diameter * 0.5F);
             while (true) {
                 const auto& segment = snapshot.segments[segment_index];
                 request.source_segment_ids.push_back(segment_index);
                 request.centers.push_back(mature_geometry ? segment.mature_child_position : segment.child_position);
                 const bool developed = growth::distance(segment.parent_position, segment.child_position) > kEpsilon;
-                request.radii.push_back(mature_geometry ? segment.target_diameter * 0.5F
+                request.radii.push_back(mature_geometry ? segment.diameter * 0.5F
                                                         : (developed ? segment.diameter * 0.5F : 0.0F));
-                if (!segment.main_continuation_segment) break;
+                if (!segment.main_continuation_segment ||
+                    *segment.main_continuation_segment < module.segments.offset ||
+                    *segment.main_continuation_segment >= module.segments.offset + module.segments.count) {
+                    break;
+                }
                 segment_index = *segment.main_continuation_segment;
             }
             requests.push_back(std::move(request));

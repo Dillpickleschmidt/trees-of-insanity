@@ -179,7 +179,6 @@ struct PlantSegmentSnapshot {
     Vec3 mature_parent_position;
     Vec3 mature_child_position;
     float diameter = 0.0F;
-    float target_diameter = 0.0F;
     SegmentState state = SegmentState::Growing;
     std::optional<std::size_t> main_continuation_segment;
 };
@@ -262,6 +261,8 @@ public:
     [[nodiscard]] PlantSnapshot snapshot() const;
 
 private:
+    struct ConduitWorkset;
+
     struct PrototypeOrientationData {
         Sphere mature_sphere;
         std::vector<std::size_t> ordered_terminal_nodes;
@@ -275,11 +276,13 @@ private:
         RigidTransform transform;
         float physiological_age = 0.0F;
         float fully_grown_age = 0.0F;
+        std::vector<float> developed_diameters;
         bool diagnostics_active = true;
     };
 
     PlantSimulation() = default;
 
+    [[nodiscard]] Result<void> rebuild_conduit(ConduitWorkset& workset);
     [[nodiscard]] Result<void> rebuild_snapshot(bool emit_flows);
 
     PlantTypeParameters plant_type_;

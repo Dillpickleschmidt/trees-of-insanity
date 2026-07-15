@@ -221,16 +221,31 @@ TEST_CASE("continuous pipe crosses parent and child module attachment")
     const auto child_segments = module_segments(snapshot, child);
     CHECK(child_segments[0].diameter == Catch::Approx(plant_type.terminal_thickness * 0.01F));
     CHECK(root_segments[1].diameter == Catch::Approx(child_segments[0].diameter));
-    CHECK(root_segments[0].diameter == Catch::Approx(std::sqrt(2.0F) * root_segments[1].diameter));
+    CHECK(root_segments[0].diameter * root_segments[0].diameter ==
+          Catch::Approx(root_segments[1].diameter * root_segments[1].diameter +
+                        root_segments[2].diameter * root_segments[2].diameter));
     CHECK(root_segments[0].main_continuation_segment == root.segments.offset + 1);
+    CHECK(root_segments[1].main_continuation_segment == child.segments.offset);
+    CHECK(root_segments[2].main_continuation_segment == module_by_id(snapshot, 2).segments.offset);
 
+    std::vector<float> previous_diameters;
+    previous_diameters.reserve(snapshot.segments.size());
+    for (const auto& segment : snapshot.segments) previous_diameters.push_back(segment.diameter);
     const float attachment_diameter = root_segments[1].diameter;
-    REQUIRE(simulation->step(1.0F));
-    const auto growing = simulation->snapshot();
-    const auto growing_root_segments = module_segments(growing, module_by_id(growing, 0));
-    const auto growing_child_segments = module_segments(growing, module_by_id(growing, 1));
-    CHECK(growing_root_segments[1].diameter == Catch::Approx(growing_child_segments[0].diameter));
-    CHECK(growing_root_segments[1].diameter > attachment_diameter);
+    for (int step = 0; step < 3; ++step) {
+        REQUIRE(simulation->step(1.0F));
+        const auto growing = simulation->snapshot();
+        REQUIRE(growing.segments.size() == previous_diameters.size());
+        for (std::size_t segment = 0; segment < growing.segments.size(); ++segment) {
+            CHECK(growing.segments[segment].diameter >= previous_diameters[segment]);
+            previous_diameters[segment] = growing.segments[segment].diameter;
+        }
+        const auto growing_root_segments = module_segments(growing, module_by_id(growing, 0));
+        const auto growing_child_segments = module_segments(growing, module_by_id(growing, 1));
+        CHECK(growing_root_segments[1].diameter == Catch::Approx(growing_child_segments[0].diameter));
+    }
+    const auto final_snapshot = simulation->snapshot();
+    CHECK(module_segments(final_snapshot, module_by_id(final_snapshot, 0))[1].diameter > attachment_diameter);
 }
 
 TEST_CASE("root vigor budget can exceed one module's vigor")
