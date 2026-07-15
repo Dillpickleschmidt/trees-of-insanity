@@ -118,6 +118,8 @@ if(TOI_ENABLE_OVRTX)
     endfunction()
     toi_compile_shader(TOI_OVERLAY_VERT_SPV_CPP desktop/src/graphics/viewport/shaders/overlay_lines.vert overlay_lines_vert_spv)
     toi_compile_shader(TOI_OVERLAY_FRAG_SPV_CPP desktop/src/graphics/viewport/shaders/overlay_lines.frag overlay_lines_frag_spv)
+    toi_compile_shader(TOI_OVERLAY_SPHERES_VERT_SPV_CPP desktop/src/graphics/viewport/shaders/overlay_spheres.vert overlay_spheres_vert_spv)
+    toi_compile_shader(TOI_OVERLAY_SPHERES_FRAG_SPV_CPP desktop/src/graphics/viewport/shaders/overlay_spheres.frag overlay_spheres_frag_spv)
 
     add_library(toi_desktop_graphics
         desktop/src/graphics/viewport/src/error.cpp
@@ -127,6 +129,8 @@ if(TOI_ENABLE_OVRTX)
         desktop/src/graphics/viewport/src/preview_renderer.cpp
         ${TOI_OVERLAY_VERT_SPV_CPP}
         ${TOI_OVERLAY_FRAG_SPV_CPP}
+        ${TOI_OVERLAY_SPHERES_VERT_SPV_CPP}
+        ${TOI_OVERLAY_SPHERES_FRAG_SPV_CPP}
     )
     target_include_directories(toi_desktop_graphics PUBLIC desktop/src/graphics/viewport/include)
     target_link_libraries(toi_desktop_graphics PUBLIC Vulkan::Vulkan toi_render toi_ovrtx CUDA::cudart)

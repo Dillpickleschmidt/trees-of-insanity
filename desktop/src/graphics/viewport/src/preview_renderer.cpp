@@ -84,6 +84,32 @@ std::vector<OverlayPath> build_overlay_paths(
     return paths;
 }
 
+std::vector<OverlaySphere> build_overlay_spheres(
+    const render::GrowthPreviewCamera& camera,
+    std::span<const render::DiagnosticOverlaySphere> diagnostics)
+{
+    std::vector<OverlaySphere> spheres;
+    spheres.reserve(diagnostics.size());
+    for (const auto& sphere : diagnostics) {
+        spheres.push_back({
+            .center = {sphere.center.x, sphere.center.y, sphere.center.z},
+            .radius = sphere.radius,
+            .color = {sphere.color.x, sphere.color.y, sphere.color.z},
+            .alpha = sphere.alpha,
+        });
+    }
+    std::stable_sort(spheres.begin(), spheres.end(), [&](const auto& left, const auto& right) {
+        const auto distance_squared = [&](const auto& sphere) {
+            const float x = sphere.center[0] - camera.eye.x;
+            const float y = sphere.center[1] - camera.eye.y;
+            const float z = sphere.center[2] - camera.eye.z;
+            return x * x + y * y + z * z;
+        };
+        return distance_squared(left) > distance_squared(right);
+    });
+    return spheres;
+}
+
 std::vector<ProjectedPlantDiagnosticLabel> project_diagnostic_labels(
     std::span<const render::PlantDiagnosticLabel> labels, const render::GrowthPreviewCamera& camera)
 {
@@ -170,6 +196,7 @@ struct PreviewRenderer::Slot {
     bool has_distance = false;
     std::vector<OverlayLine> overlay_lines;
     std::vector<OverlayPath> overlay_paths;
+    std::vector<OverlaySphere> overlay_spheres;
     std::vector<ProjectedPlantDiagnosticLabel> projected_labels;
 };
 
@@ -390,7 +417,7 @@ bool PreviewRenderer::prepare_frame_on_render_thread()
                 slot.command_buffer,
                 {static_cast<std::uint32_t>(width_), static_cast<std::uint32_t>(height_)},
                 {{0, 0}, {static_cast<std::uint32_t>(width_), static_cast<std::uint32_t>(height_)}},
-                to_overlay_camera(slot.camera), slot.overlay_lines, slot.overlay_paths,
+                to_overlay_camera(slot.camera), slot.overlay_lines, slot.overlay_paths, slot.overlay_spheres,
                 overlay_depth_bias(slot.camera),
                 std::chrono::duration<float>(std::chrono::steady_clock::now().time_since_epoch()).count(),
                 static_cast<std::uint32_t>(slot_index)); !recorded) {
@@ -714,7 +741,8 @@ void PreviewRenderer::render_loop()
             }
             camera_dirty_ = false;
             draw_guides = guides_visible_ && world_origin_axes_visible_;
-            draw_overlay = draw_guides || !stage.diagnostic_lines.empty() || !stage.diagnostic_paths.empty();
+            draw_overlay = draw_guides || !stage.diagnostic_lines.empty() || !stage.diagnostic_paths.empty() ||
+                !stage.diagnostic_spheres.empty();
             dirty_ = false;
             slots_[slot_index].rendering = true;
             status_.phase = "rendering";
@@ -770,6 +798,7 @@ void PreviewRenderer::render_loop()
         slot.camera = camera.value_or(stage.camera);
         slot.overlay_lines = build_overlay_lines(slot.camera, stage.diagnostic_lines, draw_guides);
         slot.overlay_paths = build_overlay_paths(stage.diagnostic_paths);
+        slot.overlay_spheres = build_overlay_spheres(slot.camera, stage.diagnostic_spheres);
         slot.projected_labels = project_diagnostic_labels(stage.diagnostic_labels, slot.camera);
         const std::uint64_t timeline_value = ++next_timeline_value_;
         if (auto signaled = frames_ready_.signal_from_ovrtx_stream(timeline_value, rendered->sync_stream); !signaled) {

@@ -27,13 +27,13 @@ struct MeshGeometry;
 [[nodiscard]] growth::Vec3 subtract_projection(growth::Vec3 value, growth::Vec3 axis);
 [[nodiscard]] growth::Vec3 fallback_normal_for(growth::Vec3 tangent);
 [[nodiscard]] growth::Vec3 weight_map_color(float weight);
+[[nodiscard]] growth::Vec3 diagnostic_sphere_color(std::size_t module_id);
 [[nodiscard]] GrowthPreviewStageProjection make_growth_preview_stage_projection_impl(
     const growth::GrowthSnapshot& snapshot, const growth::GrowthSnapshot& camera_snapshot,
     const growth::BranchModulePrototype& prepared_prototype, GrowthPreviewStageOptions options);
 [[nodiscard]] GrowthPreviewMeshStats stats_for(const std::vector<MeshGeometry>& meshes, std::size_t chain_count);
 [[nodiscard]] GrowthPreviewCamera make_growth_preview_camera(const growth::GrowthSnapshot& camera_snapshot, int width,
                                                              int height);
-void append_collision_sphere_lines(std::vector<DiagnosticOverlayLine>& lines, const growth::Sphere& sphere);
 void append_terminal_marker_lines(std::vector<DiagnosticOverlayLine>& lines,
                                   const growth::MatureTerminalSnapshot& terminal);
 [[nodiscard]] std::vector<ChainBuildRequest> make_plant_chain_build_requests(
@@ -80,7 +80,12 @@ GrowthPreviewStageProjection make_plant_preview_stage_projection(
 
     for (const auto& module : snapshot.modules) {
         if (diagnostics.show_collision_spheres && module.collision_sphere.radius > 0.0F) {
-            append_collision_sphere_lines(projection.diagnostic_lines, module.collision_sphere);
+            projection.diagnostic_spheres.push_back({
+                .center = module.collision_sphere.center,
+                .radius = module.collision_sphere.radius,
+                .color = diagnostic_sphere_color(module.id),
+                .alpha = 0.18F,
+            });
         }
         if (diagnostics.show_labels) {
             projection.diagnostic_labels.push_back({
@@ -268,6 +273,21 @@ GrowthPreviewStageProjection make_growth_preview_stage_projection_impl(
     return {.x = 1.0F, .y = 1.0F - interpolation, .z = 0.0F};
 }
 
+[[nodiscard]] growth::Vec3 diagnostic_sphere_color(std::size_t module_id)
+{
+    static constexpr std::array palette{
+        growth::Vec3{.x = 0.337F, .y = 0.706F, .z = 0.914F},
+        growth::Vec3{.x = 0.902F, .y = 0.624F, .z = 0.0F},
+        growth::Vec3{.x = 0.0F, .y = 0.620F, .z = 0.451F},
+        growth::Vec3{.x = 0.800F, .y = 0.475F, .z = 0.655F},
+        growth::Vec3{.x = 0.941F, .y = 0.894F, .z = 0.259F},
+        growth::Vec3{.x = 0.0F, .y = 0.447F, .z = 0.698F},
+        growth::Vec3{.x = 0.835F, .y = 0.369F, .z = 0.0F},
+        growth::Vec3{.x = 0.600F, .y = 0.600F, .z = 0.600F},
+    };
+    return palette[module_id % palette.size()];
+}
+
 [[nodiscard]] growth::Vec3 ring_direction(const TubeFrame& frame, int radial_index)
 {
     const float angle = kTwoPi * static_cast<float>(radial_index) / static_cast<float>(kRadialSegmentCount);
@@ -378,34 +398,6 @@ GrowthPreviewStageProjection make_growth_preview_stage_projection_impl(
                                                              int requested_width, int requested_height)
 {
     return make_camera_from_bounds(snapshot_bounds(camera_snapshot), requested_width, requested_height);
-}
-
-void append_collision_sphere_lines(std::vector<DiagnosticOverlayLine>& lines, const growth::Sphere& sphere)
-{
-    constexpr int segment_count = 32;
-    const std::array planes{
-        std::pair{growth::Vec3{1.0F, 0.0F, 0.0F}, growth::Vec3{0.0F, 1.0F, 0.0F}},
-        std::pair{growth::Vec3{1.0F, 0.0F, 0.0F}, growth::Vec3{0.0F, 0.0F, 1.0F}},
-        std::pair{growth::Vec3{0.0F, 1.0F, 0.0F}, growth::Vec3{0.0F, 0.0F, 1.0F}},
-    };
-    const auto point_at = [&](growth::Vec3 first_axis, growth::Vec3 second_axis, float angle) {
-        const auto radial = growth::add(growth::scale(first_axis, std::cos(angle)),
-                                        growth::scale(second_axis, std::sin(angle)));
-        return growth::add(sphere.center, growth::scale(radial, sphere.radius));
-    };
-    lines.reserve(lines.size() + planes.size() * segment_count);
-    for (const auto& [first_axis, second_axis] : planes) {
-        for (int index = 0; index < segment_count; ++index) {
-            const float start_angle = kTwoPi * static_cast<float>(index) / static_cast<float>(segment_count);
-            const float end_angle = kTwoPi * static_cast<float>(index + 1) / static_cast<float>(segment_count);
-            lines.push_back({
-                .start = point_at(first_axis, second_axis, start_angle),
-                .end = point_at(first_axis, second_axis, end_angle),
-                .color = {.x = 0.15F, .y = 0.85F, .z = 1.0F},
-                .alpha = 0.7F,
-            });
-        }
-    }
 }
 
 void append_terminal_marker_lines(std::vector<DiagnosticOverlayLine>& lines,

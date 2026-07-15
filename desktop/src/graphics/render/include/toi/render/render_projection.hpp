@@ -71,6 +71,13 @@ struct DiagnosticOverlayPath {
     float host_radius = 0.0F;
 };
 
+struct DiagnosticOverlaySphere {
+    growth::Vec3 center;
+    float radius = 0.0F;
+    growth::Vec3 color;
+    float alpha = 1.0F;
+};
+
 struct PlantDiagnosticOptions {
     bool show_collision_spheres = false;
     bool show_labels = false;
@@ -93,6 +100,7 @@ struct GrowthPreviewStageProjection {
     std::vector<GrowthPreviewMeshAttributes> mesh_attributes;
     std::vector<DiagnosticOverlayLine> diagnostic_lines;
     std::vector<DiagnosticOverlayPath> diagnostic_paths;
+    std::vector<DiagnosticOverlaySphere> diagnostic_spheres;
     std::vector<PlantDiagnosticLabel> diagnostic_labels;
 };
 

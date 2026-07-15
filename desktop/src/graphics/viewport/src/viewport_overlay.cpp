@@ -13,12 +13,17 @@ extern unsigned char overlay_lines_vert_spv[];
 extern unsigned int overlay_lines_vert_spv_len;
 extern unsigned char overlay_lines_frag_spv[];
 extern unsigned int overlay_lines_frag_spv_len;
+extern unsigned char overlay_spheres_vert_spv[];
+extern unsigned int overlay_spheres_vert_spv_len;
+extern unsigned char overlay_spheres_frag_spv[];
+extern unsigned int overlay_spheres_frag_spv_len;
 
 namespace toi::viewport {
 namespace {
 
 constexpr std::uint32_t kMaxLines = 4096;
 constexpr std::uint32_t kMaxPaths = 4096;
+constexpr std::uint32_t kMaxSpheres = 4096;
 constexpr std::uint32_t kVertexCapacity = kMaxLines * 2 + kMaxPaths * 6;
 constexpr float kPathAlpha = 0.9F;
 
@@ -31,6 +36,24 @@ struct OverlayVertex {
     float surface_radius;
     float ribbon_side;
 };
+
+struct OverlaySphereInstance {
+    float center[3];
+    float radius;
+    float color[3];
+    float alpha;
+};
+
+constexpr VkDeviceSize aligned_size(VkDeviceSize size, VkDeviceSize alignment)
+{
+    return (size + alignment - 1) / alignment * alignment;
+}
+
+constexpr VkDeviceSize kSphereInstanceOffset = aligned_size(
+    sizeof(OverlayVertex) * kVertexCapacity, alignof(OverlaySphereInstance));
+constexpr VkDeviceSize kSlotBytes = aligned_size(
+    kSphereInstanceOffset + sizeof(OverlaySphereInstance) * kMaxSpheres, alignof(OverlayVertex));
+constexpr VkDeviceSize kBufferBytes = kSlotBytes * ViewportOverlay::kDistanceSlotCount;
 
 struct OverlayPushConstants {
     float eye[4];
@@ -187,17 +210,38 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
         return std::unexpected(result.error());
     }
 
-    auto vert = create_shader(overlay.device_, overlay_lines_vert_spv, overlay_lines_vert_spv_len);
-    if (!vert) {
+    auto line_vert = create_shader(overlay.device_, overlay_lines_vert_spv, overlay_lines_vert_spv_len);
+    if (!line_vert) {
         overlay.reset();
-        return std::unexpected(vert.error());
+        return std::unexpected(line_vert.error());
     }
-    auto frag = create_shader(overlay.device_, overlay_lines_frag_spv, overlay_lines_frag_spv_len);
-    if (!frag) {
-        vkDestroyShaderModule(overlay.device_, *vert, nullptr);
+    auto line_frag = create_shader(overlay.device_, overlay_lines_frag_spv, overlay_lines_frag_spv_len);
+    if (!line_frag) {
+        vkDestroyShaderModule(overlay.device_, *line_vert, nullptr);
         overlay.reset();
-        return std::unexpected(frag.error());
+        return std::unexpected(line_frag.error());
     }
+    auto sphere_vert = create_shader(overlay.device_, overlay_spheres_vert_spv, overlay_spheres_vert_spv_len);
+    if (!sphere_vert) {
+        vkDestroyShaderModule(overlay.device_, *line_vert, nullptr);
+        vkDestroyShaderModule(overlay.device_, *line_frag, nullptr);
+        overlay.reset();
+        return std::unexpected(sphere_vert.error());
+    }
+    auto sphere_frag = create_shader(overlay.device_, overlay_spheres_frag_spv, overlay_spheres_frag_spv_len);
+    if (!sphere_frag) {
+        vkDestroyShaderModule(overlay.device_, *line_vert, nullptr);
+        vkDestroyShaderModule(overlay.device_, *line_frag, nullptr);
+        vkDestroyShaderModule(overlay.device_, *sphere_vert, nullptr);
+        overlay.reset();
+        return std::unexpected(sphere_frag.error());
+    }
+    const auto destroy_shaders = [&] {
+        vkDestroyShaderModule(overlay.device_, *line_vert, nullptr);
+        vkDestroyShaderModule(overlay.device_, *line_frag, nullptr);
+        vkDestroyShaderModule(overlay.device_, *sphere_vert, nullptr);
+        vkDestroyShaderModule(overlay.device_, *sphere_frag, nullptr);
+    };
 
     VkPushConstantRange push_range{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                    sizeof(OverlayPushConstants)};
@@ -211,8 +255,7 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
         require_vk(vkCreatePipelineLayout(overlay.device_, &layout_info, nullptr, &overlay.pipeline_layout_),
                    "vkCreatePipelineLayout");
     if (!layout_result) {
-        vkDestroyShaderModule(overlay.device_, *vert, nullptr);
-        vkDestroyShaderModule(overlay.device_, *frag, nullptr);
+        destroy_shaders();
         overlay.reset();
         return std::unexpected(layout_result.error());
     }
@@ -220,11 +263,11 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = *vert;
+    stages[0].module = *line_vert;
     stages[0].pName = "main";
     stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = *frag;
+    stages[1].module = *line_frag;
     stages[1].pName = "main";
 
     VkVertexInputBindingDescription binding{0, sizeof(OverlayVertex), VK_VERTEX_INPUT_RATE_VERTEX};
@@ -305,8 +348,7 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
                                   nullptr, &overlay.line_pipeline_),
         "vkCreateGraphicsPipelines(line overlay)");
     if (!line_pipeline_result) {
-        vkDestroyShaderModule(overlay.device_, *vert, nullptr);
-        vkDestroyShaderModule(overlay.device_, *frag, nullptr);
+        destroy_shaders();
         overlay.reset();
         return std::unexpected(line_pipeline_result.error());
     }
@@ -315,17 +357,41 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
         vkCreateGraphicsPipelines(overlay.device_, VK_NULL_HANDLE, 1, &pipeline_info,
                                   nullptr, &overlay.path_pipeline_),
         "vkCreateGraphicsPipelines(path overlay)");
-    vkDestroyShaderModule(overlay.device_, *vert, nullptr);
-    vkDestroyShaderModule(overlay.device_, *frag, nullptr);
     if (!path_pipeline_result) {
+        destroy_shaders();
         overlay.reset();
         return std::unexpected(path_pipeline_result.error());
     }
 
-    // Host-visible vertex buffer for guides, diagnostics, and flow ribbons.
+    stages[0].module = *sphere_vert;
+    stages[1].module = *sphere_frag;
+    VkVertexInputBindingDescription sphere_binding{
+        0, sizeof(OverlaySphereInstance), VK_VERTEX_INPUT_RATE_INSTANCE};
+    std::array<VkVertexInputAttributeDescription, 4> sphere_attributes{{
+        {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(OverlaySphereInstance, center)},
+        {1, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlaySphereInstance, radius)},
+        {2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(OverlaySphereInstance, color)},
+        {3, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlaySphereInstance, alpha)},
+    }};
+    vertex_input.pVertexBindingDescriptions = &sphere_binding;
+    vertex_input.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(sphere_attributes.size());
+    vertex_input.pVertexAttributeDescriptions = sphere_attributes.data();
+    blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                      VK_COLOR_COMPONENT_B_BIT;
+    auto sphere_pipeline_result = require_vk(
+        vkCreateGraphicsPipelines(overlay.device_, VK_NULL_HANDLE, 1, &pipeline_info,
+                                  nullptr, &overlay.sphere_pipeline_),
+        "vkCreateGraphicsPipelines(sphere overlay)");
+    destroy_shaders();
+    if (!sphere_pipeline_result) {
+        overlay.reset();
+        return std::unexpected(sphere_pipeline_result.error());
+    }
+
+    // Host-visible data for slot-local line/path vertices and sphere instances.
     VkBufferCreateInfo buffer_info{};
     buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_info.size = sizeof(OverlayVertex) * kVertexCapacity;
+    buffer_info.size = kBufferBytes;
     buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (auto result = require_vk(vkCreateBuffer(overlay.device_, &buffer_info, nullptr, &overlay.vertex_buffer_),
@@ -411,8 +477,8 @@ Result<void> ViewportOverlay::set_scene_distance(std::uint32_t distance_slot, Vk
 
 Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D extent, VkRect2D content_rect,
                                      const OverlayCamera& camera, std::span<const OverlayLine> lines,
-                                     std::span<const OverlayPath> paths, float depth_bias,
-                                     float animation_time, std::uint32_t distance_slot)
+                                     std::span<const OverlayPath> paths, std::span<const OverlaySphere> spheres,
+                                     float depth_bias, float animation_time, std::uint32_t distance_slot)
 {
     if (distance_slot >= kDistanceSlotCount) {
         return std::unexpected(make_error("overlay distance slot out of range"));
@@ -427,9 +493,14 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D 
     if (paths.size() > kMaxPaths) {
         return std::unexpected(make_error("overlay path capacity exceeded"));
     }
+    if (spheres.size() > kMaxSpheres) {
+        return std::unexpected(make_error("overlay sphere capacity exceeded"));
+    }
     const std::uint32_t line_count = static_cast<std::uint32_t>(lines.size());
     const std::uint32_t path_count = static_cast<std::uint32_t>(paths.size());
-    auto* vertices = static_cast<OverlayVertex*>(vertex_mapped_);
+    const std::uint32_t sphere_count = static_cast<std::uint32_t>(spheres.size());
+    auto* slot_data = static_cast<std::byte*>(vertex_mapped_) + kSlotBytes * distance_slot;
+    auto* vertices = reinterpret_cast<OverlayVertex*>(slot_data);
     const float no_tangent[3]{};
     const auto write_vertex = [&](std::uint32_t vertex_index, const float position[3],
                                   const float color[3], float alpha, float path_distance,
@@ -471,6 +542,15 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D 
                          path.host_radius, side);
         }
     }
+    auto* sphere_instances = reinterpret_cast<OverlaySphereInstance*>(slot_data + kSphereInstanceOffset);
+    for (std::uint32_t index = 0; index < sphere_count; ++index) {
+        const auto& sphere = spheres[index];
+        auto& instance = sphere_instances[index];
+        std::memcpy(instance.center, sphere.center, sizeof(instance.center));
+        instance.radius = sphere.radius;
+        std::memcpy(instance.color, sphere.color, sizeof(instance.color));
+        instance.alpha = sphere.alpha;
+    }
 
     VkRenderPassBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -479,7 +559,7 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D 
     begin.renderArea.extent = extent;
     vkCmdBeginRenderPass(command_buffer, &begin, VK_SUBPASS_CONTENTS_INLINE);
 
-    if (line_count > 0 || path_count > 0) {
+    if (line_count > 0 || path_count > 0 || sphere_count > 0) {
         VkViewport viewport{static_cast<float>(content_rect.offset.x), static_cast<float>(content_rect.offset.y),
                             static_cast<float>(content_rect.extent.width),
                             static_cast<float>(content_rect.extent.height), 0.0F, 1.0F};
@@ -507,8 +587,15 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D 
         vkCmdPushConstants(command_buffer, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(push), &push);
 
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer_, &offset);
+        if (sphere_count > 0) {
+            const VkDeviceSize sphere_offset = kSlotBytes * distance_slot + kSphereInstanceOffset;
+            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, sphere_pipeline_);
+            vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer_, &sphere_offset);
+            vkCmdDraw(command_buffer, 6, sphere_count, 0, 0);
+        }
+
+        const VkDeviceSize vertex_offset = kSlotBytes * distance_slot;
+        vkCmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffer_, &vertex_offset);
         if (line_count > 0) {
             vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, line_pipeline_);
             vkCmdDraw(command_buffer, line_count * 2, 1, 0, 0);
@@ -562,6 +649,10 @@ void ViewportOverlay::reset()
         vkDestroyPipeline(device_, path_pipeline_, nullptr);
         path_pipeline_ = VK_NULL_HANDLE;
     }
+    if (sphere_pipeline_ != VK_NULL_HANDLE) {
+        vkDestroyPipeline(device_, sphere_pipeline_, nullptr);
+        sphere_pipeline_ = VK_NULL_HANDLE;
+    }
     if (pipeline_layout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
         pipeline_layout_ = VK_NULL_HANDLE;
@@ -601,6 +692,7 @@ void ViewportOverlay::move_from(ViewportOverlay& other) noexcept
     pipeline_layout_ = std::exchange(other.pipeline_layout_, VK_NULL_HANDLE);
     line_pipeline_ = std::exchange(other.line_pipeline_, VK_NULL_HANDLE);
     path_pipeline_ = std::exchange(other.path_pipeline_, VK_NULL_HANDLE);
+    sphere_pipeline_ = std::exchange(other.sphere_pipeline_, VK_NULL_HANDLE);
     vertex_buffer_ = std::exchange(other.vertex_buffer_, VK_NULL_HANDLE);
     vertex_memory_ = std::exchange(other.vertex_memory_, VK_NULL_HANDLE);
     vertex_mapped_ = std::exchange(other.vertex_mapped_, nullptr);

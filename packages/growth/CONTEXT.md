@@ -20,7 +20,7 @@ This package implements renderer-independent branch-module development, paper eq
 - **Maximum root vigor**: plant type's Table 4 cap `v̄_rootmax` on the root vigor budget.
 - **Direct light exposure**: one module's available light/space estimate `Q(u)`, derived from raw bounding-sphere intersections with every other module except itself.
 - **Accumulated light**: a module's direct light exposure plus the accumulated light of all its attached child subtrees. Mature modules route this through terminal and branch topology; an immature leaf module's accumulated light equals its direct light exposure.
-- **Module bounding sphere**: sphere enclosing a module's currently developed geometry, centered at that geometry's centroid with radius equal to its furthest point.
+- **Module bounding sphere**: sphere enclosing a module's currently developed points, centered at their module-local axis-aligned bounds midpoint with radius equal to the furthest point. The rigid module transform places that sphere in plant space, so its size is orientation-invariant and depends on spatial extent rather than branching endpoint density.
 - **Basipetal pass**: tip-to-root accumulated-light calculation described by the papers, not currently orchestrated.
 - **Acropetal pass**: root-to-tip vigor distribution through the same continuous module/terminal topology used by accumulated light.
 - **Morphospace**: fixed apical-control/determinacy grid used by the pure selection policy.

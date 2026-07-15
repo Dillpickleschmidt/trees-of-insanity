@@ -36,6 +36,13 @@ struct OverlayPath {
     float host_radius = 0.0F;
 };
 
+struct OverlaySphere {
+    float center[3]{};
+    float radius = 0.0F;
+    float color[3]{};
+    float alpha = 1.0F;
+};
+
 class ViewportOverlay {
 public:
     static constexpr std::uint32_t kDistanceSlotCount = 2;
@@ -52,8 +59,8 @@ public:
     [[nodiscard]] Result<void> set_scene_distance(std::uint32_t slot, VkImageView distance_view);
     [[nodiscard]] Result<void> record(VkCommandBuffer command_buffer, VkExtent2D extent, VkRect2D content_rect,
                                       const OverlayCamera& camera, std::span<const OverlayLine> lines,
-                                      std::span<const OverlayPath> paths, float depth_bias,
-                                      float animation_time, std::uint32_t distance_slot);
+                                      std::span<const OverlayPath> paths, std::span<const OverlaySphere> spheres,
+                                      float depth_bias, float animation_time, std::uint32_t distance_slot);
     void reset();
 
 private:
@@ -69,6 +76,7 @@ private:
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline line_pipeline_ = VK_NULL_HANDLE;
     VkPipeline path_pipeline_ = VK_NULL_HANDLE;
+    VkPipeline sphere_pipeline_ = VK_NULL_HANDLE;
     VkBuffer vertex_buffer_ = VK_NULL_HANDLE;
     VkDeviceMemory vertex_memory_ = VK_NULL_HANDLE;
     void* vertex_mapped_ = nullptr;

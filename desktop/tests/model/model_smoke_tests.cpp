@@ -274,6 +274,7 @@ TEST_CASE("Plant workspace steps and resets one diagnosed root")
         initial_preview->snapshot, initial_preview->mature_root_snapshot,
         {.show_collision_spheres = true, .show_labels = true});
     CHECK(seed_projection.diagnostic_lines.empty());
+    CHECK(seed_projection.diagnostic_spheres.empty());
     REQUIRE(seed_projection.diagnostic_labels.size() == 1);
 
     REQUIRE(session->set_plant_timestep(2.0F));
@@ -292,7 +293,18 @@ TEST_CASE("Plant workspace steps and resets one diagnosed root")
     const auto developed_projection = toi::render::make_plant_preview_stage_projection(
         developed_preview->snapshot, developed_preview->mature_root_snapshot,
         {.show_collision_spheres = true, .show_labels = true});
-    CHECK_FALSE(developed_projection.diagnostic_lines.empty());
+    REQUIRE(developed_projection.diagnostic_spheres.size() == 1);
+    const auto& projected_sphere = developed_projection.diagnostic_spheres.front();
+    const auto& snapshot_sphere = developed_preview->snapshot.modules.front().collision_sphere;
+    CHECK(projected_sphere.center.x == Catch::Approx(snapshot_sphere.center.x));
+    CHECK(projected_sphere.center.y == Catch::Approx(snapshot_sphere.center.y));
+    CHECK(projected_sphere.center.z == Catch::Approx(snapshot_sphere.center.z));
+    CHECK(projected_sphere.radius == Catch::Approx(snapshot_sphere.radius));
+    CHECK(projected_sphere.color.x == Catch::Approx(0.337F));
+    CHECK(projected_sphere.color.y == Catch::Approx(0.706F));
+    CHECK(projected_sphere.color.z == Catch::Approx(0.914F));
+    CHECK(projected_sphere.alpha > 0.0F);
+    CHECK(projected_sphere.alpha < 1.0F);
     CHECK(developed_projection.camera.eye.x == Catch::Approx(seed_projection.camera.eye.x));
     CHECK(developed_projection.camera.eye.y == Catch::Approx(seed_projection.camera.eye.y));
     CHECK(developed_projection.camera.eye.z == Catch::Approx(seed_projection.camera.eye.z));
@@ -361,6 +373,10 @@ TEST_CASE("Plant maturity crossing exposes one attached generation")
          .show_vigor_flow = true,
          .show_mature_terminals = true});
     CHECK(projection.diagnostic_labels.size() == module_count);
+    REQUIRE(projection.diagnostic_spheres.size() == module_count);
+    CHECK((projection.diagnostic_spheres[0].color.x != projection.diagnostic_spheres[1].color.x ||
+           projection.diagnostic_spheres[0].color.y != projection.diagnostic_spheres[1].color.y ||
+           projection.diagnostic_spheres[0].color.z != projection.diagnostic_spheres[1].color.z));
     CHECK_FALSE(projection.diagnostic_lines.empty());
 }
 

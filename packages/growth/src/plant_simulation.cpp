@@ -666,9 +666,17 @@ RigidTransform transform_for_euler(EulerAngles angles, Vec3 translation)
 
 Sphere sphere_for_points(std::span<const Vec3> points)
 {
-    Vec3 center;
-    for (const auto point : points) center = add(center, point);
-    center = scale(center, 1.0F / static_cast<float>(points.size()));
+    Vec3 minimum = points.front();
+    Vec3 maximum = points.front();
+    for (const auto point : points.subspan(1)) {
+        minimum.x = std::min(minimum.x, point.x);
+        minimum.y = std::min(minimum.y, point.y);
+        minimum.z = std::min(minimum.z, point.z);
+        maximum.x = std::max(maximum.x, point.x);
+        maximum.y = std::max(maximum.y, point.y);
+        maximum.z = std::max(maximum.z, point.z);
+    }
+    const Vec3 center = scale(add(minimum, maximum), 0.5F);
     float radius = 0.0F;
     for (const auto point : points) radius = std::max(radius, distance(center, point));
     return {.center = center, .radius = radius};
@@ -692,7 +700,9 @@ Result<ModuleGeometry> build_geometry(const BranchModulePrototype& prototype,
     geometry.mature_segments.resize(prototype.segments.size());
     geometry.current_nodes.assign(prototype.nodes.size(), transform.translation);
     geometry.mature_nodes.assign(prototype.nodes.size(), transform.translation);
+    std::vector<Vec3> developed_points{Vec3{}};
     for (auto segment : current->segments) {
+        developed_points.push_back(subtract(segment.child_position, local_root));
         segment.parent_position = world_point(segment.parent_position);
         segment.child_position = world_point(segment.child_position);
         geometry.current_segments[segment.source_segment_id] = segment;
@@ -716,11 +726,11 @@ Result<ModuleGeometry> build_geometry(const BranchModulePrototype& prototype,
             nodes.push(segment.child_node);
         }
     }
-    std::vector<Vec3> developed{transform.translation};
-    for (const auto& segment : geometry.current_segments) {
-        if (segment) developed.push_back(segment->child_position);
-    }
-    geometry.sphere = sphere_for_points(developed);
+    const Sphere local_sphere = sphere_for_points(developed_points);
+    geometry.sphere = {
+        .center = transform_point(transform, local_sphere.center),
+        .radius = local_sphere.radius,
+    };
     return geometry;
 }
 
