@@ -221,16 +221,18 @@ enum class FlowKind {
     Vigor,
 };
 
-struct PlantFlowPath {
+struct PlantFlowDiagnosticOptions {
+    bool accumulated_light = false;
+    bool vigor = false;
+};
+
+struct PlantFlowDiagnostic {
     FlowKind kind = FlowKind::AccumulatedLight;
-    std::size_t module_id = 0;
-    std::size_t source_segment_id = 0;
-    Vec3 start;
-    Vec3 end;
-    float host_radius = 0.0F;
+    std::size_t segment_index = 0;
     float amount = 0.0F;
     float root_total = 0.0F;
-    float fraction = 0.0F;
+    float start_distance_from_root = 0.0F;
+    float end_distance_from_root = 0.0F;
 };
 
 struct AttachmentEvent {
@@ -245,7 +247,7 @@ struct PlantSnapshot {
     std::span<const PlantModuleSnapshot> modules;
     std::span<const PlantSegmentSnapshot> segments;
     std::span<const MatureTerminalSnapshot> mature_terminals;
-    std::span<const PlantFlowPath> flow_paths;
+    std::span<const PlantFlowDiagnostic> flow_diagnostics;
     std::span<const AttachmentEvent> attachment_events;
 };
 
@@ -256,8 +258,9 @@ public:
                                                         std::size_t root_prototype_id);
 
     [[nodiscard]] Result<void> step(float timestep);
+    [[nodiscard]] Result<void> set_flow_diagnostics(PlantFlowDiagnosticOptions options);
 
-    // Views remain valid until the next successful step or simulation destruction.
+    // Views remain valid until the next successful step, diagnostic update, or simulation destruction.
     [[nodiscard]] PlantSnapshot snapshot() const;
 
 private:
@@ -283,7 +286,8 @@ private:
     PlantSimulation() = default;
 
     [[nodiscard]] Result<void> rebuild_conduit(ConduitWorkset& workset);
-    [[nodiscard]] Result<void> rebuild_snapshot(bool emit_flows);
+    [[nodiscard]] Result<void> rebuild_flow_diagnostics(const ConduitWorkset& workset);
+    [[nodiscard]] Result<void> rebuild_snapshot(bool include_flow_diagnostics);
 
     PlantTypeParameters plant_type_;
     std::vector<BranchModulePrototype> prepared_prototypes_;
@@ -294,7 +298,8 @@ private:
     std::vector<PlantModuleSnapshot> snapshot_modules_;
     std::vector<PlantSegmentSnapshot> snapshot_segments_;
     std::vector<MatureTerminalSnapshot> snapshot_terminals_;
-    std::vector<PlantFlowPath> snapshot_flows_;
+    PlantFlowDiagnosticOptions flow_diagnostic_options_;
+    std::vector<PlantFlowDiagnostic> snapshot_flow_diagnostics_;
     std::vector<AttachmentEvent> snapshot_attachment_events_;
 };
 

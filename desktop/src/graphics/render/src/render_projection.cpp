@@ -96,16 +96,21 @@ GrowthPreviewStageProjection make_plant_preview_stage_projection(
             });
         }
     }
-    for (const auto& flow : snapshot.flow_paths) {
+    for (const auto& flow : snapshot.flow_diagnostics) {
         if ((flow.kind == growth::FlowKind::AccumulatedLight && !diagnostics.show_accumulated_light_flow) ||
             (flow.kind == growth::FlowKind::Vigor && !diagnostics.show_vigor_flow)) {
             continue;
         }
+        const auto& segment = snapshot.segments[flow.segment_index];
         projection.diagnostic_paths.push_back({
-            .start = flow.start,
-            .end = flow.end,
-            .color = weight_map_color(flow.fraction),
-            .host_radius = flow.host_radius,
+            .start = flow.kind == growth::FlowKind::AccumulatedLight
+                ? segment.child_position
+                : segment.parent_position,
+            .end = flow.kind == growth::FlowKind::AccumulatedLight
+                ? segment.parent_position
+                : segment.child_position,
+            .color = weight_map_color(std::clamp(flow.amount / flow.root_total, 0.0F, 1.0F)),
+            .host_radius = segment.diameter * 0.5F,
         });
     }
     if (diagnostics.show_mature_terminals) {

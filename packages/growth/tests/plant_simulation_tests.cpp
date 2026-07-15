@@ -105,7 +105,7 @@ TEST_CASE("root-only plant starts at origin with stable flat snapshot storage")
     CHECK(root.vigor == Catch::Approx(kMaximumModuleVigor));
     CHECK(root.growth_rate == Catch::Approx(plant_type.plant_growth_rate));
     CHECK(snapshot.mature_terminals.empty());
-    CHECK(snapshot.flow_paths.empty());
+    CHECK(snapshot.flow_diagnostics.empty());
     CHECK(snapshot.attachment_events.empty());
 }
 
@@ -173,7 +173,31 @@ TEST_CASE("maturity crossing atomically attaches every eligible root terminal")
     CHECK(module_by_id(activated, 1).physiological_age > 0.0F);
     CHECK(module_by_id(activated, 1).direct_light_exposure > 0.0F);
     CHECK(module_by_id(activated, 1).transform.z_axis.x == Catch::Approx(child_transform.z_axis.x));
-    CHECK_FALSE(activated.flow_paths.empty());
+    CHECK(activated.flow_diagnostics.empty());
+    REQUIRE(simulation->set_flow_diagnostics({.accumulated_light = true, .vigor = true}));
+    const auto diagnosed = simulation->snapshot();
+    CHECK_FALSE(diagnosed.flow_diagnostics.empty());
+    const auto parent_segment = module_by_id(diagnosed, 0).segments.offset + 1;
+    const auto child_segment = module_by_id(diagnosed, 1).segments.offset;
+    const auto flow_for = [&](FlowKind kind, std::size_t segment) {
+        return std::ranges::find_if(diagnosed.flow_diagnostics, [&](const auto& flow) {
+            return flow.kind == kind && flow.segment_index == segment;
+        });
+    };
+    const auto parent_light = flow_for(FlowKind::AccumulatedLight, parent_segment);
+    const auto child_light = flow_for(FlowKind::AccumulatedLight, child_segment);
+    const auto parent_vigor = flow_for(FlowKind::Vigor, parent_segment);
+    const auto child_vigor = flow_for(FlowKind::Vigor, child_segment);
+    REQUIRE(parent_light != diagnosed.flow_diagnostics.end());
+    REQUIRE(child_light != diagnosed.flow_diagnostics.end());
+    REQUIRE(parent_vigor != diagnosed.flow_diagnostics.end());
+    REQUIRE(child_vigor != diagnosed.flow_diagnostics.end());
+    CHECK(parent_light->amount == Catch::Approx(
+        child_light->amount + module_by_id(diagnosed, 0).direct_light_exposure / 2.0F));
+    CHECK(parent_vigor->amount >= child_vigor->amount);
+    CHECK(child_vigor->amount == Catch::Approx(module_by_id(diagnosed, 1).vigor));
+    CHECK(parent_light->end_distance_from_root == Catch::Approx(child_light->start_distance_from_root));
+    CHECK(parent_vigor->end_distance_from_root == Catch::Approx(child_vigor->start_distance_from_root));
 }
 
 TEST_CASE("same-step siblings avoid each other's mature bounds")
@@ -248,6 +272,38 @@ TEST_CASE("continuous pipe crosses parent and child module attachment")
     CHECK(module_segments(final_snapshot, module_by_id(final_snapshot, 0))[1].diameter > attachment_diameter);
 }
 
+TEST_CASE("flow diagnostics are derived on demand through developed frontiers")
+{
+    using namespace toi::growth;
+    auto simulation = PlantSimulation::create(make_library(), make_plant_type(), 7);
+    REQUIRE(simulation);
+    REQUIRE(simulation->set_flow_diagnostics({.accumulated_light = true}));
+    CHECK(simulation->snapshot().flow_diagnostics.empty());
+
+    const auto root = simulation->snapshot().modules.front();
+    REQUIRE(simulation->step(0.75F * root.fully_grown_age / root.growth_rate));
+    const auto light_snapshot = simulation->snapshot();
+    REQUIRE(light_snapshot.flow_diagnostics.size() == 3);
+    for (const auto& flow : light_snapshot.flow_diagnostics) {
+        CHECK(flow.kind == FlowKind::AccumulatedLight);
+        CHECK(flow.end_distance_from_root > flow.start_distance_from_root);
+        CHECK(flow.root_total == Catch::Approx(1.0F));
+    }
+    CHECK(light_snapshot.flow_diagnostics[0].amount == Catch::Approx(1.0F));
+    CHECK(light_snapshot.flow_diagnostics[1].amount == Catch::Approx(0.5F));
+    CHECK(light_snapshot.flow_diagnostics[2].amount == Catch::Approx(0.5F));
+
+    REQUIRE(simulation->set_flow_diagnostics({.vigor = true}));
+    const auto vigor_snapshot = simulation->snapshot();
+    REQUIRE(vigor_snapshot.flow_diagnostics.size() == 3);
+    CHECK(std::ranges::all_of(vigor_snapshot.flow_diagnostics, [](const auto& flow) {
+        return flow.kind == FlowKind::Vigor;
+    }));
+
+    REQUIRE(simulation->set_flow_diagnostics({}));
+    CHECK(simulation->snapshot().flow_diagnostics.empty());
+}
+
 TEST_CASE("root vigor budget can exceed one module's vigor")
 {
     using namespace toi::growth;
@@ -257,12 +313,19 @@ TEST_CASE("root vigor budget can exceed one module's vigor")
     REQUIRE(simulation);
     REQUIRE(simulation->step(10'000.0F));
     REQUIRE(simulation->step(1.0F));
+    REQUIRE(simulation->set_flow_diagnostics({.vigor = true}));
     const auto snapshot = simulation->snapshot();
     CHECK(module_by_id(snapshot, 0).vigor == Catch::Approx(kMaximumModuleVigor));
     CHECK(module_by_id(snapshot, 1).vigor == Catch::Approx(kMaximumModuleVigor));
-    const auto vigor_path = std::ranges::find(snapshot.flow_paths, FlowKind::Vigor, &PlantFlowPath::kind);
-    REQUIRE(vigor_path != snapshot.flow_paths.end());
-    CHECK(vigor_path->root_total == Catch::Approx(2.0F));
+    const auto vigor = std::ranges::find(snapshot.flow_diagnostics, FlowKind::Vigor,
+                                         &PlantFlowDiagnostic::kind);
+    REQUIRE(vigor != snapshot.flow_diagnostics.end());
+    CHECK(vigor->root_total == Catch::Approx(2.0F));
+    const auto child_vigor = std::ranges::find_if(snapshot.flow_diagnostics, [&](const auto& flow) {
+        return flow.kind == FlowKind::Vigor && snapshot.segments[flow.segment_index].module_id == 1;
+    });
+    REQUIRE(child_vigor != snapshot.flow_diagnostics.end());
+    CHECK(child_vigor->amount == Catch::Approx(kMaximumModuleVigor));
 }
 
 TEST_CASE("accumulated-light and vigor flow remain deterministic without grandchildren")
@@ -272,6 +335,8 @@ TEST_CASE("accumulated-light and vigor flow remain deterministic without grandch
     auto second = PlantSimulation::create(make_library(), make_plant_type(), 7);
     REQUIRE(first);
     REQUIRE(second);
+    REQUIRE(first->set_flow_diagnostics({.accumulated_light = true, .vigor = true}));
+    REQUIRE(second->set_flow_diagnostics({.accumulated_light = true, .vigor = true}));
     for (const float timestep : {10'000.0F, 100.0F, 10'000.0F}) {
         REQUIRE(first->step(timestep));
         REQUIRE(second->step(timestep));
@@ -280,7 +345,7 @@ TEST_CASE("accumulated-light and vigor flow remain deterministic without grandch
     const auto right = second->snapshot();
     REQUIRE(left.modules.size() == 3);
     REQUIRE(left.modules.size() == right.modules.size());
-    CHECK(left.flow_paths.size() == right.flow_paths.size());
+    CHECK(left.flow_diagnostics.size() == right.flow_diagnostics.size());
     CHECK(module_by_id(left, 1).physiological_age == Catch::Approx(module_by_id(right, 1).physiological_age));
     CHECK(left.mature_terminals.size() >= 6);
     for (const auto& terminal : left.mature_terminals) {

@@ -36,7 +36,8 @@ v̄(u_l) = v̄(u) - v̄(u_m)
 - `collision_measure` calculates Eq. 1's raw cubic-meter intersection sum over every other module; see ADR 0006.
 - `light_exposure` calculates direct light exposure `Q(u)`.
 - Accumulated light includes each module's direct exposure exactly once; see ADR 0007.
-- Mature modules divide direct exposure equally among terminals; occupied terminals add child accumulated light, and prototype branch topology carries the combined value toward the module root. Vigor traverses the same continuous network in reverse (ADR 0016).
+- Mature modules divide direct exposure equally among terminals; occupied terminals add child accumulated light, and prototype branch topology carries the combined value toward the module root. Vigor traverses the same topology in reverse.
+- Flow diagnostics are optional derived detail, not simulation state. An immature module divides its direct exposure equally among the leaf points of its currently developed segment structure; diagnostic light accumulates rootward and vigor follows the existing main/lateral split toward those frontiers. Diagnostics are rebuilt from the current committed state only when requested (ADR 0019).
 - The root vigor budget follows accumulated light up to `v̄_rootmax`; see ADR 0009.
 - `split_vigor` performs one binary Borchert-Honda split. Main-axis continuations are precomputed from prototype geometry using ADR 0010. Multiple laterals form one group for Eq. 2, then divide their shared budget proportionally by accumulated light using ADR 0011. An all-zero-light fork uses `λ` and `1−λ` directly rather than sending all vigor to main or producing `0/0`.
 
@@ -102,7 +103,7 @@ The 16 presets retain Synthetic Silviculture Table 4 exactly:
 
 ## Current implementation
 
-`PlantSimulation` owns plant architecture, one attached generation, atomic stepping, continuous attachment-aware pipe/light/vigor traversal, and zero-copy plant snapshots. Repeated descendant attachment, shedding, and senescence enter through later milestones.
+`PlantSimulation` owns plant architecture, one attached generation, atomic stepping, continuous attachment-aware pipe/light/vigor traversal, optional current-state conduit diagnostics, and zero-copy plant snapshots. Repeated descendant attachment, shedding, and senescence enter through later milestones.
 
 ## Sources
 

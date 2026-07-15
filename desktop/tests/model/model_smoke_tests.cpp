@@ -364,7 +364,7 @@ TEST_CASE("Plant maturity crossing exposes one attached generation")
     auto flowing = session->plant_preview_snapshot();
     REQUIRE(flowing);
     CHECK(flowing->snapshot.modules.size() == module_count);
-    CHECK_FALSE(flowing->snapshot.flow_paths.empty());
+    CHECK_FALSE(flowing->snapshot.flow_diagnostics.empty());
     const auto projection = toi::render::make_plant_preview_stage_projection(
         flowing->snapshot, flowing->mature_root_snapshot,
         {.show_collision_spheres = true,

@@ -73,6 +73,7 @@ struct PlantSimulation::ConduitWorkset {
     std::vector<Edge> edges;
     std::vector<std::size_t> child_edge_offsets;
     std::vector<std::size_t> child_edges;
+    std::vector<std::size_t> preorder_edges;
     std::vector<std::size_t> postorder_edges;
     std::vector<float> current_diameters;
 };
@@ -174,7 +175,7 @@ Result<PlantSimulation> PlantSimulation::create(const BranchModulePrototypeLibra
         .diagnostics_active = true,
     });
     simulation.snapshot_attachment_events_.clear();
-    simulation.snapshot_flows_.clear();
+    simulation.snapshot_flow_diagnostics_.clear();
     auto rebuilt = simulation.rebuild_snapshot(false);
     if (!rebuilt) {
         return std::unexpected(rebuilt.error());
@@ -197,7 +198,7 @@ Result<void> PlantSimulation::step(float timestep)
         for (auto& module : next.module_records_) {
             module.diagnostics_active = true;
         }
-        auto current = next.rebuild_snapshot(true);
+        auto current = next.rebuild_snapshot(false);
         if (!current) {
             return std::unexpected(current.error());
         }
@@ -285,7 +286,7 @@ Result<void> PlantSimulation::step(float timestep)
         }
 
         next.plant_age_ += timestep;
-        auto committed = next.rebuild_snapshot(false);
+        auto committed = next.rebuild_snapshot(true);
         if (!committed) {
             return std::unexpected(committed.error());
         }
@@ -299,6 +300,33 @@ Result<void> PlantSimulation::step(float timestep)
     }
 }
 
+Result<void> PlantSimulation::set_flow_diagnostics(PlantFlowDiagnosticOptions options)
+{
+    const auto previous_options = flow_diagnostic_options_;
+    try {
+        if (!options.accumulated_light && !options.vigor) {
+            flow_diagnostic_options_ = options;
+            std::vector<PlantFlowDiagnostic>().swap(snapshot_flow_diagnostics_);
+            return {};
+        }
+
+        ConduitWorkset conduit;
+        if (auto rebuilt = rebuild_conduit(conduit); !rebuilt) return rebuilt;
+        flow_diagnostic_options_ = options;
+        if (auto rebuilt = rebuild_flow_diagnostics(conduit); !rebuilt) {
+            flow_diagnostic_options_ = previous_options;
+            return rebuilt;
+        }
+        return {};
+    } catch (const std::bad_alloc&) {
+        flow_diagnostic_options_ = previous_options;
+        return std::unexpected(GrowthError{
+            .code = GrowthError::Code::ResourceExhausted,
+            .message = "plant flow diagnostics exhausted memory",
+        });
+    }
+}
+
 PlantSnapshot PlantSimulation::snapshot() const
 {
     return {
@@ -306,7 +334,7 @@ PlantSnapshot PlantSimulation::snapshot() const
         .modules = snapshot_modules_,
         .segments = snapshot_segments_,
         .mature_terminals = snapshot_terminals_,
-        .flow_paths = snapshot_flows_,
+        .flow_diagnostics = snapshot_flow_diagnostics_,
         .attachment_events = snapshot_attachment_events_,
     };
 }
@@ -379,8 +407,7 @@ Result<void> PlantSimulation::rebuild_conduit(ConduitWorkset& workset)
         workset.child_edges[child_edge_cursors[workset.edges[edge].parent_node]++] = edge;
     }
 
-    std::vector<std::size_t> preorder_edges;
-    preorder_edges.reserve(workset.edges.size());
+    workset.preorder_edges.reserve(workset.edges.size());
     std::queue<std::size_t> nodes;
     if (!module_records_.empty()) {
         const auto& root_prototype = prepared_prototypes_[module_records_.front().prototype_index];
@@ -392,14 +419,14 @@ Result<void> PlantSimulation::rebuild_conduit(ConduitWorkset& workset)
         for (std::size_t index = workset.child_edge_offsets[node];
              index < workset.child_edge_offsets[node + 1]; ++index) {
             const auto edge = workset.child_edges[index];
-            preorder_edges.push_back(edge);
+            workset.preorder_edges.push_back(edge);
             nodes.push(workset.edges[edge].child_node);
         }
     }
-    if (preorder_edges.size() != workset.edges.size()) {
+    if (workset.preorder_edges.size() != workset.edges.size()) {
         return std::unexpected(invalid_prototype("plant conduit must be one rooted tree"));
     }
-    workset.postorder_edges.assign(preorder_edges.rbegin(), preorder_edges.rend());
+    workset.postorder_edges.assign(workset.preorder_edges.rbegin(), workset.preorder_edges.rend());
 
     const float terminal_thickness = plant_type_.terminal_thickness * kCentimetersToMeters;
     workset.current_diameters.assign(workset.edges.size(), terminal_thickness);
@@ -425,7 +452,190 @@ Result<void> PlantSimulation::rebuild_conduit(ConduitWorkset& workset)
     return {};
 }
 
-Result<void> PlantSimulation::rebuild_snapshot(bool emit_flows)
+Result<void> PlantSimulation::rebuild_flow_diagnostics(const ConduitWorkset& workset)
+{
+    if (!flow_diagnostic_options_.accumulated_light && !flow_diagnostic_options_.vigor) {
+        std::vector<PlantFlowDiagnostic>().swap(snapshot_flow_diagnostics_);
+        return {};
+    }
+    if (snapshot_segments_.size() != workset.edges.size() || snapshot_modules_.size() != module_records_.size()) {
+        return std::unexpected(invalid_prototype("plant conduit does not match its snapshot"));
+    }
+
+    const std::size_t node_count = workset.child_edge_offsets.size() - 1;
+    std::vector<bool> active_edges(workset.edges.size(), false);
+    for (std::size_t edge = 0; edge < workset.edges.size(); ++edge) {
+        active_edges[edge] = distance(snapshot_segments_[edge].parent_position,
+                                      snapshot_segments_[edge].child_position) > kEpsilon;
+    }
+
+    std::vector<float> node_light(node_count, 0.0F);
+    std::queue<std::size_t> local_nodes;
+    std::vector<std::size_t> frontier_nodes;
+    for (std::size_t module = 0; module < module_records_.size(); ++module) {
+        const auto& prototype = prepared_prototypes_[module_records_[module].prototype_index];
+        while (!local_nodes.empty()) local_nodes.pop();
+        frontier_nodes.clear();
+        local_nodes.push(prototype.root_node);
+        while (!local_nodes.empty()) {
+            const auto local_node = local_nodes.front();
+            local_nodes.pop();
+            bool has_active_child = false;
+            for (const auto source : prototype.child_segments_by_node[local_node]) {
+                const auto edge = workset.module_edge_offsets[module] + source;
+                if (!active_edges[edge]) continue;
+                has_active_child = true;
+                local_nodes.push(prototype.segments[source].child_node);
+            }
+            if (!has_active_child) {
+                frontier_nodes.push_back(workset.global_node_by_local_node[
+                    workset.module_node_offsets[module] + local_node]);
+            }
+        }
+        const float share = snapshot_modules_[module].direct_light_exposure /
+            static_cast<float>(frontier_nodes.size());
+        for (const auto node : frontier_nodes) node_light[node] += share;
+    }
+
+    std::vector<float> edge_light(workset.edges.size(), 0.0F);
+    for (const auto edge : workset.postorder_edges) {
+        if (!active_edges[edge]) continue;
+        const auto& conduit_edge = workset.edges[edge];
+        edge_light[edge] = node_light[conduit_edge.child_node];
+        node_light[conduit_edge.parent_node] += edge_light[edge];
+    }
+
+    const auto& root_prototype = prepared_prototypes_[module_records_.front().prototype_index];
+    const auto root_node = workset.global_node_by_local_node[root_prototype.root_node];
+    const float root_light_total = node_light[root_node];
+    const float root_vigor_total = std::min(root_light_total, plant_type_.root_max_vigor);
+    std::vector<float> edge_vigor;
+    if (flow_diagnostic_options_.vigor) {
+        edge_vigor.assign(workset.edges.size(), 0.0F);
+        std::vector<std::optional<std::size_t>> main_child_edge_by_node(node_count);
+        for (std::size_t module = 0; module < module_records_.size(); ++module) {
+            const auto& prototype = prepared_prototypes_[module_records_[module].prototype_index];
+            for (std::size_t node = 0; node < prototype.nodes.size(); ++node) {
+                if (const auto main = prototype.main_child_segment_by_node[node]) {
+                    const auto global_node = workset.global_node_by_local_node[
+                        workset.module_node_offsets[module] + node];
+                    main_child_edge_by_node[global_node] = workset.module_edge_offsets[module] + *main;
+                }
+            }
+        }
+        std::vector<float> node_vigor(node_count, 0.0F);
+        node_vigor[root_node] = root_vigor_total;
+        std::queue<std::size_t> nodes;
+        nodes.push(root_node);
+        const float apical_control = parameter_for_plant_age(
+            plant_type_.apical_control, plant_type_.mature_apical_control,
+            plant_type_.flowering_age, plant_age_);
+        while (!nodes.empty()) {
+            const auto node = nodes.front();
+            nodes.pop();
+            std::size_t active_child_count = 0;
+            std::size_t first_active_child = 0;
+            for (std::size_t index = workset.child_edge_offsets[node];
+                 index < workset.child_edge_offsets[node + 1]; ++index) {
+                const auto edge = workset.child_edges[index];
+                if (!active_edges[edge]) continue;
+                if (active_child_count == 0) first_active_child = edge;
+                ++active_child_count;
+            }
+            if (active_child_count == 0) continue;
+            float available_vigor = node_vigor[node];
+            const auto& first_edge = workset.edges[first_active_child];
+            const auto& first_prototype =
+                prepared_prototypes_[module_records_[first_edge.module_index].prototype_index];
+            if (first_edge.module_index != 0 &&
+                first_prototype.segments[first_edge.source_segment_id].parent_node == first_prototype.root_node) {
+                available_vigor = snapshot_modules_[first_edge.module_index].vigor;
+            }
+            if (active_child_count == 1) {
+                edge_vigor[first_active_child] = available_vigor;
+                node_vigor[workset.edges[first_active_child].child_node] = edge_vigor[first_active_child];
+                nodes.push(workset.edges[first_active_child].child_node);
+                continue;
+            }
+
+            auto main_edge = first_active_child;
+            if (const auto main = main_child_edge_by_node[node];
+                *main < active_edges.size() && active_edges[*main]) {
+                main_edge = *main;
+            }
+            float lateral_light = 0.0F;
+            std::size_t lateral_count = 0;
+            for (std::size_t index = workset.child_edge_offsets[node];
+                 index < workset.child_edge_offsets[node + 1]; ++index) {
+                const auto edge = workset.child_edges[index];
+                if (!active_edges[edge] || edge == main_edge) continue;
+                lateral_light += edge_light[edge];
+                ++lateral_count;
+            }
+            const auto split = split_vigor(available_vigor, edge_light[main_edge],
+                                           lateral_light, apical_control);
+            edge_vigor[main_edge] = split.main_axis;
+            node_vigor[workset.edges[main_edge].child_node] = edge_vigor[main_edge];
+            nodes.push(workset.edges[main_edge].child_node);
+            for (std::size_t index = workset.child_edge_offsets[node];
+                 index < workset.child_edge_offsets[node + 1]; ++index) {
+                const auto edge = workset.child_edges[index];
+                if (!active_edges[edge] || edge == main_edge) continue;
+                edge_vigor[edge] = lateral_light > kEpsilon
+                    ? split.lateral_axis * edge_light[edge] / lateral_light
+                    : split.lateral_axis / static_cast<float>(lateral_count);
+                node_vigor[workset.edges[edge].child_node] = edge_vigor[edge];
+                nodes.push(workset.edges[edge].child_node);
+            }
+        }
+    }
+
+    std::vector<float> node_distance_from_root(node_count, 0.0F);
+    for (const auto edge : workset.preorder_edges) {
+        const auto& conduit_edge = workset.edges[edge];
+        node_distance_from_root[conduit_edge.child_node] =
+            node_distance_from_root[conduit_edge.parent_node] +
+            (active_edges[edge]
+                 ? distance(snapshot_segments_[edge].parent_position, snapshot_segments_[edge].child_position)
+                 : 0.0F);
+    }
+
+    std::vector<PlantFlowDiagnostic> next;
+    next.reserve(workset.edges.size() *
+                 static_cast<std::size_t>(flow_diagnostic_options_.accumulated_light +
+                                          flow_diagnostic_options_.vigor));
+    for (std::size_t edge = 0; edge < workset.edges.size(); ++edge) {
+        if (!active_edges[edge]) continue;
+        const auto& conduit_edge = workset.edges[edge];
+        const float start_distance = node_distance_from_root[conduit_edge.parent_node];
+        const float end_distance = node_distance_from_root[conduit_edge.child_node];
+        if (flow_diagnostic_options_.accumulated_light && edge_light[edge] > kEpsilon &&
+            root_light_total > kEpsilon) {
+            next.push_back({
+                .kind = FlowKind::AccumulatedLight,
+                .segment_index = edge,
+                .amount = edge_light[edge],
+                .root_total = root_light_total,
+                .start_distance_from_root = start_distance,
+                .end_distance_from_root = end_distance,
+            });
+        }
+        if (flow_diagnostic_options_.vigor && edge_vigor[edge] > kEpsilon && root_vigor_total > kEpsilon) {
+            next.push_back({
+                .kind = FlowKind::Vigor,
+                .segment_index = edge,
+                .amount = edge_vigor[edge],
+                .root_total = root_vigor_total,
+                .start_distance_from_root = start_distance,
+                .end_distance_from_root = end_distance,
+            });
+        }
+    }
+    snapshot_flow_diagnostics_ = std::move(next);
+    return {};
+}
+
+Result<void> PlantSimulation::rebuild_snapshot(bool include_flow_diagnostics)
 {
     const std::size_t module_count = module_records_.size();
     ConduitWorkset conduit;
@@ -577,10 +787,7 @@ Result<void> PlantSimulation::rebuild_snapshot(bool emit_flows)
     std::vector<PlantModuleSnapshot> next_modules;
     std::vector<PlantSegmentSnapshot> next_segments;
     std::vector<MatureTerminalSnapshot> next_terminals;
-    std::vector<PlantFlowPath> next_flows;
     next_modules.reserve(module_count);
-    const float root_light_total = accumulated.empty() ? 0.0F : accumulated.front();
-    const float root_vigor_total = root_vigor_budget;
 
     for (std::size_t module = 0; module < module_count; ++module) {
         const auto& record = module_records_[module];
@@ -612,36 +819,6 @@ Result<void> PlantSimulation::rebuild_snapshot(bool emit_flows)
                 .state = current ? current->state : SegmentState::Growing,
                 .main_continuation_segment = continuation,
             });
-            if (emit_flows && current && record.diagnostics_active) {
-                const float light_amount = node_light[module][definition.child_node];
-                const float vigor_amount = node_vigor[module][definition.child_node];
-                if (light_amount > kEpsilon && root_light_total > kEpsilon) {
-                    next_flows.push_back({
-                        .kind = FlowKind::AccumulatedLight,
-                        .module_id = record.id,
-                        .source_segment_id = source,
-                        .start = current->child_position,
-                        .end = current->parent_position,
-                        .host_radius = diameter * 0.5F,
-                        .amount = light_amount,
-                        .root_total = root_light_total,
-                        .fraction = std::clamp(light_amount / root_light_total, 0.0F, 1.0F),
-                    });
-                }
-                if (vigor_amount > kEpsilon && root_vigor_total > kEpsilon) {
-                    next_flows.push_back({
-                        .kind = FlowKind::Vigor,
-                        .module_id = record.id,
-                        .source_segment_id = source,
-                        .start = current->parent_position,
-                        .end = current->child_position,
-                        .host_radius = diameter * 0.5F,
-                        .amount = vigor_amount,
-                        .root_total = root_vigor_total,
-                        .fraction = std::clamp(vigor_amount / root_vigor_total, 0.0F, 1.0F),
-                    });
-                }
-            }
         }
 
         if (record.physiological_age + kEpsilon >= record.fully_grown_age) {
@@ -688,9 +865,7 @@ Result<void> PlantSimulation::rebuild_snapshot(bool emit_flows)
     snapshot_modules_ = std::move(next_modules);
     snapshot_segments_ = std::move(next_segments);
     snapshot_terminals_ = std::move(next_terminals);
-    if (emit_flows) {
-        snapshot_flows_ = std::move(next_flows);
-    }
+    if (include_flow_diagnostics) return rebuild_flow_diagnostics(conduit);
     return {};
 }
 

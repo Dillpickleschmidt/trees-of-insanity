@@ -300,6 +300,14 @@ Result<DesktopSession> DesktopSession::create(DesktopSessionOptions options)
     if (!plant_simulation) {
         return std::unexpected(from_growth_error(plant_simulation.error()));
     }
+    const auto& plant_diagnostics = loaded_project->plant_workspace.diagnostics;
+    auto configured_diagnostics = plant_simulation->set_flow_diagnostics({
+        .accumulated_light = plant_diagnostics.accumulated_light_flow_visible,
+        .vigor = plant_diagnostics.vigor_flow_visible,
+    });
+    if (!configured_diagnostics) {
+        return std::unexpected(from_growth_error(configured_diagnostics.error()));
+    }
 
     return DesktopSession(std::move(options), std::move(*library), std::move(*loaded_project),
                           std::move(*plant_simulation));
@@ -530,6 +538,12 @@ Result<void> DesktopSession::set_plant_timestep(float timestep)
 
 Result<void> DesktopSession::update_plant_diagnostics(PlantDiagnosticsUpdate diagnostics)
 {
+    auto configured = plant_simulation_.set_flow_diagnostics({
+        .accumulated_light = diagnostics.accumulated_light_flow_visible,
+        .vigor = diagnostics.vigor_flow_visible,
+    });
+    if (!configured) return std::unexpected(from_growth_error(configured.error()));
+
     project_.plant_workspace.diagnostics.module_diagnostic_labels_visible =
         diagnostics.module_diagnostic_labels_visible;
     project_.plant_workspace.diagnostics.direct_light_bounding_spheres_visible =
@@ -753,6 +767,12 @@ Result<void> DesktopSession::reset_plant_simulation()
     if (!simulation) {
         return std::unexpected(from_growth_error(simulation.error()));
     }
+    const auto& diagnostics = project_.plant_workspace.diagnostics;
+    auto configured = simulation->set_flow_diagnostics({
+        .accumulated_light = diagnostics.accumulated_light_flow_visible,
+        .vigor = diagnostics.vigor_flow_visible,
+    });
+    if (!configured) return std::unexpected(from_growth_error(configured.error()));
     plant_simulation_ = std::move(*simulation);
     plant_camera_needs_frame_ = true;
     return {};
