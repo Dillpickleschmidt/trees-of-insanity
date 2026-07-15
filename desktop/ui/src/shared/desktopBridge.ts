@@ -37,4 +37,6 @@ export type ViewportStatus = {
 	color: ViewportExtent;
 	depth: ViewportExtent | null;
 	frame_generation: number;
+	scene_frame_count: number;
+	precomposition_count: number;
 };

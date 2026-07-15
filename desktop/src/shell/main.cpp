@@ -91,7 +91,7 @@ void publish_viewport_error(DesktopBridge& bridge, std::string_view message)
 {
     bridge.publishViewportStatus(QString::fromStdString(
         std::string(R"({"phase":"error","message":")") + std::string(message) +
-        R"(","viewport":{"width":0,"height":0},"color":{"width":0,"height":0},"depth":null,"frame_generation":0})"));
+        R"(","viewport":{"width":0,"height":0},"color":{"width":0,"height":0},"depth":null,"frame_generation":0,"scene_frame_count":0,"precomposition_count":0})"));
 }
 
 [[nodiscard]] toi::model::Result<toi::render::OrbitView>
@@ -208,7 +208,7 @@ int main(int argc, char* argv[])
                                            initialEnvironment.world_origin_axes_visible);
         viewportItem->setRenderer(previewRenderer.get());
         previewRenderer->set_frame_ready_callback([viewportItem] {
-            QMetaObject::invokeMethod(viewportItem, [viewportItem] { viewportItem->update(); }, Qt::QueuedConnection);
+            QTimer::singleShot(33, viewportItem, [viewportItem] { viewportItem->update(); });
         });
         previewRenderer->set_diagnostic_labels_callback(
             [bridge = bridge.get()](std::vector<toi::viewport::ProjectedPlantDiagnosticLabel> labels) {
@@ -243,7 +243,7 @@ int main(int argc, char* argv[])
                                  bridge->publishViewportStatus(QString::fromStdString(
                                      std::string(R"({"phase":"error","message":")") +
                                      stage.error().message +
-                                     R"(","viewport":{"width":0,"height":0},"color":{"width":0,"height":0},"depth":null,"frame_generation":0})"));
+                                     R"(","viewport":{"width":0,"height":0},"color":{"width":0,"height":0},"depth":null,"frame_generation":0,"scene_frame_count":0,"precomposition_count":0})"));
                                  return;
                              }
                              auto orbit = orbit_for_stage(bridge->session(), *stage);
@@ -275,7 +275,7 @@ int main(int argc, char* argv[])
                                  bridge->publishViewportStatus(QString::fromStdString(
                                      std::string(R"({"phase":"error","message":")") +
                                      stage.error().message +
-                                     R"(","viewport":{"width":0,"height":0},"color":{"width":0,"height":0},"depth":null,"frame_generation":0})"));
+                                     R"(","viewport":{"width":0,"height":0},"color":{"width":0,"height":0},"depth":null,"frame_generation":0,"scene_frame_count":0,"precomposition_count":0})"));
                                  return;
                              }
                              auto orbit = orbit_for_stage(bridge->session(), *stage);
@@ -301,7 +301,10 @@ int main(int argc, char* argv[])
                                  "},\"color\":{\"width\":" + std::to_string(status.width) +
                                  ",\"height\":" + std::to_string(status.height) +
                                  "},\"depth\":null,\"frame_generation\":" +
-                                 std::to_string(status.frame_generation) + "}"));
+                                 std::to_string(status.frame_generation) +
+                                 ",\"scene_frame_count\":" + std::to_string(status.scene_frame_count) +
+                                 ",\"precomposition_count\":" + std::to_string(status.precomposition_count) +
+                                 "}"));
                          });
         statusTimer.start();
         QObject::connect(bridge.get(), &DesktopBridge::viewportRectChanged, viewportItem,
@@ -324,7 +327,7 @@ int main(int argc, char* argv[])
         bridge->publishViewportStatus(QString::fromStdString(
             std::string(R"({"phase":"starting","message":"Qt Vulkan viewport starting on )") +
             vulkanDevice->name() +
-            R"(","viewport":{"width":0,"height":0},"color":{"width":0,"height":0},"depth":null,"frame_generation":0})"));
+            R"(","viewport":{"width":0,"height":0},"color":{"width":0,"height":0},"depth":null,"frame_generation":0,"scene_frame_count":0,"precomposition_count":0})"));
         exitCode = application.exec();
     }
 #if defined(TOI_ENABLE_OVRTX)

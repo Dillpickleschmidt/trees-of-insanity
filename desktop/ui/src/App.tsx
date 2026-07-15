@@ -72,6 +72,8 @@ const initialViewportStatus: ViewportStatus = {
 	color: { width: 0, height: 0 },
 	depth: null,
 	frame_generation: 0,
+	scene_frame_count: 0,
+	precomposition_count: 0,
 };
 
 function formatNumber(value: number, digits = 3) {

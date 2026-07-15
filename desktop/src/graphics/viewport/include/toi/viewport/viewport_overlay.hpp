@@ -63,7 +63,8 @@ public:
                                       const OverlayCamera& camera, std::span<const OverlayLine> lines,
                                       std::span<const OverlaySurfaceVertex> surface_vertices,
                                       std::span<const OverlaySphere> spheres, float depth_bias,
-                                      float animation_time, std::uint32_t distance_slot);
+                                      float animation_time, std::uint32_t distance_slot,
+                                      bool upload_geometry = true);
     void reset();
 
 private:
@@ -89,6 +90,7 @@ private:
     VkDeviceMemory surface_memories_[kDistanceSlotCount]{};
     void* surface_mapped_[kDistanceSlotCount]{};
     std::size_t surface_capacities_[kDistanceSlotCount]{};
+    std::uint32_t surface_vertex_counts_[kDistanceSlotCount]{};
     VkImageView target_view_ = VK_NULL_HANDLE;
     VkFramebuffer framebuffer_ = VK_NULL_HANDLE;
 };

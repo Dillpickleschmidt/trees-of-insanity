@@ -584,7 +584,8 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D 
                                      const OverlayCamera& camera, std::span<const OverlayLine> lines,
                                      std::span<const OverlaySurfaceVertex> surface_vertices,
                                      std::span<const OverlaySphere> spheres, float depth_bias,
-                                     float animation_time, std::uint32_t distance_slot)
+                                     float animation_time, std::uint32_t distance_slot,
+                                     bool upload_geometry)
 {
     if (distance_slot >= kDistanceSlotCount) {
         return std::unexpected(make_error("overlay distance slot out of range"));
@@ -596,43 +597,48 @@ Result<void> ViewportOverlay::record(VkCommandBuffer command_buffer, VkExtent2D 
     if (lines.size() > kMaxLines) {
         return std::unexpected(make_error("overlay line capacity exceeded"));
     }
-    if (surface_vertices.size() > std::numeric_limits<std::uint32_t>::max()) {
+    if (upload_geometry && surface_vertices.size() > std::numeric_limits<std::uint32_t>::max()) {
         return std::unexpected(make_error("overlay surface vertex capacity exhausted"));
     }
     if (spheres.size() > kMaxSpheres) {
         return std::unexpected(make_error("overlay sphere capacity exceeded"));
     }
-    if (auto capacity = ensure_surface_capacity(distance_slot, surface_vertices.size()); !capacity) {
-        return capacity;
+    if (upload_geometry) {
+        if (auto capacity = ensure_surface_capacity(distance_slot, surface_vertices.size()); !capacity) {
+            return capacity;
+        }
+        surface_vertex_counts_[distance_slot] = static_cast<std::uint32_t>(surface_vertices.size());
     }
     const std::uint32_t line_count = static_cast<std::uint32_t>(lines.size());
-    const std::uint32_t surface_vertex_count = static_cast<std::uint32_t>(surface_vertices.size());
+    const std::uint32_t surface_vertex_count = surface_vertex_counts_[distance_slot];
     const std::uint32_t sphere_count = static_cast<std::uint32_t>(spheres.size());
     auto* slot_data = static_cast<std::byte*>(vertex_mapped_) + kSlotBytes * distance_slot;
-    auto* vertices = reinterpret_cast<OverlayVertex*>(slot_data);
-    for (std::uint32_t index = 0; index < line_count; ++index) {
-        const auto& line = lines[index];
-        auto& start = vertices[index * 2];
-        std::memcpy(start.position, line.start, sizeof(start.position));
-        std::memcpy(start.color, line.color, sizeof(start.color));
-        start.alpha = line.alpha;
-        auto& end = vertices[index * 2 + 1];
-        std::memcpy(end.position, line.end, sizeof(end.position));
-        std::memcpy(end.color, line.color, sizeof(end.color));
-        end.alpha = line.alpha;
-    }
-    if (surface_vertex_count > 0) {
-        std::memcpy(surface_mapped_[distance_slot], surface_vertices.data(),
-                    sizeof(OverlaySurfaceVertex) * surface_vertices.size());
-    }
-    auto* sphere_instances = reinterpret_cast<OverlaySphereInstance*>(slot_data + kSphereInstanceOffset);
-    for (std::uint32_t index = 0; index < sphere_count; ++index) {
-        const auto& sphere = spheres[index];
-        auto& instance = sphere_instances[index];
-        std::memcpy(instance.center, sphere.center, sizeof(instance.center));
-        instance.radius = sphere.radius;
-        std::memcpy(instance.color, sphere.color, sizeof(instance.color));
-        instance.alpha = sphere.alpha;
+    if (upload_geometry) {
+        auto* vertices = reinterpret_cast<OverlayVertex*>(slot_data);
+        for (std::uint32_t index = 0; index < line_count; ++index) {
+            const auto& line = lines[index];
+            auto& start = vertices[index * 2];
+            std::memcpy(start.position, line.start, sizeof(start.position));
+            std::memcpy(start.color, line.color, sizeof(start.color));
+            start.alpha = line.alpha;
+            auto& end = vertices[index * 2 + 1];
+            std::memcpy(end.position, line.end, sizeof(end.position));
+            std::memcpy(end.color, line.color, sizeof(end.color));
+            end.alpha = line.alpha;
+        }
+        if (surface_vertex_count > 0) {
+            std::memcpy(surface_mapped_[distance_slot], surface_vertices.data(),
+                        sizeof(OverlaySurfaceVertex) * surface_vertices.size());
+        }
+        auto* sphere_instances = reinterpret_cast<OverlaySphereInstance*>(slot_data + kSphereInstanceOffset);
+        for (std::uint32_t index = 0; index < sphere_count; ++index) {
+            const auto& sphere = spheres[index];
+            auto& instance = sphere_instances[index];
+            std::memcpy(instance.center, sphere.center, sizeof(instance.center));
+            instance.radius = sphere.radius;
+            std::memcpy(instance.color, sphere.color, sizeof(instance.color));
+            instance.alpha = sphere.alpha;
+        }
     }
 
     VkRenderPassBeginInfo begin{};
@@ -742,6 +748,7 @@ void ViewportOverlay::reset()
             surface_memories_[slot] = VK_NULL_HANDLE;
         }
         surface_capacities_[slot] = 0;
+        surface_vertex_counts_[slot] = 0;
     }
     if (line_pipeline_ != VK_NULL_HANDLE) {
         vkDestroyPipeline(device_, line_pipeline_, nullptr);
@@ -805,6 +812,7 @@ void ViewportOverlay::move_from(ViewportOverlay& other) noexcept
         surface_memories_[slot] = std::exchange(other.surface_memories_[slot], VK_NULL_HANDLE);
         surface_mapped_[slot] = std::exchange(other.surface_mapped_[slot], nullptr);
         surface_capacities_[slot] = std::exchange(other.surface_capacities_[slot], 0);
+        surface_vertex_counts_[slot] = std::exchange(other.surface_vertex_counts_[slot], 0);
     }
     target_view_ = std::exchange(other.target_view_, VK_NULL_HANDLE);
     framebuffer_ = std::exchange(other.framebuffer_, VK_NULL_HANDLE);

@@ -144,6 +144,13 @@ std::vector<ProjectedPlantDiagnosticLabel> project_diagnostic_labels(
     return projected;
 }
 
+float overlay_animation_time()
+{
+    static const auto epoch = std::chrono::steady_clock::now();
+    const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - epoch).count();
+    return static_cast<float>(std::fmod(elapsed, 512.0));
+}
+
 float overlay_depth_bias(const render::GrowthPreviewCamera& camera)
 {
     const float dx = camera.eye.x - camera.target.x;
@@ -372,16 +379,22 @@ bool PreviewRenderer::prepare_frame_on_render_thread()
 
     int slot_index = -1;
     int old_displayed_slot = -1;
+    bool overlay_only = false;
     {
         std::lock_guard lock(mutex_);
-        if (ready_slot_ < 0) {
+        if (ready_slot_ >= 0) {
+            slot_index = ready_slot_;
+            ready_slot_ = -1;
+            old_displayed_slot = displayed_slot_;
+            displayed_slot_ = slot_index;
+            slots_[slot_index].ready = false;
+        } else if (displayed_slot_ >= 0 &&
+                   !slots_[displayed_slot_].overlay_surface_vertices.empty()) {
+            slot_index = displayed_slot_;
+            overlay_only = true;
+        } else {
             return false;
         }
-        slot_index = ready_slot_;
-        ready_slot_ = -1;
-        old_displayed_slot = displayed_slot_;
-        displayed_slot_ = slot_index;
-        slots_[slot_index].ready = false;
     }
 
     Slot& slot = slots_[slot_index];
@@ -420,9 +433,8 @@ bool PreviewRenderer::prepare_frame_on_render_thread()
                 {{0, 0}, {static_cast<std::uint32_t>(width_), static_cast<std::uint32_t>(height_)}},
                 to_overlay_camera(slot.camera), slot.overlay_lines, slot.overlay_surface_vertices,
                 slot.overlay_spheres,
-                overlay_depth_bias(slot.camera),
-                std::chrono::duration<float>(std::chrono::steady_clock::now().time_since_epoch()).count(),
-                static_cast<std::uint32_t>(slot_index)); !recorded) {
+                overlay_depth_bias(slot.camera), overlay_animation_time(),
+                static_cast<std::uint32_t>(slot_index), !overlay_only); !recorded) {
             vkEndCommandBuffer(slot.command_buffer);
             set_error("Vulkan guide overlay failed: " + recorded.error().message);
             return false;
@@ -455,27 +467,27 @@ bool PreviewRenderer::prepare_frame_on_render_thread()
     }
 
     std::function<void(std::vector<ProjectedPlantDiagnosticLabel>)> labels_callback;
+    std::function<void()> animation_callback;
     std::vector<ProjectedPlantDiagnosticLabel> projected_labels;
-    bool animate_overlay = false;
     {
         std::lock_guard lock(mutex_);
         presented_width_ = width_;
         presented_height_ = height_;
         status_.phase = "ready";
         status_.message = "Qt RTX viewport ready";
-        status_.frame_generation = slot.timeline_value;
-        labels_callback = diagnostic_labels_callback_;
-        projected_labels = slot.projected_labels;
-        animate_overlay = !slot.overlay_surface_vertices.empty();
-        if (animate_overlay) {
-            dirty_ = true;
+        ++status_.precomposition_count;
+        status_.frame_generation = status_.precomposition_count;
+        if (!overlay_only) {
+            labels_callback = diagnostic_labels_callback_;
+            projected_labels = slot.projected_labels;
         }
-        if (old_displayed_slot >= 0) {
-            condition_.notify_all();
+        if (!slot.overlay_surface_vertices.empty()) {
+            animation_callback = frame_ready_callback_;
         }
+        if (old_displayed_slot >= 0) condition_.notify_all();
     }
     if (labels_callback) labels_callback(std::move(projected_labels));
-    if (animate_overlay) condition_.notify_all();
+    if (animation_callback) animation_callback();
     return true;
 }
 
@@ -820,6 +832,7 @@ void PreviewRenderer::render_loop()
             slot.rendering = false;
             slot.ready = true;
             ready_slot_ = slot_index;
+            ++status_.scene_frame_count;
             callback = frame_ready_callback_;
         }
         if (callback) callback();

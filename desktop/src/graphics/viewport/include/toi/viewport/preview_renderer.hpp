@@ -51,6 +51,8 @@ struct PreviewRendererStatus {
     int width = 0;
     int height = 0;
     std::uint64_t frame_generation = 0;
+    std::uint64_t scene_frame_count = 0;
+    std::uint64_t precomposition_count = 0;
 };
 
 class PreviewRenderer final {
