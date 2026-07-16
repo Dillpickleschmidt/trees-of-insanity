@@ -53,7 +53,6 @@ const initialState: AppState = {
 	active_plant_type_id: "",
 	module_physiological_age: 0,
 	fully_grown_age: 0,
-	plant_type_parameter_descriptors: [],
 };
 
 const initialSummary: GrowthSnapshotSummary = {
@@ -496,7 +495,6 @@ export function App() {
 					busy={busy()}
 					plantTypes={state().plant_types}
 					activePlantTypeId={state().active_plant_type_id}
-					parameterDescriptorCount={state().plant_type_parameter_descriptors.length}
 					newPlantTypeName={newPlantTypeName()}
 					newPlantTypePresetKey={newPlantTypePresetKey()}
 					onOpenChange={(open) => setShowPlantTypes(open)}

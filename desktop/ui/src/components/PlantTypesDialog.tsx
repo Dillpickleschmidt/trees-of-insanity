@@ -12,7 +12,6 @@ export function PlantTypesDialog(props: {
 	busy: boolean;
 	plantTypes: PlantTypeSummary[];
 	activePlantTypeId: string;
-	parameterDescriptorCount: number;
 	newPlantTypeName: string;
 	newPlantTypePresetKey: PlantTypePresetKey;
 	onOpenChange: (open: boolean) => void;
@@ -84,9 +83,6 @@ export function PlantTypesDialog(props: {
 						</For>
 					</ul>
 				</Show>
-				<p class="font-mono text-[11px] text-muted-foreground">
-					{props.parameterDescriptorCount} numeric parameters per type
-				</p>
 			</DialogContent>
 		</Dialog>
 	);

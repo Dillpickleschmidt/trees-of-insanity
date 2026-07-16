@@ -13,7 +13,6 @@ type QtSignal<T extends unknown[]> = {
 };
 
 type DesktopBridge = {
-	bootstrap(callback: (response: string) => void): void;
 	dispatch(action: string, callback: (response: string) => void): void;
 	uiEvent(type: string, data: string): void;
 	setViewportRect(x: number, y: number, width: number, height: number, devicePixelRatio: number): void;
@@ -43,10 +42,7 @@ const bridgePromise = new Promise<DesktopBridge>((resolve, reject) => {
 export const appClient = createAppClient(async (request: CommandRequest): Promise<CommandResponse> => {
 	const bridge = await bridgePromise;
 	return new Promise((resolve, reject) => {
-		const invoke = request.method === "app.get_state"
-			? (callback: (response: string) => void) => bridge.bootstrap(callback)
-			: (callback: (response: string) => void) => bridge.dispatch(JSON.stringify(request), callback);
-		invoke((response) => {
+		bridge.dispatch(JSON.stringify(request), (response) => {
 			try {
 				resolve(JSON.parse(response) as CommandResponse);
 			} catch (cause) {
