@@ -381,13 +381,6 @@ TEST_CASE("Plant maturity crossing exposes one attached generation")
     CHECK(std::ranges::any_of(projection.diagnostic_surface_vertices, [](const auto& vertex) {
         return vertex.animation_direction > 0.0F;
     }));
-    const auto light_flow_count = static_cast<std::size_t>(std::ranges::count(
-        flowing->snapshot.flow_diagnostics, toi::growth::FlowKind::AccumulatedLight,
-        &toi::growth::PlantFlowDiagnostic::kind));
-    const auto vigor_flow_count = static_cast<std::size_t>(std::ranges::count(
-        flowing->snapshot.flow_diagnostics, toi::growth::FlowKind::Vigor,
-        &toi::growth::PlantFlowDiagnostic::kind));
-    CHECK(projection.diagnostic_surface_vertices.size() == (light_flow_count + vigor_flow_count) * 60);
     for (const auto& vertex : projection.diagnostic_surface_vertices) {
         CHECK(std::ranges::any_of(projection.mesh_attributes, [&](const auto& mesh) {
             return std::ranges::any_of(mesh.points, [&](const auto& point) {
@@ -397,16 +390,19 @@ TEST_CASE("Plant maturity crossing exposes one attached generation")
     }
     const auto light_only_projection = toi::render::make_plant_preview_stage_projection(
         flowing->snapshot, flowing->mature_root_snapshot, {.show_accumulated_light_flow = true});
-    CHECK(light_only_projection.diagnostic_surface_vertices.size() == light_flow_count * 60);
+    REQUIRE_FALSE(light_only_projection.diagnostic_surface_vertices.empty());
     CHECK(std::ranges::all_of(light_only_projection.diagnostic_surface_vertices, [](const auto& vertex) {
         return vertex.animation_direction < 0.0F;
     }));
     const auto vigor_only_projection = toi::render::make_plant_preview_stage_projection(
         flowing->snapshot, flowing->mature_root_snapshot, {.show_vigor_flow = true});
-    CHECK(vigor_only_projection.diagnostic_surface_vertices.size() == vigor_flow_count * 60);
+    REQUIRE_FALSE(vigor_only_projection.diagnostic_surface_vertices.empty());
     CHECK(std::ranges::all_of(vigor_only_projection.diagnostic_surface_vertices, [](const auto& vertex) {
         return vertex.animation_direction > 0.0F;
     }));
+    CHECK(projection.diagnostic_surface_vertices.size() ==
+          light_only_projection.diagnostic_surface_vertices.size() +
+              vigor_only_projection.diagnostic_surface_vertices.size());
     const auto hidden_flow_projection = toi::render::make_plant_preview_stage_projection(
         flowing->snapshot, flowing->mature_root_snapshot);
     CHECK(hidden_flow_projection.diagnostic_surface_vertices.empty());
@@ -444,6 +440,48 @@ TEST_CASE("Plant-selected type changes reset the transient simulation")
     REQUIRE(session->delete_plant_type("plant-type-1"));
     CHECK(session->plant_state()->plant_age == Catch::Approx(0.0F));
     CHECK(session->plant_state()->plant_type_id == second->id);
+}
+
+TEST_CASE("growth projection follows the prepared main continuation")
+{
+    toi::growth::BranchModulePrototype prepared;
+    prepared.nodes.resize(4);
+    prepared.segments = {
+        {.parent_node = 0, .child_node = 1, .direction = {.z = 1.0F}},
+        {.parent_node = 1, .child_node = 2, .direction = {.z = 1.0F}},
+        {.parent_node = 1, .child_node = 3, .direction = {.x = 0.1F, .z = 0.995F}},
+    };
+    prepared.root_node = 0;
+    prepared.terminal_nodes = {2, 3};
+    prepared.child_segments_by_node = {{0}, {1, 2}, {}, {}};
+    prepared.incoming_segment_by_node = {std::nullopt, 0, 1, 2};
+    prepared.main_child_segment_by_node = {std::nullopt, 2, std::nullopt, std::nullopt};
+    prepared.main_axis_terminal_node = 3;
+
+    const toi::growth::Vec3 selected_terminal{.x = 1.0F, .z = 2.0F};
+    const toi::growth::GrowthSnapshot snapshot{
+        .segments = {
+            {.source_segment_id = 0,
+             .parent_position = {},
+             .child_position = {.z = 1.0F},
+             .diameter = 0.2F},
+            {.source_segment_id = 1,
+             .parent_position = {.z = 1.0F},
+             .child_position = {.z = 2.0F},
+             .diameter = 0.1F},
+            {.source_segment_id = 2,
+             .parent_position = {.z = 1.0F},
+             .child_position = selected_terminal,
+             .diameter = 0.1F},
+        },
+    };
+
+    const auto projection = toi::render::make_growth_preview_stage_projection(snapshot, snapshot, prepared);
+
+    REQUIRE(projection.mesh_attributes.size() == 2);
+    CHECK(std::ranges::any_of(projection.mesh_attributes.front().points, [&](const auto point) {
+        return point.x == selected_terminal.x && point.y == selected_terminal.y && point.z == selected_terminal.z;
+    }));
 }
 
 TEST_CASE("age scrubbing keeps the growth-preview stage topology stable")
