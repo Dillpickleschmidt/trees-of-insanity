@@ -188,6 +188,8 @@ private:
 
     [[nodiscard]] Result<void> commit_project(project::Project project);
     [[nodiscard]] Result<void> clamp_module_age_to_active_range(project::Project& project) const;
+    [[nodiscard]] Result<void> commit_plant_type_change(project::Project updated_project, bool module_selected,
+                                                        bool plant_selected);
 
     DesktopSessionOptions options_;
     import::BranchModulePrototypeLibrary prototype_library_;

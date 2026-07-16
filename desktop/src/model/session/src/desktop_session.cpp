@@ -156,53 +156,44 @@ constexpr float kPrototypeLibraryGeometryScale = 2.0F;
     return item;
 }
 
-struct ModuleWorkspaceFacts {
+struct WorkspaceFacts {
     const project::PlantType& plant_type;
     growth::BranchModulePrototype prepared_prototype;
     float fully_grown_age = 0.0F;
 };
 
-[[nodiscard]] Result<ModuleWorkspaceFacts>
-module_workspace_facts(const import::BranchModulePrototypeLibrary& prototype_library, const project::Project& project)
+[[nodiscard]] Result<WorkspaceFacts> workspace_facts(const import::BranchModulePrototypeLibrary& prototype_library,
+                                                     const project::Project& project, project::Workspace workspace)
 {
-    const auto* prototype = prototype_by_id(prototype_library, project.module_workspace.prototype_id);
-    if (prototype == nullptr) {
+    std::size_t prototype_id = 0;
+    std::string_view plant_type_id;
+    std::string_view missing_prototype;
+    std::string_view missing_plant_type;
+    switch (workspace) {
+    case project::Workspace::Module:
+        prototype_id = project.module_workspace.prototype_id;
+        plant_type_id = project.module_workspace.plant_type_id;
+        missing_prototype = "active branch module prototype does not exist";
+        missing_plant_type = "active plant type does not exist";
+        break;
+    case project::Workspace::Plant:
+        prototype_id = project.plant_workspace.root_prototype_id;
+        plant_type_id = project.plant_workspace.plant_type_id;
+        missing_prototype = "Plant root prototype does not exist";
+        missing_plant_type = "Plant plant type does not exist";
+        break;
+    case project::Workspace::Ecosystem:
         return std::unexpected(
-            make_error(ApplicationError::Code::NotFound, "active branch module prototype does not exist"));
+            make_error(ApplicationError::Code::InvalidCommand, "Ecosystem workspace has no growth preview"));
     }
 
-    const auto* plant_type = project::plant_type_by_id(project, project.module_workspace.plant_type_id);
-    if (plant_type == nullptr) {
-        return std::unexpected(make_error(ApplicationError::Code::NotFound, "active plant type does not exist"));
-    }
-
-    auto prepared = growth::prepare_branch_module_prototype(*prototype, plant_type->parameters);
-    if (!prepared) {
-        return std::unexpected(from_growth_error(prepared.error()));
-    }
-
-    auto fully_grown = growth::fully_grown_age(*prepared, plant_type->parameters);
-    if (!fully_grown) {
-        return std::unexpected(from_growth_error(fully_grown.error()));
-    }
-
-    return ModuleWorkspaceFacts{
-        .plant_type = *plant_type,
-        .prepared_prototype = std::move(*prepared),
-        .fully_grown_age = *fully_grown,
-    };
-}
-
-[[nodiscard]] Result<ModuleWorkspaceFacts>
-plant_workspace_facts(const import::BranchModulePrototypeLibrary& prototype_library, const project::Project& project)
-{
-    const auto* prototype = prototype_by_id(prototype_library, project.plant_workspace.root_prototype_id);
+    const auto* prototype = prototype_by_id(prototype_library, prototype_id);
     if (prototype == nullptr) {
-        return std::unexpected(make_error(ApplicationError::Code::NotFound, "Plant root prototype does not exist"));
+        return std::unexpected(make_error(ApplicationError::Code::NotFound, std::string(missing_prototype)));
     }
-    const auto* plant_type = project::plant_type_by_id(project, project.plant_workspace.plant_type_id);
+    const auto* plant_type = project::plant_type_by_id(project, plant_type_id);
     if (plant_type == nullptr) {
-        return std::unexpected(make_error(ApplicationError::Code::NotFound, "Plant plant type does not exist"));
+        return std::unexpected(make_error(ApplicationError::Code::NotFound, std::string(missing_plant_type)));
     }
     auto prepared = growth::prepare_branch_module_prototype(*prototype, plant_type->parameters);
     if (!prepared) {
@@ -212,7 +203,7 @@ plant_workspace_facts(const import::BranchModulePrototypeLibrary& prototype_libr
     if (!fully_grown) {
         return std::unexpected(from_growth_error(fully_grown.error()));
     }
-    return ModuleWorkspaceFacts{
+    return WorkspaceFacts{
         .plant_type = *plant_type,
         .prepared_prototype = std::move(*prepared),
         .fully_grown_age = *fully_grown,
@@ -305,7 +296,7 @@ Result<DesktopSession> DesktopSession::create(DesktopSessionOptions options)
             make_error(ApplicationError::Code::Project, "workspace references an unknown HDRI environment"));
     }
 
-    auto facts = module_workspace_facts(*library, *loaded_project);
+    auto facts = workspace_facts(*library, *loaded_project, project::Workspace::Module);
     if (!facts) {
         return std::unexpected(facts.error());
     }
@@ -328,7 +319,7 @@ Result<DesktopSession> DesktopSession::create(DesktopSessionOptions options)
 
 Result<AppStateView> DesktopSession::state() const
 {
-    auto facts = module_workspace_facts(prototype_library_, project_);
+    auto facts = workspace_facts(prototype_library_, project_, project::Workspace::Module);
     if (!facts) {
         return std::unexpected(facts.error());
     }
@@ -366,7 +357,7 @@ Result<AppStateView> DesktopSession::state() const
 
 Result<PrototypeTreeView> DesktopSession::prototype_tree() const
 {
-    auto facts = module_workspace_facts(prototype_library_, project_);
+    auto facts = workspace_facts(prototype_library_, project_, project::Workspace::Module);
     if (!facts) {
         return std::unexpected(facts.error());
     }
@@ -375,7 +366,7 @@ Result<PrototypeTreeView> DesktopSession::prototype_tree() const
 
 Result<growth::GrowthSnapshot> DesktopSession::growth_snapshot() const
 {
-    auto facts = module_workspace_facts(prototype_library_, project_);
+    auto facts = workspace_facts(prototype_library_, project_, project::Workspace::Module);
     if (!facts) {
         return std::unexpected(facts.error());
     }
@@ -411,7 +402,7 @@ Result<GrowthSnapshotSummary> DesktopSession::growth_snapshot_summary() const
 
 Result<ModulePreviewSnapshot> DesktopSession::module_preview_snapshot() const
 {
-    auto facts = module_workspace_facts(prototype_library_, project_);
+    auto facts = workspace_facts(prototype_library_, project_, project::Workspace::Module);
     if (!facts) {
         return std::unexpected(facts.error());
     }
@@ -459,7 +450,7 @@ Result<PlantStateView> DesktopSession::plant_state() const
 
 Result<PlantPreviewSnapshot> DesktopSession::plant_preview_snapshot() const
 {
-    auto facts = plant_workspace_facts(prototype_library_, project_);
+    auto facts = workspace_facts(prototype_library_, project_, project::Workspace::Plant);
     if (!facts) {
         return std::unexpected(facts.error());
     }
@@ -620,12 +611,11 @@ Result<void> DesktopSession::set_module_physiological_age(float module_physiolog
                                           "module physiological age must be finite and non-negative"));
     }
     auto updated_project = project_;
-    auto facts = module_workspace_facts(prototype_library_, updated_project);
-    if (!facts) {
-        return std::unexpected(facts.error());
+    updated_project.module_workspace.physiological_age = module_physiological_age;
+    auto clamped = clamp_module_age_to_active_range(updated_project);
+    if (!clamped) {
+        return std::unexpected(clamped.error());
     }
-    updated_project.module_workspace.physiological_age =
-        std::min(module_physiological_age, facts->fully_grown_age);
     return commit_project(std::move(updated_project));
 }
 
@@ -654,30 +644,7 @@ Result<void> DesktopSession::delete_plant_type(std::string_view plant_type_id)
     if (!deleted) {
         return std::unexpected(from_project_error(deleted.error()));
     }
-    if (module_selected) {
-        auto clamped = clamp_module_age_to_active_range(updated_project);
-        if (!clamped) {
-            return std::unexpected(clamped.error());
-        }
-    }
-
-    std::optional<growth::PlantSimulation> updated_simulation;
-    if (plant_selected) {
-        auto simulation = make_plant_simulation(prototype_library_, updated_project);
-        if (!simulation) {
-            return std::unexpected(simulation.error());
-        }
-        updated_simulation.emplace(std::move(*simulation));
-    }
-    auto committed = commit_project(std::move(updated_project));
-    if (!committed) {
-        return committed;
-    }
-    if (updated_simulation) {
-        plant_simulation_ = std::move(*updated_simulation);
-        plant_camera_needs_frame_ = true;
-    }
-    return {};
+    return commit_plant_type_change(std::move(updated_project), module_selected, plant_selected);
 }
 
 Result<void> DesktopSession::update_plant_type(project::PlantType plant_type)
@@ -693,6 +660,12 @@ Result<void> DesktopSession::update_plant_type(project::PlantType plant_type)
     const bool module_selected = updated_project.module_workspace.plant_type_id == plant_type.id;
     const bool plant_selected = updated_project.plant_workspace.plant_type_id == plant_type.id;
     *existing = std::move(plant_type);
+    return commit_plant_type_change(std::move(updated_project), module_selected, plant_selected);
+}
+
+Result<void> DesktopSession::commit_plant_type_change(project::Project updated_project, bool module_selected,
+                                                      bool plant_selected)
+{
     if (module_selected) {
         auto clamped = clamp_module_age_to_active_range(updated_project);
         if (!clamped) {
@@ -799,7 +772,7 @@ Result<void> DesktopSession::commit_project(project::Project project)
 
 Result<void> DesktopSession::clamp_module_age_to_active_range(project::Project& project) const
 {
-    auto facts = module_workspace_facts(prototype_library_, project);
+    auto facts = workspace_facts(prototype_library_, project, project::Workspace::Module);
     if (!facts) {
         return std::unexpected(facts.error());
     }
