@@ -1,5 +1,6 @@
 #include "toi/viewport/preview_renderer.hpp"
 
+#include "gpu_checks.hpp"
 #include "toi/ovrtx/renderer_session.hpp"
 #include "toi/render/viewport_guides.hpp"
 
@@ -157,19 +158,6 @@ float overlay_depth_bias(const render::GrowthPreviewCamera& camera)
     const float dy = camera.eye.y - camera.target.y;
     const float dz = camera.eye.z - camera.target.z;
     return std::max(0.01F, std::sqrt(dx * dx + dy * dy + dz * dz) * 0.0005F);
-}
-
-std::uint32_t device_local_memory_type(VkPhysicalDevice physical_device, std::uint32_t type_bits)
-{
-    VkPhysicalDeviceMemoryProperties properties{};
-    vkGetPhysicalDeviceMemoryProperties(physical_device, &properties);
-    for (std::uint32_t index = 0; index < properties.memoryTypeCount; ++index) {
-        if ((type_bits & (1U << index)) != 0 &&
-            (properties.memoryTypes[index].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0) {
-            return index;
-        }
-    }
-    return UINT32_MAX;
 }
 
 void transition(VkCommandBuffer command_buffer, VkImage image, VkImageLayout old_layout,
@@ -581,14 +569,15 @@ Result<void> PreviewRenderer::initialize(PreviewRendererDevice device,
     }
     VkMemoryRequirements requirements{};
     vkGetImageMemoryRequirements(context_.device(), display_image_, &requirements);
-    const std::uint32_t memory_type = device_local_memory_type(context_.physical_device(), requirements.memoryTypeBits);
-    if (memory_type == UINT32_MAX) {
-        return std::unexpected(make_error("No device-local display image memory type"));
+    const auto memory_type = find_memory_type(context_.physical_device(), requirements.memoryTypeBits,
+                                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (!memory_type) {
+        return std::unexpected(memory_type.error());
     }
     VkMemoryAllocateInfo allocate{};
     allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocate.allocationSize = requirements.size;
-    allocate.memoryTypeIndex = memory_type;
+    allocate.memoryTypeIndex = *memory_type;
     if (vkAllocateMemory(context_.device(), &allocate, nullptr, &display_memory_) != VK_SUCCESS ||
         vkBindImageMemory(context_.device(), display_image_, display_memory_, 0) != VK_SUCCESS) {
         return std::unexpected(make_error("Vulkan display image allocation failed"));

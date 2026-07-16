@@ -125,6 +125,7 @@ if(TOI_ENABLE_OVRTX)
 
     add_library(toi_desktop_graphics
         desktop/src/graphics/viewport/src/error.cpp
+        desktop/src/graphics/viewport/src/gpu_checks.cpp
         desktop/src/graphics/viewport/src/vulkan_context.cpp
         desktop/src/graphics/viewport/src/cuda_vulkan_interop.cpp
         desktop/src/graphics/viewport/src/viewport_overlay.cpp
