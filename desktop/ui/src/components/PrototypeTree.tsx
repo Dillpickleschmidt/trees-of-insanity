@@ -27,11 +27,11 @@ function TreeItem(props: { item: PrototypeTreeItem; depth: number }) {
 	);
 }
 
-export function PrototypeTreeView(props: { tree: PrototypeTree | null }) {
+export function PrototypeTreeView(props: { tree: PrototypeTree | undefined }) {
 	return (
 		<Show
 			when={props.tree}
-			fallback={<p class="font-mono text-[12.5px] text-muted-foreground">No prototype loaded.</p>}
+			fallback={<div class="h-16 animate-pulse rounded-md bg-muted/40" aria-label="Loading prototype structure" />}
 		>
 			{(tree) => (
 				<ul>
