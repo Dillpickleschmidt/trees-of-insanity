@@ -187,8 +187,8 @@ private:
     DesktopSession(DesktopSessionOptions options, import::BranchModulePrototypeLibrary prototype_library,
                    project::Project project, growth::PlantSimulation plant_simulation);
 
-    [[nodiscard]] Result<void> clamp_module_age_to_active_range();
-    [[nodiscard]] Result<void> reset_plant_simulation();
+    [[nodiscard]] Result<void> commit_project(project::Project project);
+    [[nodiscard]] Result<void> clamp_module_age_to_active_range(project::Project& project) const;
 
     DesktopSessionOptions options_;
     import::BranchModulePrototypeLibrary prototype_library_;

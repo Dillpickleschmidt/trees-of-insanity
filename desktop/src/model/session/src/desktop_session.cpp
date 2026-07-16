@@ -219,6 +219,29 @@ plant_workspace_facts(const import::BranchModulePrototypeLibrary& prototype_libr
     };
 }
 
+[[nodiscard]] Result<growth::PlantSimulation>
+make_plant_simulation(const import::BranchModulePrototypeLibrary& prototype_library, const project::Project& project)
+{
+    const auto* plant_type = project::plant_type_by_id(project, project.plant_workspace.plant_type_id);
+    if (plant_type == nullptr) {
+        return std::unexpected(make_error(ApplicationError::Code::NotFound, "Plant plant type does not exist"));
+    }
+    auto simulation = growth::PlantSimulation::create(
+        prototype_library, plant_type->parameters, project.plant_workspace.root_prototype_id);
+    if (!simulation) {
+        return std::unexpected(from_growth_error(simulation.error()));
+    }
+    const auto& diagnostics = project.plant_workspace.diagnostics;
+    auto configured = simulation->set_flow_diagnostics({
+        .accumulated_light = diagnostics.accumulated_light_flow_visible,
+        .vigor = diagnostics.vigor_flow_visible,
+    });
+    if (!configured) {
+        return std::unexpected(from_growth_error(configured.error()));
+    }
+    return std::move(*simulation);
+}
+
 } // namespace
 
 DesktopSession::DesktopSession(DesktopSessionOptions options,
@@ -294,19 +317,9 @@ Result<DesktopSession> DesktopSession::create(DesktopSessionOptions options)
         }
     }
 
-    const auto* plant_type = project::plant_type_by_id(*loaded_project, loaded_project->plant_workspace.plant_type_id);
-    auto plant_simulation = growth::PlantSimulation::create(
-        *library, plant_type->parameters, loaded_project->plant_workspace.root_prototype_id);
+    auto plant_simulation = make_plant_simulation(*library, *loaded_project);
     if (!plant_simulation) {
-        return std::unexpected(from_growth_error(plant_simulation.error()));
-    }
-    const auto& plant_diagnostics = loaded_project->plant_workspace.diagnostics;
-    auto configured_diagnostics = plant_simulation->set_flow_diagnostics({
-        .accumulated_light = plant_diagnostics.accumulated_light_flow_visible,
-        .vigor = plant_diagnostics.vigor_flow_visible,
-    });
-    if (!configured_diagnostics) {
-        return std::unexpected(from_growth_error(configured_diagnostics.error()));
+        return std::unexpected(plant_simulation.error());
     }
 
     return DesktopSession(std::move(options), std::move(*library), std::move(*loaded_project),
@@ -491,20 +504,22 @@ PreviewEnvironment DesktopSession::preview_environment() const
 
 Result<void> DesktopSession::set_active_workspace(std::string_view workspace)
 {
+    project::Workspace active_workspace;
     if (workspace == "module") {
-        project_.active_workspace = project::Workspace::Module;
-        return save_project();
-    }
-    if (workspace == "plant") {
-        project_.active_workspace = project::Workspace::Plant;
-        return save_project();
-    }
-    if (workspace == "ecosystem") {
+        active_workspace = project::Workspace::Module;
+    } else if (workspace == "plant") {
+        active_workspace = project::Workspace::Plant;
+    } else if (workspace == "ecosystem") {
         return std::unexpected(make_error(ApplicationError::Code::InvalidCommand,
                                           "workspace is not implemented: " + std::string(workspace)));
+    } else {
+        return std::unexpected(
+            make_error(ApplicationError::Code::InvalidCommand, "unknown workspace " + std::string(workspace)));
     }
-    return std::unexpected(
-        make_error(ApplicationError::Code::InvalidCommand, "unknown workspace " + std::string(workspace)));
+
+    auto updated_project = project_;
+    updated_project.active_workspace = active_workspace;
+    return commit_project(std::move(updated_project));
 }
 
 Result<void> DesktopSession::plant_step()
@@ -518,10 +533,11 @@ Result<void> DesktopSession::plant_step()
 
 Result<void> DesktopSession::plant_reset()
 {
-    auto reset = reset_plant_simulation();
-    if (!reset) {
-        return std::unexpected(reset.error());
+    auto simulation = make_plant_simulation(prototype_library_, project_);
+    if (!simulation) {
+        return std::unexpected(simulation.error());
     }
+    plant_simulation_ = std::move(*simulation);
     plant_camera_needs_frame_ = true;
     return {};
 }
@@ -532,28 +548,38 @@ Result<void> DesktopSession::set_plant_timestep(float timestep)
         return std::unexpected(
             make_error(ApplicationError::Code::InvalidCommand, "Plant timestep must be finite and positive"));
     }
-    project_.plant_workspace.simulation_timestep = timestep;
-    return save_project();
+    auto updated_project = project_;
+    updated_project.plant_workspace.simulation_timestep = timestep;
+    return commit_project(std::move(updated_project));
 }
 
 Result<void> DesktopSession::update_plant_diagnostics(PlantDiagnosticsUpdate diagnostics)
 {
-    auto configured = plant_simulation_.set_flow_diagnostics({
+    auto updated_project = project_;
+    updated_project.plant_workspace.diagnostics.module_diagnostic_labels_visible =
+        diagnostics.module_diagnostic_labels_visible;
+    updated_project.plant_workspace.diagnostics.direct_light_bounding_spheres_visible =
+        diagnostics.direct_light_bounding_spheres_visible;
+    updated_project.plant_workspace.diagnostics.accumulated_light_flow_visible =
+        diagnostics.accumulated_light_flow_visible;
+    updated_project.plant_workspace.diagnostics.vigor_flow_visible = diagnostics.vigor_flow_visible;
+    updated_project.plant_workspace.diagnostics.mature_terminal_markers_visible =
+        diagnostics.mature_terminal_markers_visible;
+
+    auto updated_simulation = plant_simulation_;
+    auto configured = updated_simulation.set_flow_diagnostics({
         .accumulated_light = diagnostics.accumulated_light_flow_visible,
         .vigor = diagnostics.vigor_flow_visible,
     });
-    if (!configured) return std::unexpected(from_growth_error(configured.error()));
-
-    project_.plant_workspace.diagnostics.module_diagnostic_labels_visible =
-        diagnostics.module_diagnostic_labels_visible;
-    project_.plant_workspace.diagnostics.direct_light_bounding_spheres_visible =
-        diagnostics.direct_light_bounding_spheres_visible;
-    project_.plant_workspace.diagnostics.accumulated_light_flow_visible =
-        diagnostics.accumulated_light_flow_visible;
-    project_.plant_workspace.diagnostics.vigor_flow_visible = diagnostics.vigor_flow_visible;
-    project_.plant_workspace.diagnostics.mature_terminal_markers_visible =
-        diagnostics.mature_terminal_markers_visible;
-    return save_project();
+    if (!configured) {
+        return std::unexpected(from_growth_error(configured.error()));
+    }
+    auto committed = commit_project(std::move(updated_project));
+    if (!committed) {
+        return committed;
+    }
+    plant_simulation_ = std::move(updated_simulation);
+    return {};
 }
 
 Result<project::PlantType> DesktopSession::plant_type(std::string_view plant_type_id) const
@@ -572,12 +598,13 @@ Result<void> DesktopSession::set_active_prototype(std::size_t prototype_id)
         return std::unexpected(make_error(ApplicationError::Code::NotFound,
                                           "unknown branch module prototype id " + std::to_string(prototype_id)));
     }
-    project_.module_workspace.prototype_id = prototype_id;
-    auto clamped = clamp_module_age_to_active_range();
+    auto updated_project = project_;
+    updated_project.module_workspace.prototype_id = prototype_id;
+    auto clamped = clamp_module_age_to_active_range(updated_project);
     if (!clamped) {
         return std::unexpected(clamped.error());
     }
-    return save_project();
+    return commit_project(std::move(updated_project));
 }
 
 Result<void> DesktopSession::set_active_plant_type(std::string_view plant_type_id)
@@ -586,12 +613,13 @@ Result<void> DesktopSession::set_active_plant_type(std::string_view plant_type_i
         return std::unexpected(
             make_error(ApplicationError::Code::NotFound, "unknown plant type id " + std::string(plant_type_id)));
     }
-    project_.module_workspace.plant_type_id = std::string(plant_type_id);
-    auto clamped = clamp_module_age_to_active_range();
+    auto updated_project = project_;
+    updated_project.module_workspace.plant_type_id = std::string(plant_type_id);
+    auto clamped = clamp_module_age_to_active_range(updated_project);
     if (!clamped) {
         return std::unexpected(clamped.error());
     }
-    return save_project();
+    return commit_project(std::move(updated_project));
 }
 
 Result<void> DesktopSession::set_module_physiological_age(float module_physiological_age)
@@ -600,50 +628,65 @@ Result<void> DesktopSession::set_module_physiological_age(float module_physiolog
         return std::unexpected(make_error(ApplicationError::Code::InvalidCommand,
                                           "module physiological age must be finite and non-negative"));
     }
-    auto facts = module_workspace_facts(prototype_library_, project_);
+    auto updated_project = project_;
+    auto facts = module_workspace_facts(prototype_library_, updated_project);
     if (!facts) {
         return std::unexpected(facts.error());
     }
-    project_.module_workspace.physiological_age = std::min(module_physiological_age, facts->fully_grown_age);
-    return save_project();
+    updated_project.module_workspace.physiological_age =
+        std::min(module_physiological_age, facts->fully_grown_age);
+    return commit_project(std::move(updated_project));
 }
 
 Result<project::PlantType> DesktopSession::create_plant_type(std::string name, char preset_key)
 {
-    const std::string id = project::next_plant_type_id(project_.plant_type_library);
+    auto updated_project = project_;
+    const std::string id = project::next_plant_type_id(updated_project.plant_type_library);
     auto plant_type = project::create_plant_type_from_preset(id, std::move(name), preset_key);
     if (!plant_type) {
         return std::unexpected(from_project_error(plant_type.error()));
     }
-    project_.plant_type_library.plant_types.push_back(*plant_type);
-    auto saved = save_project();
-    if (!saved) {
-        return std::unexpected(saved.error());
+    updated_project.plant_type_library.plant_types.push_back(*plant_type);
+    auto committed = commit_project(std::move(updated_project));
+    if (!committed) {
+        return std::unexpected(committed.error());
     }
     return *plant_type;
 }
 
 Result<void> DesktopSession::delete_plant_type(std::string_view plant_type_id)
 {
-    const bool module_selected = project_.module_workspace.plant_type_id == plant_type_id;
-    const bool plant_selected = project_.plant_workspace.plant_type_id == plant_type_id;
-    auto deleted = project::delete_plant_type(project_, plant_type_id);
+    auto updated_project = project_;
+    const bool module_selected = updated_project.module_workspace.plant_type_id == plant_type_id;
+    const bool plant_selected = updated_project.plant_workspace.plant_type_id == plant_type_id;
+    auto deleted = project::delete_plant_type(updated_project, plant_type_id);
     if (!deleted) {
         return std::unexpected(from_project_error(deleted.error()));
     }
     if (module_selected) {
-        auto clamped = clamp_module_age_to_active_range();
+        auto clamped = clamp_module_age_to_active_range(updated_project);
         if (!clamped) {
             return std::unexpected(clamped.error());
         }
     }
+
+    std::optional<growth::PlantSimulation> updated_simulation;
     if (plant_selected) {
-        auto reset = reset_plant_simulation();
-        if (!reset) {
-            return std::unexpected(reset.error());
+        auto simulation = make_plant_simulation(prototype_library_, updated_project);
+        if (!simulation) {
+            return std::unexpected(simulation.error());
         }
+        updated_simulation.emplace(std::move(*simulation));
     }
-    return save_project();
+    auto committed = commit_project(std::move(updated_project));
+    if (!committed) {
+        return committed;
+    }
+    if (updated_simulation) {
+        plant_simulation_ = std::move(*updated_simulation);
+        plant_camera_needs_frame_ = true;
+    }
+    return {};
 }
 
 Result<void> DesktopSession::update_plant_type(project::PlantType plant_type)
@@ -651,26 +694,38 @@ Result<void> DesktopSession::update_plant_type(project::PlantType plant_type)
     if (!growth::plant_type_parameters_are_valid(plant_type.parameters)) {
         return std::unexpected(make_error(ApplicationError::Code::InvalidCommand, "plant type parameters are invalid"));
     }
-    auto* existing = project::plant_type_by_id(project_, plant_type.id);
+    auto updated_project = project_;
+    auto* existing = project::plant_type_by_id(updated_project, plant_type.id);
     if (existing == nullptr) {
         return std::unexpected(make_error(ApplicationError::Code::NotFound, "unknown plant type id " + plant_type.id));
     }
-    const bool module_selected = project_.module_workspace.plant_type_id == plant_type.id;
-    const bool plant_selected = project_.plant_workspace.plant_type_id == plant_type.id;
+    const bool module_selected = updated_project.module_workspace.plant_type_id == plant_type.id;
+    const bool plant_selected = updated_project.plant_workspace.plant_type_id == plant_type.id;
     *existing = std::move(plant_type);
     if (module_selected) {
-        auto clamped = clamp_module_age_to_active_range();
+        auto clamped = clamp_module_age_to_active_range(updated_project);
         if (!clamped) {
             return std::unexpected(clamped.error());
         }
     }
+
+    std::optional<growth::PlantSimulation> updated_simulation;
     if (plant_selected) {
-        auto reset = reset_plant_simulation();
-        if (!reset) {
-            return std::unexpected(reset.error());
+        auto simulation = make_plant_simulation(prototype_library_, updated_project);
+        if (!simulation) {
+            return std::unexpected(simulation.error());
         }
+        updated_simulation.emplace(std::move(*simulation));
     }
-    return save_project();
+    auto committed = commit_project(std::move(updated_project));
+    if (!committed) {
+        return committed;
+    }
+    if (updated_simulation) {
+        plant_simulation_ = std::move(*updated_simulation);
+        plant_camera_needs_frame_ = true;
+    }
+    return {};
 }
 
 ViewportAppearance DesktopSession::viewport_preferences() const
@@ -721,12 +776,7 @@ Result<void> DesktopSession::update_viewport_preferences(ViewportAppearance appe
     viewport.world_origin_axes_visible = appearance.world_origin_axes_visible;
     viewport.hdri_backdrop_visible = appearance.hdri_backdrop_visible;
     viewport.active_hdri_environment_id = std::move(appearance.active_hdri_environment_id);
-    auto saved = project::save_project(options_.project_path, updated_project);
-    if (!saved) {
-        return std::unexpected(from_project_error(saved.error()));
-    }
-    project_ = std::move(updated_project);
-    return {};
+    return commit_project(std::move(updated_project));
 }
 
 Result<void> DesktopSession::update_active_orbit(project::OrbitState orbit)
@@ -734,11 +784,10 @@ Result<void> DesktopSession::update_active_orbit(project::OrbitState orbit)
     auto updated_project = project_;
     active_viewport(updated_project).orbit = orbit;
     active_viewport(updated_project).orbit_initialized = true;
-    auto saved = project::save_project(options_.project_path, updated_project);
-    if (!saved) {
-        return std::unexpected(from_project_error(saved.error()));
+    auto committed = commit_project(std::move(updated_project));
+    if (!committed) {
+        return committed;
     }
-    project_ = std::move(updated_project);
     if (project_.active_workspace == project::Workspace::Module) {
         module_camera_needs_frame_ = false;
     } else if (project_.active_workspace == project::Workspace::Plant) {
@@ -747,34 +796,24 @@ Result<void> DesktopSession::update_active_orbit(project::OrbitState orbit)
     return {};
 }
 
-Result<void> DesktopSession::clamp_module_age_to_active_range()
+Result<void> DesktopSession::commit_project(project::Project project)
 {
-    auto facts = module_workspace_facts(prototype_library_, project_);
-    if (!facts) {
-        return std::unexpected(facts.error());
+    auto saved = project::save_project(options_.project_path, project);
+    if (!saved) {
+        return std::unexpected(from_project_error(saved.error()));
     }
-    project_.module_workspace.physiological_age =
-        std::min(project_.module_workspace.physiological_age, facts->fully_grown_age);
+    project_ = std::move(project);
     return {};
 }
 
-Result<void> DesktopSession::reset_plant_simulation()
+Result<void> DesktopSession::clamp_module_age_to_active_range(project::Project& project) const
 {
-    const auto* plant_type =
-        project::plant_type_by_id(project_, project_.plant_workspace.plant_type_id);
-    auto simulation = growth::PlantSimulation::create(
-        prototype_library_, plant_type->parameters, project_.plant_workspace.root_prototype_id);
-    if (!simulation) {
-        return std::unexpected(from_growth_error(simulation.error()));
+    auto facts = module_workspace_facts(prototype_library_, project);
+    if (!facts) {
+        return std::unexpected(facts.error());
     }
-    const auto& diagnostics = project_.plant_workspace.diagnostics;
-    auto configured = simulation->set_flow_diagnostics({
-        .accumulated_light = diagnostics.accumulated_light_flow_visible,
-        .vigor = diagnostics.vigor_flow_visible,
-    });
-    if (!configured) return std::unexpected(from_growth_error(configured.error()));
-    plant_simulation_ = std::move(*simulation);
-    plant_camera_needs_frame_ = true;
+    project.module_workspace.physiological_age =
+        std::min(project.module_workspace.physiological_age, facts->fully_grown_age);
     return {};
 }
 

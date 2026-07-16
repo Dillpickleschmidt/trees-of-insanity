@@ -6,6 +6,13 @@
 #include <nlohmann/json.hpp>
 #include <utility>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace toi::project {
 namespace {
 
@@ -74,26 +81,36 @@ Result<Project> load_project(const std::filesystem::path& path)
 
 Result<void> save_project(const std::filesystem::path& path, const Project& project)
 {
-    const auto temporary_path = path.string() + ".tmp";
+    auto temporary_path = path;
+    temporary_path += ".tmp";
     {
         std::ofstream file(temporary_path, std::ios::trunc);
         if (!file) {
-            return std::unexpected(make_error(ProjectError::Code::Io, "failed to write " + temporary_path));
+            return std::unexpected(
+                make_error(ProjectError::Code::Io, "failed to write " + temporary_path.string()));
         }
 
         file << project_to_json(project).dump(2) << '\n';
         file.flush();
         if (!file) {
-            return std::unexpected(make_error(ProjectError::Code::Io, "failed to flush " + temporary_path));
+            return std::unexpected(
+                make_error(ProjectError::Code::Io, "failed to flush " + temporary_path.string()));
         }
     }
 
-    std::error_code rename_error;
-    std::filesystem::rename(temporary_path, path, rename_error);
-    if (rename_error) {
-        std::filesystem::remove(temporary_path);
-        return std::unexpected(
-            make_error(ProjectError::Code::Io, "failed to replace " + path.string() + ": " + rename_error.message()));
+#ifdef _WIN32
+    if (!MoveFileExW(temporary_path.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        const auto windows_error = GetLastError();
+        const std::error_code replace_error(static_cast<int>(windows_error), std::system_category());
+#else
+    std::error_code replace_error;
+    std::filesystem::rename(temporary_path, path, replace_error);
+    if (replace_error) {
+#endif
+        std::error_code remove_error;
+        std::filesystem::remove(temporary_path, remove_error);
+        return std::unexpected(make_error(ProjectError::Code::Io,
+                                          "failed to replace " + path.string() + ": " + replace_error.message()));
     }
     return {};
 }
