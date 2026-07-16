@@ -34,6 +34,42 @@ struct EulerAngles {
     float z = 0.0F;
 };
 
+// One Borchert-Honda fork decision, shared by the canonical module-vigor pass
+// and the conduit flow diagnostic so the lateral-allocation policy cannot
+// drift between them: split available vigor between the main continuation and
+// the lateral group, then divide the lateral share proportionally by light,
+// falling back to an equal division when the group carries no light.
+struct ForkVigorSplit {
+    float main = 0.0F;
+    float lateral_total = 0.0F;
+    float lateral_light = 0.0F;
+    std::size_t lateral_count = 0;
+
+    [[nodiscard]] float lateral_share(float light) const
+    {
+        return lateral_light > kEpsilon ? lateral_total * light / lateral_light
+                                        : lateral_total / static_cast<float>(lateral_count);
+    }
+};
+
+[[nodiscard]] ForkVigorSplit fork_vigor_split(float available_vigor, float main_light, float lateral_light,
+                                              std::size_t lateral_count, float apical_control)
+{
+    const auto split = split_vigor(available_vigor, main_light, lateral_light, apical_control);
+    return {
+        .main = split.main_axis,
+        .lateral_total = split.lateral_axis,
+        .lateral_light = lateral_light,
+        .lateral_count = lateral_count,
+    };
+}
+
+[[nodiscard]] float current_apical_control(const PlantTypeParameters& plant_type, float plant_age)
+{
+    return parameter_for_plant_age(plant_type.apical_control, plant_type.mature_apical_control,
+                                   plant_type.flowering_age, plant_age);
+}
+
 [[nodiscard]] GrowthError invalid_input(std::string message);
 [[nodiscard]] GrowthError invalid_prototype(std::string message);
 [[nodiscard]] float dot(Vec3 left, Vec3 right);
@@ -234,9 +270,7 @@ Result<void> PlantSimulation::step(float timestep)
             const float determinacy = parameter_for_plant_age(
                 next.plant_type_.determinacy, next.plant_type_.mature_determinacy,
                 next.plant_type_.flowering_age, next.plant_age_);
-            const float apical_control = parameter_for_plant_age(
-                next.plant_type_.apical_control, next.plant_type_.mature_apical_control,
-                next.plant_type_.flowering_age, next.plant_age_);
+            const float apical_control = current_apical_control(next.plant_type_, next.plant_age_);
             const std::size_t selected_id = nearest_morphospace_prototype(
                 apical_control, vigor_scaled_determinacy(determinacy, precommit_root_vigor));
             const auto selected = std::ranges::find(next.prepared_prototypes_, selected_id,
@@ -527,9 +561,7 @@ Result<void> PlantSimulation::rebuild_flow_diagnostics(const ConduitWorkset& wor
         node_vigor[root_node] = root_vigor_total;
         std::queue<std::size_t> nodes;
         nodes.push(root_node);
-        const float apical_control = parameter_for_plant_age(
-            plant_type_.apical_control, plant_type_.mature_apical_control,
-            plant_type_.flowering_age, plant_age_);
+        const float apical_control = current_apical_control(plant_type_, plant_age_);
         while (!nodes.empty()) {
             const auto node = nodes.front();
             nodes.pop();
@@ -559,8 +591,7 @@ Result<void> PlantSimulation::rebuild_flow_diagnostics(const ConduitWorkset& wor
             }
 
             auto main_edge = first_active_child;
-            if (const auto main = main_child_edge_by_node[node];
-                *main < active_edges.size() && active_edges[*main]) {
+            if (const auto main = main_child_edge_by_node[node]; main && active_edges[*main]) {
                 main_edge = *main;
             }
             float lateral_light = 0.0F;
@@ -572,18 +603,16 @@ Result<void> PlantSimulation::rebuild_flow_diagnostics(const ConduitWorkset& wor
                 lateral_light += edge_light[edge];
                 ++lateral_count;
             }
-            const auto split = split_vigor(available_vigor, edge_light[main_edge],
-                                           lateral_light, apical_control);
-            edge_vigor[main_edge] = split.main_axis;
+            const auto fork = fork_vigor_split(available_vigor, edge_light[main_edge],
+                                               lateral_light, lateral_count, apical_control);
+            edge_vigor[main_edge] = fork.main;
             node_vigor[workset.edges[main_edge].child_node] = edge_vigor[main_edge];
             nodes.push(workset.edges[main_edge].child_node);
             for (std::size_t index = workset.child_edge_offsets[node];
                  index < workset.child_edge_offsets[node + 1]; ++index) {
                 const auto edge = workset.child_edges[index];
                 if (!active_edges[edge] || edge == main_edge) continue;
-                edge_vigor[edge] = lateral_light > kEpsilon
-                    ? split.lateral_axis * edge_light[edge] / lateral_light
-                    : split.lateral_axis / static_cast<float>(lateral_count);
+                edge_vigor[edge] = fork.lateral_share(edge_light[edge]);
                 node_vigor[workset.edges[edge].child_node] = edge_vigor[edge];
                 nodes.push(workset.edges[edge].child_node);
             }
@@ -712,9 +741,7 @@ Result<void> PlantSimulation::rebuild_snapshot(bool include_flow_diagnostics)
     if (!module_records_.empty()) {
         module_vigor[0] = std::min(root_vigor_budget, kMaximumModuleVigor);
     }
-    const float apical_control = parameter_for_plant_age(
-        plant_type_.apical_control, plant_type_.mature_apical_control,
-        plant_type_.flowering_age, plant_age_);
+    const float apical_control = current_apical_control(plant_type_, plant_age_);
     for (std::size_t module = 0; module < module_count; ++module) {
         const auto& record = module_records_[module];
         const auto& prototype = prepared_prototypes_[record.prototype_index];
@@ -758,15 +785,13 @@ Result<void> PlantSimulation::rebuild_snapshot(bool include_flow_diagnostics)
                         ++lateral_count;
                     }
                 }
-                const auto split = split_vigor(node_vigor[module][node], node_light[module][main_node],
-                                               lateral_light, apical_control);
-                node_vigor[module][main_node] = split.main_axis;
+                const auto fork = fork_vigor_split(node_vigor[module][node], node_light[module][main_node],
+                                                   lateral_light, lateral_count, apical_control);
+                node_vigor[module][main_node] = fork.main;
                 for (const auto child_segment : children) {
                     if (child_segment == *main_segment) continue;
                     const auto child_node = prototype.segments[child_segment].child_node;
-                    node_vigor[module][child_node] = lateral_light > kEpsilon
-                        ? split.lateral_axis * node_light[module][child_node] / lateral_light
-                        : split.lateral_axis / static_cast<float>(lateral_count);
+                    node_vigor[module][child_node] = fork.lateral_share(node_light[module][child_node]);
                 }
             }
             for (const auto child_segment : children) {
