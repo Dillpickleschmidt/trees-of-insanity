@@ -1,5 +1,7 @@
 #include "toi/viewport/viewport_overlay.hpp"
 
+#include "gpu_checks.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -65,16 +67,6 @@ struct OverlayPushConstants {
     float viewport[4];   // x, y, width, height of the contained rendered image
 };
 
-[[nodiscard]] Result<void> require_vk(VkResult result, std::string_view context)
-{
-    if (result != VK_SUCCESS) {
-        std::ostringstream out;
-        out << context << " failed: VkResult " << static_cast<int>(result);
-        return std::unexpected(make_error(out.str()));
-    }
-    return {};
-}
-
 [[nodiscard]] Result<VkShaderModule> create_shader(VkDevice device, const unsigned char* code, std::uint32_t size)
 {
     VkShaderModuleCreateInfo info{};
@@ -82,25 +74,11 @@ struct OverlayPushConstants {
     info.codeSize = size;
     info.pCode = reinterpret_cast<const std::uint32_t*>(code);
     VkShaderModule module = VK_NULL_HANDLE;
-    if (auto result = require_vk(vkCreateShaderModule(device, &info, nullptr, &module), "vkCreateShaderModule");
+    if (auto result = require_vk_success(vkCreateShaderModule(device, &info, nullptr, &module), "vkCreateShaderModule");
         !result) {
         return std::unexpected(result.error());
     }
     return module;
-}
-
-[[nodiscard]] Result<std::uint32_t> find_memory_type(VkPhysicalDevice physical_device, std::uint32_t type_filter,
-                                                     VkMemoryPropertyFlags properties)
-{
-    VkPhysicalDeviceMemoryProperties memory_properties{};
-    vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
-    for (std::uint32_t index = 0; index < memory_properties.memoryTypeCount; ++index) {
-        if ((type_filter & (1U << index)) != 0 &&
-            (memory_properties.memoryTypes[index].propertyFlags & properties) == properties) {
-            return index;
-        }
-    }
-    return std::unexpected(make_error("no host-visible memory type for the overlay vertex buffer"));
 }
 
 } // namespace
@@ -146,7 +124,7 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     render_pass_info.pSubpasses = &subpass;
     render_pass_info.dependencyCount = 1;
     render_pass_info.pDependencies = &dependency;
-    if (auto result = require_vk(vkCreateRenderPass(overlay.device_, &render_pass_info, nullptr, &overlay.render_pass_),
+    if (auto result = require_vk_success(vkCreateRenderPass(overlay.device_, &render_pass_info, nullptr, &overlay.render_pass_),
                                  "vkCreateRenderPass");
         !result) {
         return std::unexpected(result.error());
@@ -162,7 +140,7 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     set_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     set_layout_info.bindingCount = 1;
     set_layout_info.pBindings = &sampler_binding;
-    if (auto result = require_vk(vkCreateDescriptorSetLayout(overlay.device_, &set_layout_info, nullptr,
+    if (auto result = require_vk_success(vkCreateDescriptorSetLayout(overlay.device_, &set_layout_info, nullptr,
                                                             &overlay.descriptor_set_layout_),
                                  "vkCreateDescriptorSetLayout");
         !result) {
@@ -176,7 +154,7 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     pool_info.maxSets = kDistanceSlotCount;
     pool_info.poolSizeCount = 1;
     pool_info.pPoolSizes = &pool_size;
-    if (auto result = require_vk(vkCreateDescriptorPool(overlay.device_, &pool_info, nullptr, &overlay.descriptor_pool_),
+    if (auto result = require_vk_success(vkCreateDescriptorPool(overlay.device_, &pool_info, nullptr, &overlay.descriptor_pool_),
                                  "vkCreateDescriptorPool");
         !result) {
         overlay.reset();
@@ -190,7 +168,7 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     set_alloc.descriptorPool = overlay.descriptor_pool_;
     set_alloc.descriptorSetCount = kDistanceSlotCount;
     set_alloc.pSetLayouts = set_layouts.data();
-    if (auto result = require_vk(vkAllocateDescriptorSets(overlay.device_, &set_alloc, overlay.descriptor_sets_),
+    if (auto result = require_vk_success(vkAllocateDescriptorSets(overlay.device_, &set_alloc, overlay.descriptor_sets_),
                                  "vkAllocateDescriptorSets");
         !result) {
         overlay.reset();
@@ -204,7 +182,7 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    if (auto result = require_vk(vkCreateSampler(overlay.device_, &sampler_info, nullptr, &overlay.sampler_),
+    if (auto result = require_vk_success(vkCreateSampler(overlay.device_, &sampler_info, nullptr, &overlay.sampler_),
                                  "vkCreateSampler");
         !result) {
         overlay.reset();
@@ -274,7 +252,7 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     layout_info.pushConstantRangeCount = 1;
     layout_info.pPushConstantRanges = &push_range;
     auto layout_result =
-        require_vk(vkCreatePipelineLayout(overlay.device_, &layout_info, nullptr, &overlay.pipeline_layout_),
+        require_vk_success(vkCreatePipelineLayout(overlay.device_, &layout_info, nullptr, &overlay.pipeline_layout_),
                    "vkCreatePipelineLayout");
     if (!layout_result) {
         destroy_shaders();
@@ -361,7 +339,7 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     pipeline_info.renderPass = overlay.render_pass_;
     pipeline_info.subpass = 0;
 
-    auto line_pipeline_result = require_vk(
+    auto line_pipeline_result = require_vk_success(
         vkCreateGraphicsPipelines(overlay.device_, VK_NULL_HANDLE, 1, &pipeline_info,
                                   nullptr, &overlay.line_pipeline_),
         "vkCreateGraphicsPipelines(line overlay)");
@@ -386,7 +364,7 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     vertex_input.pVertexBindingDescriptions = &surface_binding;
     vertex_input.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(surface_attributes.size());
     vertex_input.pVertexAttributeDescriptions = surface_attributes.data();
-    auto surface_pipeline_result = require_vk(
+    auto surface_pipeline_result = require_vk_success(
         vkCreateGraphicsPipelines(overlay.device_, VK_NULL_HANDLE, 1, &pipeline_info,
                                   nullptr, &overlay.surface_pipeline_),
         "vkCreateGraphicsPipelines(surface overlay)");
@@ -412,7 +390,7 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     vertex_input.pVertexAttributeDescriptions = sphere_attributes.data();
     blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                       VK_COLOR_COMPONENT_B_BIT;
-    auto sphere_pipeline_result = require_vk(
+    auto sphere_pipeline_result = require_vk_success(
         vkCreateGraphicsPipelines(overlay.device_, VK_NULL_HANDLE, 1, &pipeline_info,
                                   nullptr, &overlay.sphere_pipeline_),
         "vkCreateGraphicsPipelines(sphere overlay)");
@@ -428,7 +406,7 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     buffer_info.size = kBufferBytes;
     buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (auto result = require_vk(vkCreateBuffer(overlay.device_, &buffer_info, nullptr, &overlay.vertex_buffer_),
+    if (auto result = require_vk_success(vkCreateBuffer(overlay.device_, &buffer_info, nullptr, &overlay.vertex_buffer_),
                                  "vkCreateBuffer");
         !result) {
         overlay.reset();
@@ -447,14 +425,14 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
     allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocate_info.allocationSize = requirements.size;
     allocate_info.memoryTypeIndex = *memory_type;
-    if (auto result = require_vk(vkAllocateMemory(overlay.device_, &allocate_info, nullptr, &overlay.vertex_memory_),
+    if (auto result = require_vk_success(vkAllocateMemory(overlay.device_, &allocate_info, nullptr, &overlay.vertex_memory_),
                                  "vkAllocateMemory");
         !result) {
         overlay.reset();
         return std::unexpected(result.error());
     }
     vkBindBufferMemory(overlay.device_, overlay.vertex_buffer_, overlay.vertex_memory_, 0);
-    if (auto result = require_vk(vkMapMemory(overlay.device_, overlay.vertex_memory_, 0, buffer_info.size, 0,
+    if (auto result = require_vk_success(vkMapMemory(overlay.device_, overlay.vertex_memory_, 0, buffer_info.size, 0,
                                              &overlay.vertex_mapped_),
                                  "vkMapMemory");
         !result) {
@@ -474,7 +452,7 @@ Result<void> ViewportOverlay::set_target(VkImage target, VkFormat format, VkExte
     view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
     view_info.format = format;
     view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    if (auto result = require_vk(vkCreateImageView(device_, &view_info, nullptr, &target_view_), "vkCreateImageView");
+    if (auto result = require_vk_success(vkCreateImageView(device_, &view_info, nullptr, &target_view_), "vkCreateImageView");
         !result) {
         return std::unexpected(result.error());
     }
@@ -486,7 +464,7 @@ Result<void> ViewportOverlay::set_target(VkImage target, VkFormat format, VkExte
     framebuffer_info.width = extent.width;
     framebuffer_info.height = extent.height;
     framebuffer_info.layers = 1;
-    return require_vk(vkCreateFramebuffer(device_, &framebuffer_info, nullptr, &framebuffer_), "vkCreateFramebuffer");
+    return require_vk_success(vkCreateFramebuffer(device_, &framebuffer_info, nullptr, &framebuffer_), "vkCreateFramebuffer");
 }
 
 Result<void> ViewportOverlay::set_scene_distance(std::uint32_t distance_slot, VkImageView distance_view)
@@ -534,7 +512,7 @@ Result<void> ViewportOverlay::ensure_surface_capacity(std::uint32_t slot, std::s
     buffer_info.size = byte_size;
     buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (auto result = require_vk(vkCreateBuffer(device_, &buffer_info, nullptr, &buffer),
+    if (auto result = require_vk_success(vkCreateBuffer(device_, &buffer_info, nullptr, &buffer),
                                  "vkCreateBuffer(surface overlay)"); !result) {
         return result;
     }
@@ -552,18 +530,18 @@ Result<void> ViewportOverlay::ensure_surface_capacity(std::uint32_t slot, std::s
     allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocate_info.allocationSize = requirements.size;
     allocate_info.memoryTypeIndex = *memory_type;
-    if (auto result = require_vk(vkAllocateMemory(device_, &allocate_info, nullptr, &memory),
+    if (auto result = require_vk_success(vkAllocateMemory(device_, &allocate_info, nullptr, &memory),
                                  "vkAllocateMemory(surface overlay)"); !result) {
         vkDestroyBuffer(device_, buffer, nullptr);
         return result;
     }
-    if (auto result = require_vk(vkBindBufferMemory(device_, buffer, memory, 0),
+    if (auto result = require_vk_success(vkBindBufferMemory(device_, buffer, memory, 0),
                                  "vkBindBufferMemory(surface overlay)"); !result) {
         vkFreeMemory(device_, memory, nullptr);
         vkDestroyBuffer(device_, buffer, nullptr);
         return result;
     }
-    if (auto result = require_vk(vkMapMemory(device_, memory, 0, byte_size, 0, &mapped),
+    if (auto result = require_vk_success(vkMapMemory(device_, memory, 0, byte_size, 0, &mapped),
                                  "vkMapMemory(surface overlay)"); !result) {
         vkFreeMemory(device_, memory, nullptr);
         vkDestroyBuffer(device_, buffer, nullptr);

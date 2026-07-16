@@ -1,8 +1,9 @@
 #include "toi/viewport/cuda_vulkan_interop.hpp"
 
+#include "gpu_checks.hpp"
+
 #include <cstddef>
 #include <cstdint>
-#include <sstream>
 #include <string>
 #include <string_view>
 #if defined(_WIN32)
@@ -22,59 +23,6 @@ constexpr VkExternalMemoryHandleTypeFlagBits kExternalMemoryHandleType =
 constexpr VkExternalMemoryHandleTypeFlagBits kExternalMemoryHandleType =
     VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
 #endif
-
-[[nodiscard]] std::string vk_error(std::string_view context, VkResult result)
-{
-    std::ostringstream out;
-    out << context << " failed: VkResult " << static_cast<int>(result);
-    return out.str();
-}
-
-[[nodiscard]] std::string cuda_error(std::string_view context, cudaError_t result)
-{
-    std::ostringstream out;
-    out << context << " failed: " << cudaGetErrorString(result);
-    return out.str();
-}
-
-[[nodiscard]] Result<void> require_cuda_success(cudaError_t result, std::string_view context)
-{
-    if (result != cudaSuccess) {
-        return std::unexpected(make_error(cuda_error(context, result)));
-    }
-    return {};
-}
-
-[[nodiscard]] Result<void> require_vk_success(VkResult result, std::string_view context)
-{
-    if (result != VK_SUCCESS) {
-        return std::unexpected(make_error(vk_error(context, result)));
-    }
-    return {};
-}
-
-[[nodiscard]] cudaStream_t cuda_stream_from_ovrtx(std::uintptr_t stream)
-{
-    if (stream <= std::uintptr_t{1}) {
-        return nullptr;
-    }
-    return reinterpret_cast<cudaStream_t>(stream);
-}
-
-[[nodiscard]] Result<std::uint32_t> find_memory_type(VkPhysicalDevice physical_device, std::uint32_t type_filter,
-                                                     VkMemoryPropertyFlags properties)
-{
-    VkPhysicalDeviceMemoryProperties memory_properties{};
-    vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
-
-    for (std::uint32_t index = 0; index < memory_properties.memoryTypeCount; ++index) {
-        if ((type_filter & (std::uint32_t{1} << index)) != 0 &&
-            (memory_properties.memoryTypes[index].propertyFlags & properties) == properties) {
-            return index;
-        }
-    }
-    return std::unexpected(make_error("failed to find required Vulkan memory type"));
-}
 
 [[nodiscard]] Result<cudaExternalMemory_t> import_external_memory(
     VulkanContext& context, VkDeviceMemory memory, VkDeviceSize size)
