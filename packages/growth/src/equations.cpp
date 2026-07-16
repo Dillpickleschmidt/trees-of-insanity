@@ -98,23 +98,6 @@ float physiological_age_euler_step(float physiological_age, float growth_rate_va
     return physiological_age + growth_rate_value * time_step;
 }
 
-float shedding_vigor_threshold(float root_max_vigor)
-{
-    return kShedVigorFraction * root_max_vigor;
-}
-
-float senescence_interpolation(float full_vigor, float plant_age, float maximum_age, float ramp_duration)
-{
-    if (plant_age <= maximum_age) {
-        return full_vigor;
-    }
-    if (ramp_duration <= kEpsilon) {
-        return 0.0F;
-    }
-    const float remaining = std::clamp(1.0F - (plant_age - maximum_age) / ramp_duration, 0.0F, 1.0F);
-    return full_vigor * remaining;
-}
-
 namespace {
 
 float sphere_volume(float radius)

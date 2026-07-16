@@ -182,11 +182,9 @@ TEST_CASE("orientation costs implement equations 3 and 4")
     CHECK(orientation_distribution_cost(0.25F, 2.0F, tropism, 3.0F) == Catch::Approx(3.5F));
 }
 
-TEST_CASE("age integration shedding and senescence policies are explicit")
+TEST_CASE("age integration and age-dependent parameters are explicit")
 {
     using namespace toi::growth;
     CHECK(physiological_age_euler_step(2.0F, 0.5F, 4.0F) == Catch::Approx(4.0F));
-    CHECK(shedding_vigor_threshold(500.0F) == Catch::Approx(10.0F));
-    CHECK(senescence_interpolation(100.0F, 25.0F, 20.0F, 10.0F) == Catch::Approx(50.0F));
     CHECK(parameter_for_plant_age(0.9F, 0.4F, 20.0F, 20.0F) == Catch::Approx(0.4F));
 }
