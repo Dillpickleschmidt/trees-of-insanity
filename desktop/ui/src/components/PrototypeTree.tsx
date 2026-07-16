@@ -1,6 +1,6 @@
 import { For, Show } from "solid-js";
 
-import type { PrototypeTree, PrototypeTreeItem } from "~/types";
+import type { PrototypeTree, PrototypeTreeItem } from "~/shared/desktopActions";
 
 function TreeItem(props: { item: PrototypeTreeItem; depth: number }) {
 	const isNode = () => props.item.kind === "node";

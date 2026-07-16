@@ -1,6 +1,6 @@
 import { For, type JSX } from "solid-js";
 
-import type { PlantTypeSummary, PrototypeSummary } from "~/types";
+import type { PlantTypeSummary, PrototypeSummary } from "~/shared/desktopActions";
 
 export function Section(props: { eyebrow: string; children: JSX.Element }) {
 	return (

@@ -4,7 +4,7 @@ import { Field } from "~/components/panelPrimitives";
 import { Button } from "~/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "~/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "~/components/ui/select";
-import type { PlantTypeSummary } from "~/types";
+import type { PlantTypeSummary } from "~/shared/desktopActions";
 import { type PlantTypePresetKey, plantTypePresetKeys, plantTypePresetLabel } from "~/uiOptions";
 
 export function PlantTypesDialog(props: {

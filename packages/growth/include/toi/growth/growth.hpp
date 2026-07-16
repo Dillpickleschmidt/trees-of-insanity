@@ -54,15 +54,8 @@ struct PlantTypeParameters {
     float length_growth_scale = 0.0F;
 };
 
-struct PlantTypeParameterDescriptor {
-    std::string_view key;
-    std::optional<float> min;
-    std::optional<float> max;
-};
-
 [[nodiscard]] std::span<const PlantTypeParameters> plant_type_presets();
 [[nodiscard]] std::optional<PlantTypeParameters> plant_type_preset_by_key(char preset_key);
-[[nodiscard]] std::span<const PlantTypeParameterDescriptor> plant_type_parameter_descriptors();
 [[nodiscard]] bool plant_type_parameters_are_valid(const PlantTypeParameters& parameters);
 
 struct VigorInputs {
@@ -145,8 +138,6 @@ compute_pipe_diameter_factors(const std::vector<BranchSegment>& segments,
                               const std::vector<std::vector<std::size_t>>& child_segments_by_node);
 
 [[nodiscard]] Result<void> require_valid_branch_module_prototype(const BranchModulePrototype& prototype);
-
-[[nodiscard]] std::string to_string(SegmentState state);
 
 struct Sphere {
     Vec3 center;

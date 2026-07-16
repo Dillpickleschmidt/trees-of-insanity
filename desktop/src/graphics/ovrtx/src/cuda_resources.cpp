@@ -4,17 +4,6 @@
 #include <utility>
 
 namespace toi::ovrtx {
-namespace {
-
-[[nodiscard]] cudaStream_t cuda_stream_from_ovrtx(std::uintptr_t stream)
-{
-    if (stream <= std::uintptr_t{1}) {
-        return nullptr;
-    }
-    return reinterpret_cast<cudaStream_t>(stream);
-}
-
-} // namespace
 
 Result<void> require_cuda_success(cudaError_t result, std::string_view context)
 {
@@ -22,66 +11,6 @@ Result<void> require_cuda_success(cudaError_t result, std::string_view context)
         return std::unexpected(make_error(std::string(context) + ": " + cudaGetErrorString(result)));
     }
     return {};
-}
-
-CudaDeviceBuffer::CudaDeviceBuffer(void* data)
-    : data_(data)
-{
-}
-
-CudaDeviceBuffer::CudaDeviceBuffer(CudaDeviceBuffer&& other) noexcept
-    : data_(std::exchange(other.data_, nullptr))
-    , before_destroy_stream_(std::exchange(other.before_destroy_stream_, 0))
-{
-}
-
-CudaDeviceBuffer& CudaDeviceBuffer::operator=(CudaDeviceBuffer&& other) noexcept
-{
-    if (this != &other) {
-        reset();
-        data_ = std::exchange(other.data_, nullptr);
-        before_destroy_stream_ = std::exchange(other.before_destroy_stream_, 0);
-    }
-    return *this;
-}
-
-CudaDeviceBuffer::~CudaDeviceBuffer()
-{
-    reset();
-}
-
-Result<CudaDeviceBuffer> CudaDeviceBuffer::create(std::size_t byte_count)
-{
-    void* data = nullptr;
-    auto allocated = require_cuda_success(cudaMalloc(&data, byte_count), "cudaMalloc");
-    if (!allocated) {
-        return std::unexpected(allocated.error());
-    }
-    return CudaDeviceBuffer(data);
-}
-
-void* CudaDeviceBuffer::data() const
-{
-    return data_;
-}
-
-void CudaDeviceBuffer::set_before_destroy_stream(std::uintptr_t stream)
-{
-    before_destroy_stream_ = stream;
-}
-
-void CudaDeviceBuffer::reset()
-{
-    if (data_ == nullptr) {
-        return;
-    }
-    if (before_destroy_stream_ == 0) {
-        cudaFree(data_);
-    } else {
-        cudaFreeAsync(data_, cuda_stream_from_ovrtx(before_destroy_stream_));
-    }
-    data_ = nullptr;
-    before_destroy_stream_ = 0;
 }
 
 CudaStream::CudaStream(cudaStream_t stream)

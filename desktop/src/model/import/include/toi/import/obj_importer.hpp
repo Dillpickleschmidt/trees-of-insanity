@@ -28,10 +28,6 @@ template <class T> using Result = std::expected<T, ImportError>;
 
 using BranchModulePrototypeLibrary = growth::BranchModulePrototypeLibrary;
 
-[[nodiscard]] Result<growth::BranchModulePrototype>
-load_branch_module_prototype_from_obj(const std::filesystem::path& path, std::string_view object_name,
-                                      std::size_t prototype_id, float prototype_geometry_scale);
-
 [[nodiscard]] Result<BranchModulePrototypeLibrary>
 load_branch_module_prototype_library_from_obj(const std::filesystem::path& path, float prototype_geometry_scale);
 
