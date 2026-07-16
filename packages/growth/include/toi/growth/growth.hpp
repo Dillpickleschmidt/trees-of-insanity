@@ -328,9 +328,4 @@ struct VigorSplit {
 // Paper Eq. 6: forward-Euler physiological-age integration.
 [[nodiscard]] float physiological_age_euler_step(float physiological_age, float growth_rate, float time_step);
 
-inline constexpr float kShedVigorFraction = 0.02F;
-[[nodiscard]] float shedding_vigor_threshold(float root_max_vigor);
-[[nodiscard]] float senescence_interpolation(float full_vigor, float plant_age, float maximum_age,
-                                             float ramp_duration);
-
 } // namespace toi::growth
