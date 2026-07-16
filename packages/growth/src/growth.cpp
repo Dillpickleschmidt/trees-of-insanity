@@ -220,26 +220,6 @@ std::optional<PlantTypeParameters> plant_type_preset_by_key(char preset_key)
     return presets[static_cast<std::size_t>(preset_key - 'a')];
 }
 
-std::span<const PlantTypeParameterDescriptor> plant_type_parameter_descriptors()
-{
-    static constexpr std::array<PlantTypeParameterDescriptor, 13> descriptors{{
-        {"plant_max_age", 0.0F, std::nullopt},
-        {"root_max_vigor", 0.0F, std::nullopt},
-        {"plant_growth_rate", 0.0F, std::nullopt},
-        {"apical_control", 0.0F, std::nullopt},
-        {"mature_apical_control", 0.0F, std::nullopt},
-        {"determinacy", 0.0F, std::nullopt},
-        {"mature_determinacy", 0.0F, std::nullopt},
-        {"flowering_age", 0.0F, std::nullopt},
-        {"tropism_angle", std::nullopt, std::nullopt},
-        {"tropism_weight", 0.0F, std::nullopt},
-        {"tropism_strength", std::nullopt, std::nullopt},
-        {"terminal_thickness", 0.0F, std::nullopt},
-        {"length_growth_scale", kEpsilon, std::nullopt},
-    }};
-    return descriptors;
-}
-
 bool plant_type_parameters_are_valid(const PlantTypeParameters& parameters)
 {
     return finite_non_negative(parameters.plant_max_age) && finite_non_negative(parameters.root_max_vigor) &&
@@ -531,17 +511,6 @@ Result<void> require_valid_branch_module_prototype(const BranchModulePrototype& 
         }
     }
     return {};
-}
-
-std::string to_string(SegmentState state)
-{
-    switch (state) {
-    case SegmentState::Growing:
-        return "growing";
-    case SegmentState::Mature:
-        return "mature";
-    }
-    return "unknown";
 }
 
 } // namespace toi::growth

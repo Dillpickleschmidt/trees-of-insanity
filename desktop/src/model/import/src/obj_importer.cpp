@@ -402,32 +402,6 @@ build_prototype(const ObjObjectData& object, const std::vector<Vec3>& global_ver
 
 } // namespace
 
-Result<BranchModulePrototype> load_branch_module_prototype_from_obj(const std::filesystem::path& path,
-                                                                    std::string_view object_name,
-                                                                    std::size_t prototype_id,
-                                                                    float prototype_geometry_scale)
-{
-    if (!std::isfinite(prototype_geometry_scale) || prototype_geometry_scale <= 0.0F) {
-        return std::unexpected(make_error(ImportError::Code::InvalidInput,
-                                          "prototype geometry scale must be finite and positive"));
-    }
-
-    auto parsed = parse_obj_file(path);
-    if (!parsed) {
-        return std::unexpected(parsed.error());
-    }
-
-    auto objects = sorted_objects_with_lines(*parsed);
-    const auto found = std::ranges::find_if(
-        objects, [object_name](const ObjObjectData& object) { return object.name == object_name; });
-    if (found == objects.end()) {
-        return std::unexpected(
-            make_error(ImportError::Code::UnknownObject, "OBJ object not found: " + std::string(object_name)));
-    }
-
-    return build_prototype(*found, parsed->global_vertices, prototype_id, prototype_geometry_scale);
-}
-
 Result<BranchModulePrototypeLibrary> load_branch_module_prototype_library_from_obj(
     const std::filesystem::path& path, float prototype_geometry_scale)
 {

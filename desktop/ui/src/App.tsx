@@ -20,7 +20,7 @@ import type {
 	PrototypeSummary,
 	ViewportPreferences,
 	Workspace,
-} from "~/types";
+} from "~/shared/desktopActions";
 import {
 	type ColorTheme,
 	colorThemes,

@@ -12,27 +12,6 @@ namespace toi::ovrtx {
 
 [[nodiscard]] Result<void> require_cuda_success(cudaError_t result, std::string_view context);
 
-class CudaDeviceBuffer {
-public:
-    CudaDeviceBuffer() = default;
-    CudaDeviceBuffer(const CudaDeviceBuffer&) = delete;
-    CudaDeviceBuffer& operator=(const CudaDeviceBuffer&) = delete;
-    CudaDeviceBuffer(CudaDeviceBuffer&& other) noexcept;
-    CudaDeviceBuffer& operator=(CudaDeviceBuffer&& other) noexcept;
-    ~CudaDeviceBuffer();
-
-    [[nodiscard]] static Result<CudaDeviceBuffer> create(std::size_t byte_count);
-    [[nodiscard]] void* data() const;
-    void set_before_destroy_stream(std::uintptr_t stream);
-
-private:
-    explicit CudaDeviceBuffer(void* data);
-    void reset();
-
-    void* data_ = nullptr;
-    std::uintptr_t before_destroy_stream_ = 0;
-};
-
 class CudaStream {
 public:
     CudaStream() = default;

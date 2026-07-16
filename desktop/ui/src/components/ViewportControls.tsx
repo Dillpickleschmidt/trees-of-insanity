@@ -1,11 +1,11 @@
-import { Box, ChevronDown, Grid3x3, Sparkles } from "lucide-solid";
+import { ChevronDown, Grid3x3, Sparkles } from "lucide-solid";
 import { Show } from "solid-js";
 
 import { Field } from "~/components/panelPrimitives";
 import { Popover, PopoverContent, PopoverTrigger } from "~/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "~/components/ui/select";
 import { Switch, SwitchControl, SwitchThumb } from "~/components/ui/switch";
-import type { HdriEnvironment, ViewportPreferences, ViewportPreferencesView } from "~/types";
+import type { HdriEnvironment, ViewportPreferences, ViewportPreferencesView } from "~/shared/desktopActions";
 import type { ViewportStatus } from "../shared/desktopBridge";
 
 export function ViewportControls(props: {
@@ -77,15 +77,6 @@ export function ViewportControls(props: {
 
 					<div class="mx-1 h-5 w-px bg-white/15" />
 
-					<button
-						type="button"
-						title="Workbench rendering is not available"
-						aria-label="Workbench rendering unavailable"
-						disabled
-						class="flex size-8 items-center justify-center text-foreground/25"
-					>
-						<Box class="size-4" />
-					</button>
 					<button
 						type="button"
 						title="ovrtx rendered mode"

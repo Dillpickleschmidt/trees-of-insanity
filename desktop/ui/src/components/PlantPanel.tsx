@@ -3,7 +3,7 @@ import { Show } from "solid-js";
 
 import { Readout, Section } from "~/components/panelPrimitives";
 import { Switch, SwitchControl, SwitchThumb } from "~/components/ui/switch";
-import type { PlantDiagnostics, PlantState } from "~/types";
+import type { PlantDiagnostics, PlantState } from "~/shared/desktopActions";
 
 function formatNumber(value: number, digits = 3) {
 	return Number.isFinite(value) ? value.toFixed(digits) : "—";
