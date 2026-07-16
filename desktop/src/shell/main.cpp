@@ -21,9 +21,46 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <string>
 #include <string_view>
+
+namespace {
+
+struct ViewportStatusPayload {
+    std::string phase;
+    std::string message;
+    int width = 0;
+    int height = 0;
+    std::uint64_t frame_generation = 0;
+    std::uint64_t scene_frame_count = 0;
+    std::uint64_t precomposition_count = 0;
+};
+
+[[nodiscard]] QString to_viewport_status_json(const ViewportStatusPayload& status)
+{
+    const nlohmann::json payload{
+        {"phase", status.phase},
+        {"message", status.message},
+        {"viewport", {{"width", status.width}, {"height", status.height}}},
+        {"color", {{"width", status.width}, {"height", status.height}}},
+        {"depth", nullptr},
+        {"frame_generation", status.frame_generation},
+        {"scene_frame_count", status.scene_frame_count},
+        {"precomposition_count", status.precomposition_count},
+    };
+    return QString::fromStdString(payload.dump());
+}
+
+void publish_viewport_error(DesktopBridge& bridge, std::string_view message)
+{
+    bridge.publishViewportStatus(
+        to_viewport_status_json({.phase = "error", .message = std::string(message)}));
+}
+
+} // namespace
 
 #if defined(TOI_ENABLE_OVRTX)
 namespace {
@@ -85,13 +122,6 @@ make_preview_projection(const toi::model::DesktopSession& session, int width = 1
         .azimuth_radians = orbit.azimuth_radians,
         .elevation_radians = orbit.elevation_radians,
     };
-}
-
-void publish_viewport_error(DesktopBridge& bridge, std::string_view message)
-{
-    bridge.publishViewportStatus(QString::fromStdString(
-        std::string(R"({"phase":"error","message":")") + std::string(message) +
-        R"(","viewport":{"width":0,"height":0},"color":{"width":0,"height":0},"depth":null,"frame_generation":0,"scene_frame_count":0,"precomposition_count":0})"));
 }
 
 [[nodiscard]] toi::model::Result<toi::render::OrbitView>
@@ -240,10 +270,7 @@ int main(int argc, char* argv[])
                              auto stage = make_preview_projection(
                                  bridge->session(), pendingExtent.width(), pendingExtent.height());
                              if (!stage) {
-                                 bridge->publishViewportStatus(QString::fromStdString(
-                                     std::string(R"({"phase":"error","message":")") +
-                                     stage.error().message +
-                                     R"(","viewport":{"width":0,"height":0},"color":{"width":0,"height":0},"depth":null,"frame_generation":0,"scene_frame_count":0,"precomposition_count":0})"));
+                                 publish_viewport_error(*bridge, stage.error().message);
                                  return;
                              }
                              auto orbit = orbit_for_stage(bridge->session(), *stage);
@@ -272,10 +299,7 @@ int main(int argc, char* argv[])
                              auto stage = make_preview_projection(
                                  bridge->session(), requestedExtent.width(), requestedExtent.height());
                              if (!stage) {
-                                 bridge->publishViewportStatus(QString::fromStdString(
-                                     std::string(R"({"phase":"error","message":")") +
-                                     stage.error().message +
-                                     R"(","viewport":{"width":0,"height":0},"color":{"width":0,"height":0},"depth":null,"frame_generation":0,"scene_frame_count":0,"precomposition_count":0})"));
+                                 publish_viewport_error(*bridge, stage.error().message);
                                  return;
                              }
                              auto orbit = orbit_for_stage(bridge->session(), *stage);
@@ -293,18 +317,15 @@ int main(int argc, char* argv[])
         QObject::connect(&statusTimer, &QTimer::timeout, bridge.get(),
                          [bridge = bridge.get(), renderer = previewRenderer.get()] {
                              const auto status = renderer->status();
-                             bridge->publishViewportStatus(QString::fromStdString(
-                                 std::string("{\"phase\":\"") + status.phase +
-                                 "\",\"message\":\"" + status.message +
-                                 "\",\"viewport\":{\"width\":" + std::to_string(status.width) +
-                                 ",\"height\":" + std::to_string(status.height) +
-                                 "},\"color\":{\"width\":" + std::to_string(status.width) +
-                                 ",\"height\":" + std::to_string(status.height) +
-                                 "},\"depth\":null,\"frame_generation\":" +
-                                 std::to_string(status.frame_generation) +
-                                 ",\"scene_frame_count\":" + std::to_string(status.scene_frame_count) +
-                                 ",\"precomposition_count\":" + std::to_string(status.precomposition_count) +
-                                 "}"));
+                             bridge->publishViewportStatus(to_viewport_status_json({
+                                 .phase = status.phase,
+                                 .message = status.message,
+                                 .width = status.width,
+                                 .height = status.height,
+                                 .frame_generation = status.frame_generation,
+                                 .scene_frame_count = status.scene_frame_count,
+                                 .precomposition_count = status.precomposition_count,
+                             }));
                          });
         statusTimer.start();
         QObject::connect(bridge.get(), &DesktopBridge::viewportRectChanged, viewportItem,
@@ -324,10 +345,8 @@ int main(int argc, char* argv[])
                          });
 #endif
         window->show();
-        bridge->publishViewportStatus(QString::fromStdString(
-            std::string(R"({"phase":"starting","message":"Qt Vulkan viewport starting on )") +
-            vulkanDevice->name() +
-            R"(","viewport":{"width":0,"height":0},"color":{"width":0,"height":0},"depth":null,"frame_generation":0,"scene_frame_count":0,"precomposition_count":0})"));
+        bridge->publishViewportStatus(to_viewport_status_json(
+            {.phase = "starting", .message = "Qt Vulkan viewport starting on " + vulkanDevice->name()}));
         exitCode = application.exec();
     }
 #if defined(TOI_ENABLE_OVRTX)
