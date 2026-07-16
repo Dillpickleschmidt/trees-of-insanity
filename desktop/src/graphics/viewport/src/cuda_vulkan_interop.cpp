@@ -295,10 +295,20 @@ void CudaInteropTimelineSemaphore::reset()
     }
 }
 
+// Everything that differs between the color frame and the distance field.
+struct CudaInteropImage::Spec {
+    VkFormat format;
+    VkImageUsageFlags usage;
+    cudaChannelFormatDesc channel_desc;
+    unsigned int array_flags;
+    bool create_view;
+};
+
 CudaInteropImage::CudaInteropImage(CudaInteropImage&& other) noexcept
     : device_(std::exchange(other.device_, VK_NULL_HANDLE))
     , image_(std::exchange(other.image_, VK_NULL_HANDLE))
     , memory_(std::exchange(other.memory_, VK_NULL_HANDLE))
+    , view_(std::exchange(other.view_, VK_NULL_HANDLE))
     , cuda_memory_(std::exchange(other.cuda_memory_, nullptr))
     , mipmapped_array_(std::exchange(other.mipmapped_array_, nullptr))
     , cuda_array_(std::exchange(other.cuda_array_, nullptr))
@@ -314,6 +324,7 @@ CudaInteropImage& CudaInteropImage::operator=(CudaInteropImage&& other) noexcept
         device_ = std::exchange(other.device_, VK_NULL_HANDLE);
         image_ = std::exchange(other.image_, VK_NULL_HANDLE);
         memory_ = std::exchange(other.memory_, VK_NULL_HANDLE);
+        view_ = std::exchange(other.view_, VK_NULL_HANDLE);
         cuda_memory_ = std::exchange(other.cuda_memory_, nullptr);
         mipmapped_array_ = std::exchange(other.mipmapped_array_, nullptr);
         cuda_array_ = std::exchange(other.cuda_array_, nullptr);
@@ -328,7 +339,31 @@ CudaInteropImage::~CudaInteropImage()
     reset();
 }
 
-Result<CudaInteropImage> CudaInteropImage::create(VulkanContext& context, int width, int height)
+Result<CudaInteropImage> CudaInteropImage::create_color(VulkanContext& context, int width, int height)
+{
+    return create(context, width, height,
+                  {
+                      .format = VK_FORMAT_R8G8B8A8_UNORM,
+                      .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                      .channel_desc = cudaCreateChannelDesc(8, 8, 8, 8, cudaChannelFormatKindUnsigned),
+                      .array_flags = cudaArrayColorAttachment,
+                      .create_view = false,
+                  });
+}
+
+Result<CudaInteropImage> CudaInteropImage::create_distance(VulkanContext& context, int width, int height)
+{
+    return create(context, width, height,
+                  {
+                      .format = VK_FORMAT_R32_SFLOAT,
+                      .usage = VK_IMAGE_USAGE_SAMPLED_BIT,
+                      .channel_desc = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindFloat),
+                      .array_flags = 0,
+                      .create_view = true,
+                  });
+}
+
+Result<CudaInteropImage> CudaInteropImage::create(VulkanContext& context, int width, int height, const Spec& spec)
 {
     VkExternalMemoryImageCreateInfo external_info{};
     external_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
@@ -338,13 +373,13 @@ Result<CudaInteropImage> CudaInteropImage::create(VulkanContext& context, int wi
     image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     image_info.pNext = &external_info;
     image_info.imageType = VK_IMAGE_TYPE_2D;
-    image_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+    image_info.format = spec.format;
     image_info.extent = {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), 1};
     image_info.mipLevels = 1;
     image_info.arrayLayers = 1;
     image_info.samples = VK_SAMPLE_COUNT_1_BIT;
     image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    image_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    image_info.usage = spec.usage;
     image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -354,12 +389,19 @@ Result<CudaInteropImage> CudaInteropImage::create(VulkanContext& context, int wi
         return std::unexpected(result.error());
     }
 
+    // From here on every failure unwinds through `out` — the partially built
+    // image is owned by a value whose reset() releases whatever exists so far.
+    CudaInteropImage out;
+    out.device_ = context.device();
+    out.image_ = image;
+    out.width_ = width;
+    out.height_ = height;
+
     VkMemoryRequirements memory_requirements{};
     vkGetImageMemoryRequirements(context.device(), image, &memory_requirements);
     auto memory_type = find_memory_type(context.physical_device(), memory_requirements.memoryTypeBits,
                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (!memory_type) {
-        vkDestroyImage(context.device(), image, nullptr);
         return std::unexpected(memory_type.error());
     }
 
@@ -378,73 +420,56 @@ Result<CudaInteropImage> CudaInteropImage::create(VulkanContext& context, int wi
     allocate_info.allocationSize = memory_requirements.size;
     allocate_info.memoryTypeIndex = *memory_type;
 
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    if (auto result = require_vk_success(vkAllocateMemory(context.device(), &allocate_info, nullptr, &memory),
+    if (auto result = require_vk_success(vkAllocateMemory(context.device(), &allocate_info, nullptr, &out.memory_),
                                          "vkAllocateMemory");
         !result) {
-        vkDestroyImage(context.device(), image, nullptr);
         return std::unexpected(result.error());
     }
-
-    if (auto result = require_vk_success(vkBindImageMemory(context.device(), image, memory, 0), "vkBindImageMemory");
+    if (auto result = require_vk_success(vkBindImageMemory(context.device(), image, out.memory_, 0),
+                                         "vkBindImageMemory");
         !result) {
-        vkFreeMemory(context.device(), memory, nullptr);
-        vkDestroyImage(context.device(), image, nullptr);
         return std::unexpected(result.error());
     }
 
-    auto imported_memory = import_external_memory(context, memory, memory_requirements.size);
+    if (spec.create_view) {
+        VkImageViewCreateInfo view_info{};
+        view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_info.image = image;
+        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_info.format = spec.format;
+        view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        if (auto result = require_vk_success(vkCreateImageView(context.device(), &view_info, nullptr, &out.view_),
+                                             "vkCreateImageView");
+            !result) {
+            return std::unexpected(result.error());
+        }
+    }
+
+    auto imported_memory = import_external_memory(context, out.memory_, memory_requirements.size);
     if (!imported_memory) {
-        vkFreeMemory(context.device(), memory, nullptr);
-        vkDestroyImage(context.device(), image, nullptr);
         return std::unexpected(imported_memory.error());
     }
-    cudaExternalMemory_t cuda_memory = *imported_memory;
+    out.cuda_memory_ = *imported_memory;
 
     cudaExternalMemoryMipmappedArrayDesc mipmapped_desc{};
     mipmapped_desc.offset = 0;
-    mipmapped_desc.formatDesc = cudaCreateChannelDesc(8, 8, 8, 8, cudaChannelFormatKindUnsigned);
+    mipmapped_desc.formatDesc = spec.channel_desc;
     mipmapped_desc.extent = cudaExtent{static_cast<std::size_t>(width), static_cast<std::size_t>(height), 0};
-    mipmapped_desc.flags = cudaArrayColorAttachment;
+    mipmapped_desc.flags = spec.array_flags;
     mipmapped_desc.numLevels = 1;
-
-    cudaMipmappedArray_t mipmapped_array = nullptr;
     if (const auto cuda_result =
-            cudaExternalMemoryGetMappedMipmappedArray(&mipmapped_array, cuda_memory, &mipmapped_desc);
+            cudaExternalMemoryGetMappedMipmappedArray(&out.mipmapped_array_, out.cuda_memory_, &mipmapped_desc);
         cuda_result != cudaSuccess) {
-        cudaDestroyExternalMemory(cuda_memory);
-        vkFreeMemory(context.device(), memory, nullptr);
-        vkDestroyImage(context.device(), image, nullptr);
         return std::unexpected(make_error(cuda_error("cudaExternalMemoryGetMappedMipmappedArray", cuda_result)));
     }
-
-    cudaArray_t cuda_array = nullptr;
-    if (const auto cuda_result = cudaGetMipmappedArrayLevel(&cuda_array, mipmapped_array, 0);
+    if (const auto cuda_result = cudaGetMipmappedArrayLevel(&out.cuda_array_, out.mipmapped_array_, 0);
         cuda_result != cudaSuccess) {
-        cudaFreeMipmappedArray(mipmapped_array);
-        cudaDestroyExternalMemory(cuda_memory);
-        vkFreeMemory(context.device(), memory, nullptr);
-        vkDestroyImage(context.device(), image, nullptr);
         return std::unexpected(make_error(cuda_error("cudaGetMipmappedArrayLevel", cuda_result)));
     }
 
     if (auto transitioned = transition_to_general(context, image); !transitioned) {
-        cudaFreeMipmappedArray(mipmapped_array);
-        cudaDestroyExternalMemory(cuda_memory);
-        vkFreeMemory(context.device(), memory, nullptr);
-        vkDestroyImage(context.device(), image, nullptr);
         return std::unexpected(transitioned.error());
     }
-
-    CudaInteropImage out;
-    out.device_ = context.device();
-    out.image_ = image;
-    out.memory_ = memory;
-    out.cuda_memory_ = cuda_memory;
-    out.mipmapped_array_ = mipmapped_array;
-    out.cuda_array_ = cuda_array;
-    out.width_ = width;
-    out.height_ = height;
     return out;
 }
 
@@ -472,6 +497,11 @@ VkImage CudaInteropImage::image() const
     return image_;
 }
 
+VkImageView CudaInteropImage::view() const
+{
+    return view_;
+}
+
 int CudaInteropImage::width() const
 {
     return width_;
@@ -483,233 +513,6 @@ int CudaInteropImage::height() const
 }
 
 void CudaInteropImage::reset()
-{
-    if (device_ != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(device_);
-    }
-    if (mipmapped_array_ != nullptr) {
-        cudaFreeMipmappedArray(mipmapped_array_);
-        mipmapped_array_ = nullptr;
-        cuda_array_ = nullptr;
-    }
-    if (cuda_memory_ != nullptr) {
-        cudaDestroyExternalMemory(cuda_memory_);
-        cuda_memory_ = nullptr;
-    }
-    if (device_ != VK_NULL_HANDLE && image_ != VK_NULL_HANDLE) {
-        vkDestroyImage(device_, image_, nullptr);
-        image_ = VK_NULL_HANDLE;
-    }
-    if (device_ != VK_NULL_HANDLE && memory_ != VK_NULL_HANDLE) {
-        vkFreeMemory(device_, memory_, nullptr);
-        memory_ = VK_NULL_HANDLE;
-    }
-    device_ = VK_NULL_HANDLE;
-}
-
-CudaInteropFloatImage::CudaInteropFloatImage(CudaInteropFloatImage&& other) noexcept
-    : device_(std::exchange(other.device_, VK_NULL_HANDLE))
-    , image_(std::exchange(other.image_, VK_NULL_HANDLE))
-    , memory_(std::exchange(other.memory_, VK_NULL_HANDLE))
-    , view_(std::exchange(other.view_, VK_NULL_HANDLE))
-    , cuda_memory_(std::exchange(other.cuda_memory_, nullptr))
-    , mipmapped_array_(std::exchange(other.mipmapped_array_, nullptr))
-    , cuda_array_(std::exchange(other.cuda_array_, nullptr))
-    , width_(std::exchange(other.width_, 0))
-    , height_(std::exchange(other.height_, 0))
-{
-}
-
-CudaInteropFloatImage& CudaInteropFloatImage::operator=(CudaInteropFloatImage&& other) noexcept
-{
-    if (this != &other) {
-        reset();
-        device_ = std::exchange(other.device_, VK_NULL_HANDLE);
-        image_ = std::exchange(other.image_, VK_NULL_HANDLE);
-        memory_ = std::exchange(other.memory_, VK_NULL_HANDLE);
-        view_ = std::exchange(other.view_, VK_NULL_HANDLE);
-        cuda_memory_ = std::exchange(other.cuda_memory_, nullptr);
-        mipmapped_array_ = std::exchange(other.mipmapped_array_, nullptr);
-        cuda_array_ = std::exchange(other.cuda_array_, nullptr);
-        width_ = std::exchange(other.width_, 0);
-        height_ = std::exchange(other.height_, 0);
-    }
-    return *this;
-}
-
-CudaInteropFloatImage::~CudaInteropFloatImage()
-{
-    reset();
-}
-
-Result<CudaInteropFloatImage> CudaInteropFloatImage::create(VulkanContext& context, int width, int height)
-{
-    VkExternalMemoryImageCreateInfo external_info{};
-    external_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
-    external_info.handleTypes = kExternalMemoryHandleType;
-
-    VkImageCreateInfo image_info{};
-    image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    image_info.pNext = &external_info;
-    image_info.imageType = VK_IMAGE_TYPE_2D;
-    image_info.format = VK_FORMAT_R32_SFLOAT;
-    image_info.extent = {static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), 1};
-    image_info.mipLevels = 1;
-    image_info.arrayLayers = 1;
-    image_info.samples = VK_SAMPLE_COUNT_1_BIT;
-    image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    image_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
-    image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    VkImage image = VK_NULL_HANDLE;
-    if (auto result = require_vk_success(vkCreateImage(context.device(), &image_info, nullptr, &image), "vkCreateImage");
-        !result) {
-        return std::unexpected(result.error());
-    }
-
-    VkMemoryRequirements memory_requirements{};
-    vkGetImageMemoryRequirements(context.device(), image, &memory_requirements);
-    auto memory_type = find_memory_type(context.physical_device(), memory_requirements.memoryTypeBits,
-                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (!memory_type) {
-        vkDestroyImage(context.device(), image, nullptr);
-        return std::unexpected(memory_type.error());
-    }
-
-    VkExportMemoryAllocateInfo export_info{};
-    export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
-    export_info.handleTypes = kExternalMemoryHandleType;
-
-    VkMemoryDedicatedAllocateInfo dedicated_info{};
-    dedicated_info.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
-    dedicated_info.pNext = &export_info;
-    dedicated_info.image = image;
-
-    VkMemoryAllocateInfo allocate_info{};
-    allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocate_info.pNext = &dedicated_info;
-    allocate_info.allocationSize = memory_requirements.size;
-    allocate_info.memoryTypeIndex = *memory_type;
-
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    if (auto result = require_vk_success(vkAllocateMemory(context.device(), &allocate_info, nullptr, &memory),
-                                         "vkAllocateMemory");
-        !result) {
-        vkDestroyImage(context.device(), image, nullptr);
-        return std::unexpected(result.error());
-    }
-    if (auto result = require_vk_success(vkBindImageMemory(context.device(), image, memory, 0), "vkBindImageMemory");
-        !result) {
-        vkFreeMemory(context.device(), memory, nullptr);
-        vkDestroyImage(context.device(), image, nullptr);
-        return std::unexpected(result.error());
-    }
-
-    VkImageViewCreateInfo view_info{};
-    view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    view_info.image = image;
-    view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    view_info.format = VK_FORMAT_R32_SFLOAT;
-    view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    VkImageView view = VK_NULL_HANDLE;
-    if (auto result = require_vk_success(vkCreateImageView(context.device(), &view_info, nullptr, &view),
-                                         "vkCreateImageView");
-        !result) {
-        vkFreeMemory(context.device(), memory, nullptr);
-        vkDestroyImage(context.device(), image, nullptr);
-        return std::unexpected(result.error());
-    }
-
-    auto imported_memory = import_external_memory(context, memory, memory_requirements.size);
-    if (!imported_memory) {
-        vkDestroyImageView(context.device(), view, nullptr);
-        vkFreeMemory(context.device(), memory, nullptr);
-        vkDestroyImage(context.device(), image, nullptr);
-        return std::unexpected(imported_memory.error());
-    }
-    cudaExternalMemory_t cuda_memory = *imported_memory;
-
-    cudaExternalMemoryMipmappedArrayDesc mipmapped_desc{};
-    mipmapped_desc.offset = 0;
-    mipmapped_desc.formatDesc = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindFloat);
-    mipmapped_desc.extent = cudaExtent{static_cast<std::size_t>(width), static_cast<std::size_t>(height), 0};
-    mipmapped_desc.numLevels = 1;
-    cudaMipmappedArray_t mipmapped_array = nullptr;
-    if (const auto cuda_result =
-            cudaExternalMemoryGetMappedMipmappedArray(&mipmapped_array, cuda_memory, &mipmapped_desc);
-        cuda_result != cudaSuccess) {
-        cudaDestroyExternalMemory(cuda_memory);
-        vkDestroyImageView(context.device(), view, nullptr);
-        vkFreeMemory(context.device(), memory, nullptr);
-        vkDestroyImage(context.device(), image, nullptr);
-        return std::unexpected(make_error(cuda_error("cudaExternalMemoryGetMappedMipmappedArray", cuda_result)));
-    }
-    cudaArray_t cuda_array = nullptr;
-    if (const auto cuda_result = cudaGetMipmappedArrayLevel(&cuda_array, mipmapped_array, 0);
-        cuda_result != cudaSuccess) {
-        cudaFreeMipmappedArray(mipmapped_array);
-        cudaDestroyExternalMemory(cuda_memory);
-        vkDestroyImageView(context.device(), view, nullptr);
-        vkFreeMemory(context.device(), memory, nullptr);
-        vkDestroyImage(context.device(), image, nullptr);
-        return std::unexpected(make_error(cuda_error("cudaGetMipmappedArrayLevel", cuda_result)));
-    }
-
-    if (auto transitioned = transition_to_general(context, image); !transitioned) {
-        cudaFreeMipmappedArray(mipmapped_array);
-        cudaDestroyExternalMemory(cuda_memory);
-        vkDestroyImageView(context.device(), view, nullptr);
-        vkFreeMemory(context.device(), memory, nullptr);
-        vkDestroyImage(context.device(), image, nullptr);
-        return std::unexpected(transitioned.error());
-    }
-
-    CudaInteropFloatImage out;
-    out.device_ = context.device();
-    out.image_ = image;
-    out.memory_ = memory;
-    out.view_ = view;
-    out.cuda_memory_ = cuda_memory;
-    out.mipmapped_array_ = mipmapped_array;
-    out.cuda_array_ = cuda_array;
-    out.width_ = width;
-    out.height_ = height;
-    return out;
-}
-
-Result<void> CudaInteropFloatImage::copy_from_cuda_array(const void* source_cuda_array, int width, int height,
-                                                         std::uintptr_t stream)
-{
-    if (source_cuda_array == nullptr || cuda_array_ == nullptr || width != width_ || height != height_) {
-        return std::unexpected(make_error("CUDA array does not match Vulkan interop float image"));
-    }
-    cudaMemcpy3DParms copy{};
-    copy.srcArray = reinterpret_cast<cudaArray_t>(const_cast<void*>(source_cuda_array));
-    copy.dstArray = cuda_array_;
-    copy.extent = cudaExtent{static_cast<std::size_t>(width_), static_cast<std::size_t>(height_), 1};
-    copy.kind = cudaMemcpyDeviceToDevice;
-    return require_cuda_success(cudaMemcpy3DAsync(&copy, cuda_stream_from_ovrtx(stream)), "cudaMemcpy3DAsync");
-}
-
-VkImage CudaInteropFloatImage::image() const
-{
-    return image_;
-}
-VkImageView CudaInteropFloatImage::view() const
-{
-    return view_;
-}
-int CudaInteropFloatImage::width() const
-{
-    return width_;
-}
-int CudaInteropFloatImage::height() const
-{
-    return height_;
-}
-
-void CudaInteropFloatImage::reset()
 {
     if (device_ != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device_);

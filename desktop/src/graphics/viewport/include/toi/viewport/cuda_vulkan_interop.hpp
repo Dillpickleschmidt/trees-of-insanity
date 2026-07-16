@@ -38,9 +38,11 @@ private:
     cudaExternalSemaphore_t cuda_semaphore_ = nullptr;
 };
 
-// An RGBA8 Vulkan image whose device memory is shared with a CUDA array via an
-// opaque-fd external-memory handle. CUDA copies the ovrtx LdrColor array into
-// it; Vulkan blits it to the viewport.
+// A Vulkan image whose device memory is shared with a CUDA array via an
+// opaque-fd external-memory handle. create_color makes the RGBA8 frame CUDA
+// copies the ovrtx LdrColor array into and Vulkan blits to the viewport;
+// create_distance makes the R32_SFLOAT image (with a view) the guide overlay
+// samples for depth-aware occlusion (the ovrtx DistanceToCameraSD output).
 class CudaInteropImage {
 public:
     CudaInteropImage() = default;
@@ -50,41 +52,12 @@ public:
     CudaInteropImage& operator=(CudaInteropImage&& other) noexcept;
     ~CudaInteropImage();
 
-    [[nodiscard]] static Result<CudaInteropImage> create(VulkanContext& context, int width, int height);
+    [[nodiscard]] static Result<CudaInteropImage> create_color(VulkanContext& context, int width, int height);
+    [[nodiscard]] static Result<CudaInteropImage> create_distance(VulkanContext& context, int width, int height);
     [[nodiscard]] Result<void> copy_from_cuda_array(const void* source_cuda_array, int width, int height,
                                                     std::uintptr_t stream);
     [[nodiscard]] VkImage image() const;
-    [[nodiscard]] int width() const;
-    [[nodiscard]] int height() const;
-
-    void reset();
-
-private:
-    VkDevice device_ = VK_NULL_HANDLE;
-    VkImage image_ = VK_NULL_HANDLE;
-    VkDeviceMemory memory_ = VK_NULL_HANDLE;
-    cudaExternalMemory_t cuda_memory_ = nullptr;
-    cudaMipmappedArray_t mipmapped_array_ = nullptr;
-    cudaArray_t cuda_array_ = nullptr;
-    int width_ = 0;
-    int height_ = 0;
-};
-
-// An R32_SFLOAT Vulkan image sharing memory with a CUDA array, sampled by the
-// guide overlay for depth-aware occlusion (the ovrtx DistanceToCameraSD output).
-class CudaInteropFloatImage {
-public:
-    CudaInteropFloatImage() = default;
-    CudaInteropFloatImage(const CudaInteropFloatImage&) = delete;
-    CudaInteropFloatImage& operator=(const CudaInteropFloatImage&) = delete;
-    CudaInteropFloatImage(CudaInteropFloatImage&& other) noexcept;
-    CudaInteropFloatImage& operator=(CudaInteropFloatImage&& other) noexcept;
-    ~CudaInteropFloatImage();
-
-    [[nodiscard]] static Result<CudaInteropFloatImage> create(VulkanContext& context, int width, int height);
-    [[nodiscard]] Result<void> copy_from_cuda_array(const void* source_cuda_array, int width, int height,
-                                                    std::uintptr_t stream);
-    [[nodiscard]] VkImage image() const;
+    // VK_NULL_HANDLE unless created with create_distance.
     [[nodiscard]] VkImageView view() const;
     [[nodiscard]] int width() const;
     [[nodiscard]] int height() const;
@@ -92,6 +65,10 @@ public:
     void reset();
 
 private:
+    struct Spec;
+    [[nodiscard]] static Result<CudaInteropImage> create(VulkanContext& context, int width, int height,
+                                                         const Spec& spec);
+
     VkDevice device_ = VK_NULL_HANDLE;
     VkImage image_ = VK_NULL_HANDLE;
     VkDeviceMemory memory_ = VK_NULL_HANDLE;

@@ -181,7 +181,7 @@ void transition(VkCommandBuffer command_buffer, VkImage image, VkImageLayout old
 
 struct PreviewRenderer::Slot {
     CudaInteropImage color;
-    CudaInteropFloatImage distance;
+    CudaInteropImage distance;
     render::GrowthPreviewCamera camera;
     cudaEvent_t copy_done = nullptr;
     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
@@ -526,12 +526,12 @@ Result<void> PreviewRenderer::initialize(PreviewRendererDevice device,
         return std::unexpected(make_error("Vulkan preview command buffer allocation failed"));
     }
     for (int index = 0; index < kSlotCount; ++index) {
-        auto color = CudaInteropImage::create(context_, width_, height_);
+        auto color = CudaInteropImage::create_color(context_, width_, height_);
         if (!color) {
             return std::unexpected(color.error());
         }
         slots_[index].color = std::move(*color);
-        auto distance = CudaInteropFloatImage::create(context_, width_, height_);
+        auto distance = CudaInteropImage::create_distance(context_, width_, height_);
         if (!distance) {
             return std::unexpected(distance.error());
         }
@@ -656,11 +656,11 @@ Result<void> PreviewRenderer::resize_frame_resources_on_render_thread(int width,
         slot.color.reset();
         slot.distance.reset();
 
-        auto color = CudaInteropImage::create(context_, width, height);
+        auto color = CudaInteropImage::create_color(context_, width, height);
         if (!color) {
             return std::unexpected(color.error());
         }
-        auto distance = CudaInteropFloatImage::create(context_, width, height);
+        auto distance = CudaInteropImage::create_distance(context_, width, height);
         if (!distance) {
             return std::unexpected(distance.error());
         }
