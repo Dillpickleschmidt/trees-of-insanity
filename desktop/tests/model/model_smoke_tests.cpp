@@ -215,6 +215,66 @@ TEST_CASE("Module and viewport state persist through session reopen")
     CHECK(project->ecosystem_workspace.viewport.guides_visible);
 }
 
+TEST_CASE("project-only command save failure preserves session state")
+{
+    const auto project_path = fresh_project_path("project-only-save-failure");
+    auto session = toi::model::DesktopSession::create(session_options(project_path));
+    REQUIRE(session);
+    const auto before = session->state();
+    REQUIRE(before);
+
+    auto blocked_temporary_path = project_path;
+    blocked_temporary_path += ".tmp";
+    REQUIRE(std::filesystem::create_directory(blocked_temporary_path));
+    CHECK_FALSE(session->set_module_physiological_age(1.0F));
+
+    const auto after = session->state();
+    REQUIRE(after);
+    CHECK(after->module_physiological_age == Catch::Approx(before->module_physiological_age));
+    const auto persisted = toi::project::load_project(project_path);
+    REQUIRE(persisted);
+    CHECK(persisted->module_workspace.physiological_age == Catch::Approx(before->module_physiological_age));
+    std::filesystem::remove_all(blocked_temporary_path);
+}
+
+TEST_CASE("coupled command save failure preserves project simulation and camera state")
+{
+    const auto project_path = fresh_project_path("coupled-save-failure");
+    auto session = toi::model::DesktopSession::create(session_options(project_path));
+    REQUIRE(session);
+    REQUIRE(session->set_active_workspace("plant"));
+    REQUIRE(session->update_active_orbit({.radius = 2.0F}));
+    REQUIRE(session->plant_step());
+
+    const auto before_state = session->plant_state();
+    REQUIRE(before_state);
+    CHECK(before_state->plant_age > 0.0F);
+    CHECK_FALSE(session->active_camera_needs_frame());
+    auto updated_type = session->plant_type(before_state->plant_type_id);
+    REQUIRE(updated_type);
+    const float original_growth_rate = updated_type->parameters.plant_growth_rate;
+    updated_type->parameters.plant_growth_rate *= 0.5F;
+
+    auto blocked_temporary_path = project_path;
+    blocked_temporary_path += ".tmp";
+    REQUIRE(std::filesystem::create_directory(blocked_temporary_path));
+    CHECK_FALSE(session->update_plant_type(*updated_type));
+
+    const auto after_state = session->plant_state();
+    REQUIRE(after_state);
+    CHECK(after_state->plant_age == Catch::Approx(before_state->plant_age));
+    CHECK_FALSE(session->active_camera_needs_frame());
+    const auto after_type = session->plant_type(before_state->plant_type_id);
+    REQUIRE(after_type);
+    CHECK(after_type->parameters.plant_growth_rate == Catch::Approx(original_growth_rate));
+    const auto persisted = toi::project::load_project(project_path);
+    REQUIRE(persisted);
+    const auto* persisted_type = toi::project::plant_type_by_id(*persisted, before_state->plant_type_id);
+    REQUIRE(persisted_type != nullptr);
+    CHECK(persisted_type->parameters.plant_growth_rate == Catch::Approx(original_growth_rate));
+    std::filesystem::remove_all(blocked_temporary_path);
+}
+
 TEST_CASE("session rejects missing prototype assets")
 {
     using namespace toi::project;
