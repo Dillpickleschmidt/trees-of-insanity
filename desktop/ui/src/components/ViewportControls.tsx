@@ -14,10 +14,10 @@ export function ViewportControls(props: {
 	busy: boolean;
 	onChange: (patch: Partial<ViewportPreferences>) => void;
 }) {
-	const preferences = () => props.view?.preferences;
+	const preferences = () => props.view!.preferences;
 	const activeEnvironment = () =>
-		props.view?.hdri_environments.find(
-			(environment) => environment.id === preferences()?.active_hdri_environment_id,
+		props.view!.hdri_environments.find(
+			(environment) => environment.id === preferences().active_hdri_environment_id,
 		) ?? null;
 
 	return (
@@ -32,17 +32,20 @@ export function ViewportControls(props: {
 				</div>
 			</Show>
 
-			<Show when={props.view}>
+			<Show
+				when={props.view}
+				fallback={<div class="absolute right-4 top-4 z-30 h-10 w-48 animate-pulse rounded-md bg-background/60" />}
+			>
 				<div class="absolute right-4 top-4 z-30 flex items-center rounded-md border border-white/10 bg-background/60 px-1 shadow-lg">
 					<button
 						type="button"
 						title="Toggle viewport guides"
 						aria-label="Toggle viewport guides"
-						aria-pressed={preferences()?.guides_visible}
+						aria-pressed={preferences().guides_visible}
 						disabled={props.busy}
-						onClick={() => props.onChange({ guides_visible: !preferences()?.guides_visible })}
+						onClick={() => props.onChange({ guides_visible: !preferences().guides_visible })}
 						class="flex size-8 items-center justify-center text-foreground/40 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-40"
-						classList={{ "text-foreground": preferences()?.guides_visible }}
+						classList={{ "text-foreground": preferences().guides_visible }}
 					>
 						<Grid3x3 class="size-4" />
 					</button>
@@ -59,7 +62,7 @@ export function ViewportControls(props: {
 						<PopoverContent class="w-52" showClose={false}>
 							<div class="eyebrow mb-3">Guides</div>
 							<Switch
-								checked={preferences()?.world_origin_axes_visible}
+								checked={preferences().world_origin_axes_visible}
 								disabled={props.busy}
 								onChange={(value) => props.onChange({ world_origin_axes_visible: value })}
 								class="flex items-center justify-between gap-4"
@@ -106,7 +109,7 @@ export function ViewportControls(props: {
 							<div class="eyebrow mb-3">Render settings</div>
 							<div class="space-y-4">
 								<Switch
-									checked={preferences()?.hdri_backdrop_visible}
+									checked={preferences().hdri_backdrop_visible}
 									disabled={props.busy}
 									onChange={(value) => props.onChange({ hdri_backdrop_visible: value })}
 									class="flex items-center justify-between gap-4"
@@ -119,14 +122,14 @@ export function ViewportControls(props: {
 
 								<Field label="Environment">
 									<Select<HdriEnvironment>
-										options={props.view?.hdri_environments ?? []}
+										options={props.view!.hdri_environments}
 										value={activeEnvironment()}
-										disabled={props.busy || props.view?.hdri_environments.length === 0}
+										disabled={props.busy || props.view!.hdri_environments.length === 0}
 										optionValue="id"
 										optionTextValue={(environment) => environment.name}
 										placeholder="No environments"
 										onChange={(environment) => {
-											if (environment && environment.id !== preferences()?.active_hdri_environment_id) {
+											if (environment && environment.id !== preferences().active_hdri_environment_id) {
 												props.onChange({ active_hdri_environment_id: environment.id });
 											}
 										}}
