@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <iomanip>
-#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -19,7 +18,6 @@ namespace {
 struct Bounds;
 struct Vec2;
 struct TubeFrame;
-struct ContinuationTopology;
 struct ChainBuildRequest;
 struct MeshGeometry;
 
@@ -37,7 +35,7 @@ struct MeshGeometry;
 void append_terminal_marker_lines(std::vector<DiagnosticOverlayLine>& lines,
                                   const growth::MatureTerminalSnapshot& terminal);
 [[nodiscard]] std::vector<ChainBuildRequest> make_plant_chain_build_requests(
-    const growth::PlantSnapshot& snapshot, bool mature_geometry);
+    const growth::PlantSnapshot& snapshot);
 [[nodiscard]] std::vector<ChainBuildRequest> make_plant_dynamic_chain_build_requests(
     const growth::PlantSnapshot& snapshot, const std::vector<ChainBuildRequest>& topology_requests);
 [[nodiscard]] GrowthPreviewUsdStage make_growth_preview_usd_stage(const std::vector<MeshGeometry>& meshes,
@@ -69,7 +67,7 @@ GrowthPreviewStageProjection make_plant_preview_stage_projection(
     const growth::PlantSnapshot& snapshot, const growth::GrowthSnapshot& mature_root_snapshot,
     PlantDiagnosticOptions diagnostics, GrowthPreviewStageOptions options)
 {
-    auto topology_requests = make_plant_chain_build_requests(snapshot, true);
+    auto topology_requests = make_plant_chain_build_requests(snapshot);
     auto topology_meshes = build_meshes(topology_requests);
     auto dynamic_requests = make_plant_dynamic_chain_build_requests(snapshot, topology_requests);
     auto dynamic_meshes = build_meshes(dynamic_requests);
@@ -146,10 +144,6 @@ struct TubeFrame {
     growth::Vec3 tangent;
     growth::Vec3 normal;
     growth::Vec3 binormal;
-};
-
-struct ContinuationTopology {
-    std::vector<std::optional<std::size_t>> continuation_by_segment;
 };
 
 struct ChainBuildRequest {
@@ -492,55 +486,6 @@ void write_vec2_list(std::ostream& out, const std::vector<Vec2>& values)
     return name.empty() ? "Prim" : std::string(name);
 }
 
-[[nodiscard]] bool first_segment_is_better_continuation(const growth::BranchModulePrototype& prototype,
-                                                        std::size_t incoming_segment_id, std::size_t left_segment_id,
-                                                        std::size_t right_segment_id)
-{
-    const auto& incoming = prototype.segments[incoming_segment_id];
-    const auto& left = prototype.segments[left_segment_id];
-    const auto& right = prototype.segments[right_segment_id];
-    const float left_dot = dot(incoming.direction, left.direction);
-    const float right_dot = dot(incoming.direction, right.direction);
-    if (std::abs(left_dot - right_dot) > kEpsilon) {
-        return left_dot > right_dot;
-    }
-    if (std::abs(left.pipe_diameter_factor - right.pipe_diameter_factor) > kEpsilon) {
-        return left.pipe_diameter_factor > right.pipe_diameter_factor;
-    }
-    if (std::abs(left.max_length - right.max_length) > kEpsilon) {
-        return left.max_length > right.max_length;
-    }
-    return left_segment_id < right_segment_id;
-}
-
-[[nodiscard]] ContinuationTopology choose_continuations(const growth::BranchModulePrototype& prototype)
-{
-    ContinuationTopology topology;
-    topology.continuation_by_segment.resize(prototype.segments.size());
-
-    for (std::size_t segment_id = 0; segment_id < prototype.segments.size(); ++segment_id) {
-        const auto& segment = prototype.segments[segment_id];
-        if (segment.child_node >= prototype.child_segments_by_node.size()) {
-            continue;
-        }
-
-        const auto& child_segments = prototype.child_segments_by_node[segment.child_node];
-        if (child_segments.empty()) {
-            continue;
-        }
-
-        std::size_t best_child_segment = child_segments.front();
-        for (const auto child_segment : child_segments) {
-            if (first_segment_is_better_continuation(prototype, segment_id, child_segment, best_child_segment)) {
-                best_child_segment = child_segment;
-            }
-        }
-        topology.continuation_by_segment[segment_id] = best_child_segment;
-    }
-
-    return topology;
-}
-
 [[nodiscard]] std::vector<const growth::GrowthSnapshotSegment*>
 live_segments_by_source(const growth::GrowthSnapshot& snapshot, const growth::BranchModulePrototype& prototype)
 {
@@ -553,31 +498,24 @@ live_segments_by_source(const growth::GrowthSnapshot& snapshot, const growth::Br
     return live;
 }
 
-[[nodiscard]] bool has_active_incoming_continuation(const growth::BranchModulePrototype& prototype,
-                                                    const ContinuationTopology& topology,
-                                                    const std::vector<const growth::GrowthSnapshotSegment*>& live,
-                                                    std::size_t segment_id)
+[[nodiscard]] bool has_active_incoming_continuation(
+    const growth::BranchModulePrototype& prototype,
+    const std::vector<const growth::GrowthSnapshotSegment*>& live, std::size_t segment_id)
 {
-    const auto& segment = prototype.segments[segment_id];
-    if (segment.parent_node >= prototype.incoming_segment_by_node.size()) {
+    const auto parent_node = prototype.segments[segment_id].parent_node;
+    if (parent_node >= prototype.incoming_segment_by_node.size() ||
+        parent_node >= prototype.main_child_segment_by_node.size()) {
         return false;
     }
 
-    const auto incoming = prototype.incoming_segment_by_node[segment.parent_node];
-    if (!incoming.has_value() || *incoming >= live.size() || live[*incoming] == nullptr) {
-        return false;
-    }
-    if (*incoming >= topology.continuation_by_segment.size()) {
-        return false;
-    }
-
-    return topology.continuation_by_segment[*incoming] == segment_id;
+    const auto incoming = prototype.incoming_segment_by_node[parent_node];
+    return incoming && *incoming < live.size() && live[*incoming] != nullptr &&
+           prototype.main_child_segment_by_node[parent_node] == segment_id;
 }
 
-[[nodiscard]] ChainBuildRequest make_chain_build_request(const growth::BranchModulePrototype& prototype,
-                                                         const ContinuationTopology& topology,
-                                                         const std::vector<const growth::GrowthSnapshotSegment*>& live,
-                                                         std::size_t first_segment_id)
+[[nodiscard]] ChainBuildRequest make_chain_build_request(
+    const growth::BranchModulePrototype& prototype,
+    const std::vector<const growth::GrowthSnapshotSegment*>& live, std::size_t first_segment_id)
 {
     ChainBuildRequest request;
     request.start_cap = prototype.segments[first_segment_id].parent_node == prototype.root_node;
@@ -590,8 +528,12 @@ live_segments_by_source(const growth::GrowthSnapshot& snapshot, const growth::Br
     request.radii.push_back(first_segment->diameter * 0.5F);
 
     std::size_t current_segment_id = first_segment_id;
-    while (current_segment_id < topology.continuation_by_segment.size()) {
-        const auto next_continuation = topology.continuation_by_segment[current_segment_id];
+    while (true) {
+        const auto child_node = prototype.segments[current_segment_id].child_node;
+        if (child_node >= prototype.main_child_segment_by_node.size()) {
+            break;
+        }
+        const auto next_continuation = prototype.main_child_segment_by_node[child_node];
         if (!next_continuation) {
             break;
         }
@@ -613,7 +555,6 @@ live_segments_by_source(const growth::GrowthSnapshot& snapshot, const growth::Br
 std::vector<ChainBuildRequest> make_chain_build_requests(const growth::GrowthSnapshot& snapshot,
                                                          const growth::BranchModulePrototype& prepared_prototype)
 {
-    const auto topology = choose_continuations(prepared_prototype);
     const auto live = live_segments_by_source(snapshot, prepared_prototype);
 
     std::vector<ChainBuildRequest> requests;
@@ -622,10 +563,10 @@ std::vector<ChainBuildRequest> make_chain_build_requests(const growth::GrowthSna
         if (live[segment_id] == nullptr) {
             continue;
         }
-        if (has_active_incoming_continuation(prepared_prototype, topology, live, segment_id)) {
+        if (has_active_incoming_continuation(prepared_prototype, live, segment_id)) {
             continue;
         }
-        requests.push_back(make_chain_build_request(prepared_prototype, topology, live, segment_id));
+        requests.push_back(make_chain_build_request(prepared_prototype, live, segment_id));
     }
     return requests;
 }
@@ -695,8 +636,7 @@ std::vector<ChainBuildRequest> make_dynamic_chain_build_requests(
     return requests;
 }
 
-std::vector<ChainBuildRequest> make_plant_chain_build_requests(const growth::PlantSnapshot& snapshot,
-                                                               bool mature_geometry)
+std::vector<ChainBuildRequest> make_plant_chain_build_requests(const growth::PlantSnapshot& snapshot)
 {
     std::vector<bool> is_continuation(snapshot.segments.size(), false);
     for (const auto& segment : snapshot.segments) {
@@ -709,17 +649,15 @@ std::vector<ChainBuildRequest> make_plant_chain_build_requests(const growth::Pla
         ChainBuildRequest request;
         request.start_cap = first_segment == snapshot.modules.front().segments.offset;
         const auto& first = snapshot.segments[first_segment];
-        request.centers.push_back(mature_geometry ? first.mature_parent_position : first.parent_position);
+        request.centers.push_back(first.mature_parent_position);
         request.radii.push_back(first.diameter * 0.5F);
 
         std::size_t segment_index = first_segment;
         while (true) {
             const auto& segment = snapshot.segments[segment_index];
             request.source_segment_ids.push_back(segment_index);
-            request.centers.push_back(mature_geometry ? segment.mature_child_position : segment.child_position);
-            const bool developed = growth::distance(segment.parent_position, segment.child_position) > kEpsilon;
-            request.radii.push_back(mature_geometry ? segment.diameter * 0.5F
-                                                    : (developed ? segment.diameter * 0.5F : 0.0F));
+            request.centers.push_back(segment.mature_child_position);
+            request.radii.push_back(segment.diameter * 0.5F);
             if (!segment.main_continuation_segment) break;
             segment_index = *segment.main_continuation_segment;
         }
