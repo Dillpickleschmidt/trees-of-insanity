@@ -2,14 +2,16 @@
 
 #include "toi/model/desktop_session.hpp"
 
+#include <string>
 #include <string_view>
-
-#include <nlohmann/json.hpp>
 
 namespace toi::desktop {
 
-[[nodiscard]] bool action_changes_preview(std::string_view method);
-[[nodiscard]] nlohmann::json dispatch_action(model::DesktopSession& session,
-                                                        const nlohmann::json& request);
+struct ActionDispatchResult {
+    std::string response;
+    bool preview_changed = false;
+};
+
+[[nodiscard]] ActionDispatchResult dispatch_action(model::DesktopSession& session, std::string_view request);
 
 } // namespace toi::desktop

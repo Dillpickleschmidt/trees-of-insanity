@@ -1,8 +1,9 @@
 #include "desktop_actions.hpp"
 
-#include <stdexcept>
+#include <nlohmann/json.hpp>
+
+#include <exception>
 #include <string>
-#include <string_view>
 #include <utility>
 
 namespace toi::desktop {
@@ -13,14 +14,36 @@ namespace {
 
 using nlohmann::json;
 
-[[nodiscard]] json response_ok(json id, json result)
+struct ActionResult {
+    json response;
+    bool preview_changed = false;
+};
+
+[[nodiscard]] ActionResult execute_action(DesktopSession& session, const json& request);
+[[nodiscard]] ActionResult response_error(std::string message);
+
+} // namespace
+
+ActionDispatchResult dispatch_action(DesktopSession& session, std::string_view request)
 {
-    return json{{"id", std::move(id)}, {"ok", true}, {"result", std::move(result)}};
+    try {
+        auto result = execute_action(session, json::parse(request));
+        return {.response = result.response.dump(), .preview_changed = result.preview_changed};
+    } catch (const std::exception& error) {
+        return {.response = response_error(error.what()).response.dump(), .preview_changed = false};
+    }
 }
 
-[[nodiscard]] json response_error(json id, std::string message)
+namespace {
+
+[[nodiscard]] ActionResult response_ok(json result, bool preview_changed = false)
 {
-    return json{{"id", std::move(id)}, {"ok", false}, {"error", std::move(message)}};
+    return {.response = json{{"ok", true}, {"result", std::move(result)}}, .preview_changed = preview_changed};
+}
+
+[[nodiscard]] ActionResult response_error(std::string message)
+{
+    return {.response = json{{"ok", false}, {"error", std::move(message)}}};
 }
 
 [[nodiscard]] std::string application_error_code(ApplicationError::Code code)
@@ -40,71 +63,10 @@ using nlohmann::json;
     std::unreachable();
 }
 
-[[nodiscard]] json response_error(json id, const ApplicationError& error)
+[[nodiscard]] ActionResult response_error(const ApplicationError& error)
 {
-    return json{
-        {"id", std::move(id)}, {"ok", false}, {"error", error.message}, {"code", application_error_code(error.code)}};
-}
-
-[[nodiscard]] json require_params_object(const json& request)
-{
-    if (!request.contains("params") || request.at("params").is_null()) {
-        return json::object();
-    }
-    if (!request.at("params").is_object()) {
-        throw std::invalid_argument("params must be an object");
-    }
-    return request.at("params");
-}
-
-[[nodiscard]] float json_float(const json& params, std::string_view key)
-{
-    if (!params.contains(key) || !params.at(key).is_number()) {
-        throw std::invalid_argument(std::string(key) + " must be numeric");
-    }
-    return params.at(key).get<float>();
-}
-
-[[nodiscard]] std::string json_string(const json& params, std::string_view key)
-{
-    if (!params.contains(key) || !params.at(key).is_string()) {
-        throw std::invalid_argument(std::string(key) + " must be a string");
-    }
-    return params.at(key).get<std::string>();
-}
-
-[[nodiscard]] std::size_t json_size(const json& params, std::string_view key)
-{
-    if (!params.contains(key) || !params.at(key).is_number_unsigned()) {
-        throw std::invalid_argument(std::string(key) + " must be an unsigned integer");
-    }
-    return params.at(key).get<std::size_t>();
-}
-
-[[nodiscard]] bool optional_json_bool(const json& params, std::string_view key, bool default_value)
-{
-    if (!params.contains(key)) {
-        return default_value;
-    }
-    if (!params.at(key).is_boolean()) {
-        throw std::invalid_argument(std::string(key) + " must be a boolean");
-    }
-    return params.at(key).get<bool>();
-}
-
-[[nodiscard]] char plant_type_preset_key(const json& params)
-{
-    if (!params.contains("preset_key")) {
-        return 'o';
-    }
-    if (!params.at("preset_key").is_string()) {
-        throw std::invalid_argument("preset_key must be a single-letter string");
-    }
-    const auto value = params.at("preset_key").get<std::string>();
-    if (value.size() != 1) {
-        throw std::invalid_argument("preset_key must be a single-letter string");
-    }
-    return value.front();
+    return {.response = json{
+                {"ok", false}, {"error", error.message}, {"code", application_error_code(error.code)}}};
 }
 
 [[nodiscard]] json prototype_tree_item_to_json(const PrototypeTreeItem& item)
@@ -121,110 +83,7 @@ using nlohmann::json;
     };
 }
 
-[[nodiscard]] json vec3_to_json(growth::Vec3 value)
-{
-    return json::array({value.x, value.y, value.z});
-}
-
-[[nodiscard]] json plant_type_parameters_to_json(const growth::PlantTypeParameters& parameters)
-{
-    auto optional_value = [](std::optional<float> value) -> json {
-        if (!value) {
-            return nullptr;
-        }
-        return *value;
-    };
-
-    return json{
-        {"plant_max_age", parameters.plant_max_age},
-        {"root_max_vigor", parameters.root_max_vigor},
-        {"plant_growth_rate", parameters.plant_growth_rate},
-        {"apical_control", parameters.apical_control},
-        {"mature_apical_control", optional_value(parameters.mature_apical_control)},
-        {"determinacy", parameters.determinacy},
-        {"mature_determinacy", optional_value(parameters.mature_determinacy)},
-        {"flowering_age", parameters.flowering_age},
-        {"tropism_angle", parameters.tropism_angle},
-        {"tropism_weight", parameters.tropism_weight},
-        {"tropism_strength", parameters.tropism_strength},
-        {"terminal_thickness", parameters.terminal_thickness},
-        {"length_growth_scale", parameters.length_growth_scale},
-    };
-}
-
-[[nodiscard]] json parameter_descriptors_to_json()
-{
-    json descriptors = json::array();
-    for (const auto& descriptor : growth::plant_type_parameter_descriptors()) {
-        descriptors.push_back({
-            {"key", descriptor.key},
-            {"min", descriptor.min ? json(*descriptor.min) : json(nullptr)},
-            {"max", descriptor.max ? json(*descriptor.max) : json(nullptr)},
-        });
-    }
-    return descriptors;
-}
-
-[[nodiscard]] std::optional<float> optional_parameter_value(const json& parameters, std::string_view key,
-                                                            std::optional<float> existing)
-{
-    if (!parameters.contains(key)) {
-        return existing;
-    }
-    if (parameters.at(key).is_null()) {
-        return std::nullopt;
-    }
-    if (!parameters.at(key).is_number()) {
-        throw std::invalid_argument(std::string(key) + " must be numeric or null");
-    }
-    return parameters.at(key).get<float>();
-}
-
-[[nodiscard]] float parameter_value(const json& parameters, std::string_view key, float existing)
-{
-    if (!parameters.contains(key)) {
-        return existing;
-    }
-    if (!parameters.at(key).is_number()) {
-        throw std::invalid_argument(std::string(key) + " must be numeric");
-    }
-    return parameters.at(key).get<float>();
-}
-
-void apply_parameter_update(project::PlantType& plant_type, const json& parameters)
-{
-    if (!parameters.is_object()) {
-        throw std::invalid_argument("parameters must be an object");
-    }
-
-    auto& p = plant_type.parameters;
-    p.plant_max_age = parameter_value(parameters, "plant_max_age", p.plant_max_age);
-    p.root_max_vigor = parameter_value(parameters, "root_max_vigor", p.root_max_vigor);
-    p.plant_growth_rate = parameter_value(parameters, "plant_growth_rate", p.plant_growth_rate);
-    p.apical_control = parameter_value(parameters, "apical_control", p.apical_control);
-    p.mature_apical_control = optional_parameter_value(parameters, "mature_apical_control", p.mature_apical_control);
-    p.determinacy = parameter_value(parameters, "determinacy", p.determinacy);
-    p.mature_determinacy = optional_parameter_value(parameters, "mature_determinacy", p.mature_determinacy);
-    p.flowering_age = parameter_value(parameters, "flowering_age", p.flowering_age);
-    p.tropism_angle = parameter_value(parameters, "tropism_angle", p.tropism_angle);
-    p.tropism_weight = parameter_value(parameters, "tropism_weight", p.tropism_weight);
-    p.tropism_strength = parameter_value(parameters, "tropism_strength", p.tropism_strength);
-    p.terminal_thickness = parameter_value(parameters, "terminal_thickness", p.terminal_thickness);
-    p.length_growth_scale = parameter_value(parameters, "length_growth_scale", p.length_growth_scale);
-}
-
-} // namespace
-
-bool action_changes_preview(std::string_view method)
-{
-    return method == "module.set_age" || method == "module.set_active_prototype" ||
-           method == "module.set_active_plant_type" || method == "plant.reset" || method == "plant.step" ||
-           method == "plant.set_diagnostics" || method == "workspace.set" || method == "plant_types.create" ||
-           method == "plant_types.update" || method == "plant_types.delete" ||
-           method == "viewport.set_preferences";
-}
-
-[[nodiscard]] static json to_json(const ViewportAppearance& preferences)
+[[nodiscard]] json to_json(const ViewportAppearance& preferences)
 {
     return json{
         {"guides_visible", preferences.guides_visible},
@@ -234,7 +93,7 @@ bool action_changes_preview(std::string_view method)
     };
 }
 
-[[nodiscard]] static json to_json(const AppStateView& state)
+[[nodiscard]] json to_json(const AppStateView& state)
 {
     json prototypes = json::array();
     for (const auto& prototype : state.prototypes) {
@@ -271,11 +130,10 @@ bool action_changes_preview(std::string_view method)
         {"active_plant_type_id", state.active_plant_type_id},
         {"module_physiological_age", state.module_physiological_age},
         {"fully_grown_age", state.fully_grown_age},
-        {"plant_type_parameter_descriptors", parameter_descriptors_to_json()},
     };
 }
 
-[[nodiscard]] static json to_json(const PlantStateView& state)
+[[nodiscard]] json to_json(const PlantStateView& state)
 {
     return json{
         {"plant_age", state.plant_age},
@@ -297,12 +155,12 @@ bool action_changes_preview(std::string_view method)
     };
 }
 
-[[nodiscard]] static json to_json(const PrototypeTreeView& tree)
+[[nodiscard]] json to_json(const PrototypeTreeView& tree)
 {
     return json{{"root", prototype_tree_item_to_json(tree.root)}};
 }
 
-[[nodiscard]] static json to_json(const GrowthSnapshotSummary& summary)
+[[nodiscard]] json to_json(const GrowthSnapshotSummary& summary)
 {
     return json{
         {"module_physiological_age", summary.module_physiological_age},
@@ -314,191 +172,116 @@ bool action_changes_preview(std::string_view method)
     };
 }
 
-[[nodiscard]] static json to_json(const growth::GrowthSnapshot& snapshot)
+[[nodiscard]] ActionResult execute_action(DesktopSession& session, const json& request)
 {
-    json segments = json::array();
-    for (const auto& segment : snapshot.segments) {
-        segments.push_back({
-            {"source_segment_id", segment.source_segment_id},
-            {"parent_position", vec3_to_json(segment.parent_position)},
-            {"child_position", vec3_to_json(segment.child_position)},
-            {"diameter", segment.diameter},
-            {"state", growth::to_string(segment.state)},
+    const std::string method = request.at("method").get<std::string>();
+    const json params = request.value("params", json::object());
+
+    if (method == "app.get_state") {
+        auto state = session.state();
+        return state ? response_ok(to_json(*state)) : response_error(state.error());
+    }
+    if (method == "module.set_active_prototype") {
+        if (!params.contains("prototype_id") || !params.at("prototype_id").is_number_unsigned()) {
+            return response_error("prototype_id must be an unsigned integer");
+        }
+        auto result = session.set_active_prototype(params.at("prototype_id").get<std::size_t>());
+        return result ? response_ok(json::object(), true) : response_error(result.error());
+    }
+    if (method == "module.set_active_plant_type") {
+        auto result = session.set_active_plant_type(params.at("plant_type_id").get<std::string>());
+        return result ? response_ok(json::object(), true) : response_error(result.error());
+    }
+    if (method == "module.set_age") {
+        auto result = session.set_module_physiological_age(params.at("age").get<float>());
+        return result ? response_ok(json::object(), true) : response_error(result.error());
+    }
+    if (method == "module.get_prototype_tree") {
+        auto tree = session.prototype_tree();
+        return tree ? response_ok(to_json(*tree)) : response_error(tree.error());
+    }
+    if (method == "module.get_growth_snapshot_summary") {
+        auto summary = session.growth_snapshot_summary();
+        return summary ? response_ok(to_json(*summary)) : response_error(summary.error());
+    }
+    if (method == "plant.get_state") {
+        auto state = session.plant_state();
+        return state ? response_ok(to_json(*state)) : response_error(state.error());
+    }
+    if (method == "plant.reset") {
+        auto result = session.plant_reset();
+        return result ? response_ok(json::object(), true) : response_error(result.error());
+    }
+    if (method == "plant.step") {
+        auto result = session.plant_step();
+        return result ? response_ok(json::object(), true) : response_error(result.error());
+    }
+    if (method == "plant.set_timestep") {
+        auto result = session.set_plant_timestep(params.at("timestep").get<float>());
+        return result ? response_ok(json::object()) : response_error(result.error());
+    }
+    if (method == "plant.set_diagnostics") {
+        auto state = session.plant_state();
+        if (!state) {
+            return response_error(state.error());
+        }
+        PlantDiagnosticsUpdate diagnostics{
+            .module_diagnostic_labels_visible = params.value(
+                "module_diagnostic_labels_visible", state->module_diagnostic_labels_visible),
+            .direct_light_bounding_spheres_visible = params.value(
+                "direct_light_bounding_spheres_visible", state->direct_light_bounding_spheres_visible),
+            .accumulated_light_flow_visible = params.value(
+                "accumulated_light_flow_visible", state->accumulated_light_flow_visible),
+            .vigor_flow_visible = params.value("vigor_flow_visible", state->vigor_flow_visible),
+            .mature_terminal_markers_visible = params.value(
+                "mature_terminal_markers_visible", state->mature_terminal_markers_visible),
+        };
+        auto result = session.update_plant_diagnostics(diagnostics);
+        return result ? response_ok(json::object(), true) : response_error(result.error());
+    }
+    if (method == "workspace.set") {
+        auto result = session.set_active_workspace(params.at("workspace").get<std::string>());
+        return result ? response_ok(json::object(), true) : response_error(result.error());
+    }
+    if (method == "plant_types.create") {
+        const auto preset_key = params.value("preset_key", std::string("o"));
+        if (preset_key.size() != 1) {
+            return response_error("preset_key must be a single-letter string");
+        }
+        auto plant_type = session.create_plant_type(params.at("name").get<std::string>(), preset_key.front());
+        return plant_type
+                   ? response_ok(json{{"id", plant_type->id}, {"name", plant_type->name}})
+                   : response_error(plant_type.error());
+    }
+    if (method == "viewport.get_preferences") {
+        json environments = json::array();
+        for (const auto& environment : session.hdri_environments()) {
+            environments.push_back({
+                {"id", environment.id},
+                {"name", environment.name},
+                {"bundled", environment.bundled},
+            });
+        }
+        return response_ok(json{
+            {"preferences", to_json(session.viewport_preferences())},
+            {"hdri_environments", environments},
         });
     }
-
-    return json{
-        {"module_physiological_age", snapshot.module_physiological_age},
-        {"growth_rate", snapshot.growth_rate},
-        {"segments", segments},
-    };
-}
-
-[[nodiscard]] static json to_json(const project::PlantType& plant_type)
-{
-    return json{
-        {"id", plant_type.id},
-        {"name", plant_type.name},
-        {"parameters", plant_type_parameters_to_json(plant_type.parameters)},
-    };
-}
-
-json dispatch_action(DesktopSession& session, const json& request)
-{
-    json id = request.contains("id") ? request.at("id") : nullptr;
-    try {
-        if (!request.is_object()) {
-            return response_error(id, "request must be an object");
-        }
-        if (!request.contains("method") || !request.at("method").is_string()) {
-            return response_error(id, "method must be a string");
-        }
-
-        const std::string method = request.at("method").get<std::string>();
-        const json params = require_params_object(request);
-
-        if (method == "app.get_state") {
-            auto state = session.state();
-            return state ? response_ok(id, to_json(*state)) : response_error(id, state.error());
-        }
-        if (method == "project.save") {
-            auto saved = session.save_project();
-            return saved ? response_ok(id, json::object()) : response_error(id, saved.error());
-        }
-        if (method == "module.list_prototypes") {
-            auto state = session.state();
-            if (!state)
-                return response_error(id, state.error());
-            return response_ok(id, to_json(*state).at("prototypes"));
-        }
-        if (method == "module.set_active_prototype") {
-            auto result = session.set_active_prototype(json_size(params, "prototype_id"));
-            return result ? response_ok(id, json::object()) : response_error(id, result.error());
-        }
-        if (method == "module.set_active_plant_type") {
-            auto result = session.set_active_plant_type(json_string(params, "plant_type_id"));
-            return result ? response_ok(id, json::object()) : response_error(id, result.error());
-        }
-        if (method == "module.set_age") {
-            auto result = session.set_module_physiological_age(json_float(params, "age"));
-            return result ? response_ok(id, json::object()) : response_error(id, result.error());
-        }
-        if (method == "module.get_prototype_tree") {
-            auto tree = session.prototype_tree();
-            return tree ? response_ok(id, to_json(*tree)) : response_error(id, tree.error());
-        }
-        if (method == "module.get_growth_snapshot_summary") {
-            auto summary = session.growth_snapshot_summary();
-            return summary ? response_ok(id, to_json(*summary)) : response_error(id, summary.error());
-        }
-        if (method == "module.get_growth_snapshot") {
-            auto snapshot = session.growth_snapshot();
-            return snapshot ? response_ok(id, to_json(*snapshot)) : response_error(id, snapshot.error());
-        }
-        if (method == "plant.get_state") {
-            auto state = session.plant_state();
-            return state ? response_ok(id, to_json(*state)) : response_error(id, state.error());
-        }
-        if (method == "plant.reset") {
-            auto result = session.plant_reset();
-            return result ? response_ok(id, json::object()) : response_error(id, result.error());
-        }
-        if (method == "plant.step") {
-            auto result = session.plant_step();
-            return result ? response_ok(id, json::object()) : response_error(id, result.error());
-        }
-        if (method == "plant.set_timestep") {
-            auto result = session.set_plant_timestep(json_float(params, "timestep"));
-            return result ? response_ok(id, json::object()) : response_error(id, result.error());
-        }
-        if (method == "plant.set_diagnostics") {
-            auto state = session.plant_state();
-            if (!state) return response_error(id, state.error());
-            PlantDiagnosticsUpdate diagnostics{
-                .module_diagnostic_labels_visible = optional_json_bool(
-                    params, "module_diagnostic_labels_visible", state->module_diagnostic_labels_visible),
-                .direct_light_bounding_spheres_visible = optional_json_bool(
-                    params, "direct_light_bounding_spheres_visible", state->direct_light_bounding_spheres_visible),
-                .accumulated_light_flow_visible = optional_json_bool(
-                    params, "accumulated_light_flow_visible", state->accumulated_light_flow_visible),
-                .vigor_flow_visible = optional_json_bool(params, "vigor_flow_visible", state->vigor_flow_visible),
-                .mature_terminal_markers_visible = optional_json_bool(
-                    params, "mature_terminal_markers_visible", state->mature_terminal_markers_visible),
-            };
-            auto result = session.update_plant_diagnostics(diagnostics);
-            return result ? response_ok(id, json::object()) : response_error(id, result.error());
-        }
-        if (method == "workspace.set") {
-            auto result = session.set_active_workspace(json_string(params, "workspace"));
-            return result ? response_ok(id, json::object()) : response_error(id, result.error());
-        }
-        if (method == "plant_types.list") {
-            auto state = session.state();
-            if (!state)
-                return response_error(id, state.error());
-            return response_ok(id, to_json(*state).at("plant_types"));
-        }
-        if (method == "plant_types.get") {
-            auto plant_type = session.plant_type(json_string(params, "plant_type_id"));
-            return plant_type ? response_ok(id, to_json(*plant_type)) : response_error(id, plant_type.error());
-        }
-        if (method == "plant_types.create") {
-            auto plant_type = session.create_plant_type(json_string(params, "name"), plant_type_preset_key(params));
-            return plant_type ? response_ok(id, to_json(*plant_type)) : response_error(id, plant_type.error());
-        }
-        if (method == "plant_types.delete") {
-            auto result = session.delete_plant_type(json_string(params, "plant_type_id"));
-            return result ? response_ok(id, json::object()) : response_error(id, result.error());
-        }
-        if (method == "plant_types.update") {
-            const auto plant_type_id = json_string(params, "plant_type_id");
-            auto existing = session.plant_type(plant_type_id);
-            if (!existing) {
-                return response_error(id, existing.error());
-            }
-            auto updated = *existing;
-            if (params.contains("name")) {
-                updated.name = json_string(params, "name");
-            }
-            if (params.contains("parameters")) {
-                apply_parameter_update(updated, params.at("parameters"));
-            }
-            auto result = session.update_plant_type(std::move(updated));
-            return result ? response_ok(id, json::object()) : response_error(id, result.error());
-        }
-
-        if (method == "viewport.get_preferences") {
-            json environments = json::array();
-            for (const auto& environment : session.hdri_environments()) {
-                environments.push_back({
-                    {"id", environment.id},
-                    {"name", environment.name},
-                    {"bundled", environment.bundled},
-                });
-            }
-            return response_ok(id, json{
-                                       {"preferences", to_json(session.viewport_preferences())},
-                                       {"hdri_environments", environments},
-                                   });
-        }
-        if (method == "viewport.set_preferences") {
-            auto preferences = session.viewport_preferences();
-            preferences.guides_visible = optional_json_bool(params, "guides_visible", preferences.guides_visible);
-            preferences.world_origin_axes_visible =
-                optional_json_bool(params, "world_origin_axes_visible", preferences.world_origin_axes_visible);
-            preferences.hdri_backdrop_visible =
-                optional_json_bool(params, "hdri_backdrop_visible", preferences.hdri_backdrop_visible);
-            if (params.contains("active_hdri_environment_id")) {
-                preferences.active_hdri_environment_id = json_string(params, "active_hdri_environment_id");
-            }
-            auto result = session.update_viewport_preferences(std::move(preferences));
-            return result ? response_ok(id, json::object()) : response_error(id, result.error());
-        }
-
-        return response_error(id, "unknown method " + method);
-    } catch (const std::exception& error) {
-        return response_error(id, error.what());
+    if (method == "viewport.set_preferences") {
+        auto preferences = session.viewport_preferences();
+        preferences.guides_visible = params.value("guides_visible", preferences.guides_visible);
+        preferences.world_origin_axes_visible =
+            params.value("world_origin_axes_visible", preferences.world_origin_axes_visible);
+        preferences.hdri_backdrop_visible = params.value("hdri_backdrop_visible", preferences.hdri_backdrop_visible);
+        preferences.active_hdri_environment_id =
+            params.value("active_hdri_environment_id", preferences.active_hdri_environment_id);
+        auto result = session.update_viewport_preferences(std::move(preferences));
+        return result ? response_ok(json::object(), true) : response_error(result.error());
     }
+
+    return response_error("unknown method " + method);
 }
+
+} // namespace
 
 } // namespace toi::desktop

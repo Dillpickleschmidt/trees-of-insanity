@@ -25,10 +25,9 @@ export type AppClient = {
 };
 
 export function createAppClient(send: AppCommandTransport): AppClient {
-	let nextId = 0;
 	return {
 		async command(method, ...params) {
-			const request = { id: nextId++, method, params: params[0] } as CommandRequest;
+			const request = { method, params: params[0] } as CommandRequest;
 			const response = (await send(request)) as CommandResponse<typeof method>;
 			if (!response.ok) {
 				throw new AppCommandError(response.error, response.code);

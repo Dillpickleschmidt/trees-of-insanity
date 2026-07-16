@@ -151,7 +151,6 @@ class DesktopSession {
 public:
     [[nodiscard]] static Result<DesktopSession> create(DesktopSessionOptions options = {});
 
-    [[nodiscard]] Result<void> save_project() const;
     [[nodiscard]] Result<AppStateView> state() const;
     [[nodiscard]] Result<PrototypeTreeView> prototype_tree() const;
     [[nodiscard]] Result<growth::GrowthSnapshot> growth_snapshot() const;

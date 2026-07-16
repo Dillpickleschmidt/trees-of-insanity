@@ -326,15 +326,6 @@ Result<DesktopSession> DesktopSession::create(DesktopSessionOptions options)
                           std::move(*plant_simulation));
 }
 
-Result<void> DesktopSession::save_project() const
-{
-    auto saved = project::save_project(options_.project_path, project_);
-    if (!saved) {
-        return std::unexpected(from_project_error(saved.error()));
-    }
-    return {};
-}
-
 Result<AppStateView> DesktopSession::state() const
 {
     auto facts = module_workspace_facts(prototype_library_, project_);

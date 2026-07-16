@@ -12,7 +12,7 @@ Live resize aspect-fits the last complete frame instead of stretching it. After 
 
 ## Shell
 
-Qt creates the CUDA-compatible Vulkan device and adopts it for the Quick scene graph. QML places `ViewportTextureItem` below a transparent WebEngine view. `DesktopBridge` exposes bootstrap/actions, viewport geometry, camera input, and status through WebChannel. Shell alone coordinates model and graphics, including Plant step/reset/timestep/diagnostic actions.
+Qt creates the CUDA-compatible Vulkan device and adopts it for the Quick scene graph. QML places `ViewportTextureItem` below a transparent WebEngine view. `DesktopBridge` exposes actions, viewport geometry, camera input, and status through WebChannel. Shell alone coordinates model and graphics, including Plant step/reset/timestep/diagnostic actions.
 
 ## UI
 

@@ -7,7 +7,6 @@ export type {
 	HdriEnvironment,
 	PlantDiagnostics,
 	PlantState,
-	PlantTypeParameterDescriptor as ParameterDescriptor,
 	PlantTypeSummary,
 	PrototypeSummary,
 	PrototypeTree,

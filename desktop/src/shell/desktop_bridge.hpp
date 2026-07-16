@@ -13,7 +13,6 @@ class DesktopBridge final : public QObject {
 public:
     static std::unique_ptr<DesktopBridge> create(QObject* parent = nullptr);
 
-    Q_INVOKABLE QString bootstrap();
     Q_INVOKABLE QString dispatch(const QString& action);
     Q_INVOKABLE void uiEvent(const QString& type, const QString& data);
     Q_INVOKABLE void setViewportRect(double x, double y, double width, double height, double devicePixelRatio);

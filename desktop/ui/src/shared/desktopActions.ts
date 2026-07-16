@@ -18,12 +18,6 @@ export type PlantTypeSummary = {
 	name: string;
 };
 
-export type PlantTypeParameterDescriptor = {
-	key: keyof PlantTypeParameters;
-	min: number | null;
-	max: number | null;
-};
-
 export type AppState = {
 	active_workspace: string;
 	workspace_previews: WorkspacePreview[];
@@ -33,7 +27,6 @@ export type AppState = {
 	active_plant_type_id: string;
 	module_physiological_age: number;
 	fully_grown_age: number;
-	plant_type_parameter_descriptors: PlantTypeParameterDescriptor[];
 };
 
 export type Workspace = "module" | "plant" | "ecosystem";
@@ -58,24 +51,6 @@ export type GrowthSnapshotSummary = {
 	growing_segment_count: number;
 	mature_segment_count: number;
 	max_diameter: number;
-};
-
-export type SegmentState = "growing" | "mature";
-
-export type Vec3Tuple = [number, number, number];
-
-export type GrowthSnapshotSegment = {
-	source_segment_id: number;
-	parent_position: Vec3Tuple;
-	child_position: Vec3Tuple;
-	diameter: number;
-	state: SegmentState;
-};
-
-export type GrowthSnapshot = {
-	module_physiological_age: number;
-	growth_rate: number;
-	segments: GrowthSnapshotSegment[];
 };
 
 export type PlantState = {
@@ -106,28 +81,6 @@ export type PlantDiagnostics = Pick<
 	| "mature_terminal_markers_visible"
 >;
 
-export type PlantTypeParameters = {
-	plant_max_age: number;
-	root_max_vigor: number;
-	plant_growth_rate: number;
-	apical_control: number;
-	mature_apical_control: number | null;
-	determinacy: number;
-	mature_determinacy: number | null;
-	flowering_age: number;
-	tropism_angle: number;
-	tropism_weight: number;
-	tropism_strength: number;
-	terminal_thickness: number;
-	length_growth_scale: number;
-};
-
-export type PlantType = {
-	id: string;
-	name: string;
-	parameters: PlantTypeParameters;
-};
-
 export type HdriEnvironment = {
 	id: string;
 	name: string;
@@ -155,28 +108,18 @@ type NoParams = Record<string, never>;
 
 export type CommandMap = {
 	"app.get_state": { params: NoParams; result: AppState };
-	"project.save": { params: NoParams; result: NoParams };
-	"module.list_prototypes": { params: NoParams; result: PrototypeSummary[] };
 	"module.set_active_prototype": { params: { prototype_id: number }; result: NoParams };
 	"module.set_active_plant_type": { params: { plant_type_id: string }; result: NoParams };
 	"module.set_age": { params: { age: number }; result: NoParams };
 	"module.get_prototype_tree": { params: NoParams; result: PrototypeTree };
 	"module.get_growth_snapshot_summary": { params: NoParams; result: GrowthSnapshotSummary };
-	"module.get_growth_snapshot": { params: NoParams; result: GrowthSnapshot };
 	"plant.get_state": { params: NoParams; result: PlantState };
 	"plant.reset": { params: NoParams; result: NoParams };
 	"plant.step": { params: NoParams; result: NoParams };
 	"plant.set_timestep": { params: { timestep: number }; result: NoParams };
 	"plant.set_diagnostics": { params: Partial<PlantDiagnostics>; result: NoParams };
 	"workspace.set": { params: { workspace: Workspace }; result: NoParams };
-	"plant_types.list": { params: NoParams; result: PlantTypeSummary[] };
-	"plant_types.get": { params: { plant_type_id: string }; result: PlantType };
-	"plant_types.create": { params: { name: string; preset_key?: PlantTypePresetKey }; result: PlantType };
-	"plant_types.delete": { params: { plant_type_id: string }; result: NoParams };
-	"plant_types.update": {
-		params: { plant_type_id: string; name?: string; parameters?: Partial<PlantTypeParameters> };
-		result: NoParams;
-	};
+	"plant_types.create": { params: { name: string; preset_key?: PlantTypePresetKey }; result: PlantTypeSummary };
 	"viewport.get_preferences": { params: NoParams; result: ViewportPreferencesView };
 	"viewport.set_preferences": { params: Partial<ViewportPreferences>; result: NoParams };
 };
@@ -190,14 +133,11 @@ export type CommandParamsArg<M extends CommandMethod> = {} extends CommandParams
 	? [params?: CommandParams<M>]
 	: [params: CommandParams<M>];
 
-export type CommandId = number | string | null;
-
 export type CommandRequest<M extends CommandMethod = CommandMethod> = {
-	id?: CommandId;
 	method: M;
 	params?: CommandParams<M>;
 };
 
 export type CommandResponse<M extends CommandMethod = CommandMethod> =
-	| { id: CommandId; ok: true; result: CommandResult<M> }
-	| { id: CommandId; ok: false; error: string; code?: string };
+	| { ok: true; result: CommandResult<M> }
+	| { ok: false; error: string; code?: string };
