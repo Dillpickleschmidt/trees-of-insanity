@@ -145,8 +145,8 @@ namespace {
         {"plant_type_id", state.plant_type_id},
         {"module_diagnostic_labels_visible", state.module_diagnostic_labels_visible},
         {"direct_light_bounding_spheres_visible", state.direct_light_bounding_spheres_visible},
-        {"accumulated_light_flow_visible", state.accumulated_light_flow_visible},
-        {"vigor_flow_visible", state.vigor_flow_visible},
+        {"module_accumulated_light_visible", state.module_accumulated_light_visible},
+        {"module_vigor_visible", state.module_vigor_visible},
         {"mature_terminal_markers_visible", state.mature_terminal_markers_visible},
         {"direct_light_exposure", state.direct_light_exposure},
         {"accumulated_light", state.accumulated_light},
@@ -230,9 +230,9 @@ namespace {
                 "module_diagnostic_labels_visible", state->module_diagnostic_labels_visible),
             .direct_light_bounding_spheres_visible = params.value(
                 "direct_light_bounding_spheres_visible", state->direct_light_bounding_spheres_visible),
-            .accumulated_light_flow_visible = params.value(
-                "accumulated_light_flow_visible", state->accumulated_light_flow_visible),
-            .vigor_flow_visible = params.value("vigor_flow_visible", state->vigor_flow_visible),
+            .module_accumulated_light_visible = params.value(
+                "module_accumulated_light_visible", state->module_accumulated_light_visible),
+            .module_vigor_visible = params.value("module_vigor_visible", state->module_vigor_visible),
             .mature_terminal_markers_visible = params.value(
                 "mature_terminal_markers_visible", state->mature_terminal_markers_visible),
         };

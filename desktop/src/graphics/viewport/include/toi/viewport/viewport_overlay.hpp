@@ -34,8 +34,6 @@ struct OverlaySurfaceVertex {
     float position[3]{};
     float color[3]{};
     float alpha = 1.0F;
-    float distance_from_root = 0.0F;
-    float animation_direction = 0.0F;
 };
 
 struct OverlaySphere {

@@ -74,8 +74,8 @@ TEST_CASE("fresh project contains complete typed workspace state")
     CHECK(project->plant_workspace.simulation_timestep == Catch::Approx(1.0F));
     CHECK_FALSE(project->plant_workspace.diagnostics.module_diagnostic_labels_visible);
     CHECK_FALSE(project->plant_workspace.diagnostics.direct_light_bounding_spheres_visible);
-    CHECK_FALSE(project->plant_workspace.diagnostics.accumulated_light_flow_visible);
-    CHECK_FALSE(project->plant_workspace.diagnostics.vigor_flow_visible);
+    CHECK_FALSE(project->plant_workspace.diagnostics.module_accumulated_light_visible);
+    CHECK_FALSE(project->plant_workspace.diagnostics.module_vigor_visible);
     CHECK_FALSE(project->plant_workspace.diagnostics.mature_terminal_markers_visible);
     CHECK(project->module_workspace.viewport.active_hdri_environment_id == "hdri:meadow_2_4k.exr");
     CHECK(project->plant_workspace.viewport.orbit.radius == Catch::Approx(1.0F));
@@ -108,7 +108,7 @@ TEST_CASE("typed Project round-trips independent workspaces")
     };
     project.plant_workspace.plant_type_id = "plant-type-2";
     project.plant_workspace.simulation_timestep = 0.25F;
-    project.plant_workspace.diagnostics.vigor_flow_visible = true;
+    project.plant_workspace.diagnostics.module_vigor_visible = true;
     project.plant_workspace.viewport.active_hdri_environment_id = "hdri:plant.exr";
     project.ecosystem_workspace.viewport.active_hdri_environment_id = "hdri:ecosystem.exr";
     project.ecosystem_workspace.viewport.orbit.radius = 9.0F;
@@ -119,7 +119,7 @@ TEST_CASE("typed Project round-trips independent workspaces")
     CHECK(loaded->active_workspace == Workspace::Ecosystem);
     CHECK(loaded->module_workspace.viewport.orbit.target.y == Catch::Approx(2.0F));
     CHECK(loaded->plant_workspace.simulation_timestep == Catch::Approx(0.25F));
-    CHECK(loaded->plant_workspace.diagnostics.vigor_flow_visible);
+    CHECK(loaded->plant_workspace.diagnostics.module_vigor_visible);
     CHECK(loaded->plant_workspace.viewport.active_hdri_environment_id == "hdri:plant.exr");
     CHECK(loaded->ecosystem_workspace.viewport.active_hdri_environment_id == "hdri:ecosystem.exr");
     CHECK(loaded->ecosystem_workspace.viewport.orbit.radius == Catch::Approx(9.0F));
@@ -402,8 +402,8 @@ TEST_CASE("Plant maturity crossing exposes one attached generation")
     REQUIRE(session->update_plant_diagnostics({
         .module_diagnostic_labels_visible = true,
         .direct_light_bounding_spheres_visible = true,
-        .accumulated_light_flow_visible = true,
-        .vigor_flow_visible = true,
+        .module_accumulated_light_visible = true,
+        .module_vigor_visible = true,
         .mature_terminal_markers_visible = true,
     }));
     REQUIRE(session->plant_step());
@@ -424,23 +424,15 @@ TEST_CASE("Plant maturity crossing exposes one attached generation")
     auto flowing = session->plant_preview_snapshot();
     REQUIRE(flowing);
     CHECK(flowing->snapshot.modules.size() == module_count);
-    CHECK_FALSE(flowing->snapshot.flow_diagnostics.empty());
     const auto projection = toi::render::make_plant_preview_stage_projection(
         flowing->snapshot, flowing->mature_root_snapshot,
         {.show_collision_spheres = true,
          .show_labels = true,
-         .show_accumulated_light_flow = true,
-         .show_vigor_flow = true,
+         .show_module_vigor = true,
          .show_mature_terminals = true});
     CHECK(projection.diagnostic_labels.size() == module_count);
     REQUIRE_FALSE(projection.diagnostic_surface_vertices.empty());
     CHECK(projection.diagnostic_surface_vertices.size() % 6 == 0);
-    CHECK(std::ranges::any_of(projection.diagnostic_surface_vertices, [](const auto& vertex) {
-        return vertex.animation_direction < 0.0F;
-    }));
-    CHECK(std::ranges::any_of(projection.diagnostic_surface_vertices, [](const auto& vertex) {
-        return vertex.animation_direction > 0.0F;
-    }));
     for (const auto& vertex : projection.diagnostic_surface_vertices) {
         CHECK(std::ranges::any_of(projection.mesh_attributes, [&](const auto& mesh) {
             return std::ranges::any_of(mesh.points, [&](const auto& point) {
@@ -448,24 +440,26 @@ TEST_CASE("Plant maturity crossing exposes one attached generation")
             });
         }));
     }
-    const auto light_only_projection = toi::render::make_plant_preview_stage_projection(
-        flowing->snapshot, flowing->mature_root_snapshot, {.show_accumulated_light_flow = true});
-    REQUIRE_FALSE(light_only_projection.diagnostic_surface_vertices.empty());
-    CHECK(std::ranges::all_of(light_only_projection.diagnostic_surface_vertices, [](const auto& vertex) {
-        return vertex.animation_direction < 0.0F;
+    // A module tints its whole surface at once, so either diagnostic covers the same
+    // geometry rather than adding a second layer of vertices.
+    const auto light_projection = toi::render::make_plant_preview_stage_projection(
+        flowing->snapshot, flowing->mature_root_snapshot, {.show_module_accumulated_light = true});
+    CHECK(light_projection.diagnostic_surface_vertices.size() ==
+          projection.diagnostic_surface_vertices.size());
+    // Vigor past the per-module maximum renders magenta, outside the colormap.
+    const bool saturated = std::ranges::any_of(flowing->snapshot.modules, [](const auto& module) {
+        return module.vigor > toi::growth::kMaximumModuleVigor;
+    });
+    CHECK(saturated);
+    CHECK(std::ranges::any_of(projection.diagnostic_surface_vertices, [](const auto& vertex) {
+        return vertex.color.x > 0.9F && vertex.color.y < 0.1F && vertex.color.z > 0.9F;
     }));
-    const auto vigor_only_projection = toi::render::make_plant_preview_stage_projection(
-        flowing->snapshot, flowing->mature_root_snapshot, {.show_vigor_flow = true});
-    REQUIRE_FALSE(vigor_only_projection.diagnostic_surface_vertices.empty());
-    CHECK(std::ranges::all_of(vigor_only_projection.diagnostic_surface_vertices, [](const auto& vertex) {
-        return vertex.animation_direction > 0.0F;
-    }));
-    CHECK(projection.diagnostic_surface_vertices.size() ==
-          light_only_projection.diagnostic_surface_vertices.size() +
-              vigor_only_projection.diagnostic_surface_vertices.size());
-    const auto hidden_flow_projection = toi::render::make_plant_preview_stage_projection(
+    // Mature modules are dimmed so still-developing ones stay legible.
+    CHECK(std::ranges::any_of(projection.diagnostic_surface_vertices,
+                              [](const auto& vertex) { return vertex.alpha < 0.5F; }));
+    const auto hidden_projection = toi::render::make_plant_preview_stage_projection(
         flowing->snapshot, flowing->mature_root_snapshot);
-    CHECK(hidden_flow_projection.diagnostic_surface_vertices.empty());
+    CHECK(hidden_projection.diagnostic_surface_vertices.empty());
     std::vector<bool> continuation_targets(flowing->snapshot.segments.size(), false);
     for (const auto& segment : flowing->snapshot.segments) {
         if (segment.main_continuation_segment) continuation_targets[*segment.main_continuation_segment] = true;

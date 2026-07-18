@@ -222,14 +222,6 @@ make_plant_simulation(const import::BranchModulePrototypeLibrary& prototype_libr
     if (!simulation) {
         return std::unexpected(from_growth_error(simulation.error()));
     }
-    const auto& diagnostics = project.plant_workspace.diagnostics;
-    auto configured = simulation->set_flow_diagnostics({
-        .accumulated_light = diagnostics.accumulated_light_flow_visible,
-        .vigor = diagnostics.vigor_flow_visible,
-    });
-    if (!configured) {
-        return std::unexpected(from_growth_error(configured.error()));
-    }
     return std::move(*simulation);
 }
 
@@ -438,8 +430,8 @@ Result<PlantStateView> DesktopSession::plant_state() const
         .plant_type_id = project_.plant_workspace.plant_type_id,
         .module_diagnostic_labels_visible = diagnostics.module_diagnostic_labels_visible,
         .direct_light_bounding_spheres_visible = diagnostics.direct_light_bounding_spheres_visible,
-        .accumulated_light_flow_visible = diagnostics.accumulated_light_flow_visible,
-        .vigor_flow_visible = diagnostics.vigor_flow_visible,
+        .module_accumulated_light_visible = diagnostics.module_accumulated_light_visible,
+        .module_vigor_visible = diagnostics.module_vigor_visible,
         .mature_terminal_markers_visible = diagnostics.mature_terminal_markers_visible,
         .direct_light_exposure = root.direct_light_exposure,
         .accumulated_light = root.accumulated_light,
@@ -542,26 +534,15 @@ Result<void> DesktopSession::update_plant_diagnostics(PlantDiagnosticsUpdate dia
         diagnostics.module_diagnostic_labels_visible;
     updated_project.plant_workspace.diagnostics.direct_light_bounding_spheres_visible =
         diagnostics.direct_light_bounding_spheres_visible;
-    updated_project.plant_workspace.diagnostics.accumulated_light_flow_visible =
-        diagnostics.accumulated_light_flow_visible;
-    updated_project.plant_workspace.diagnostics.vigor_flow_visible = diagnostics.vigor_flow_visible;
+    updated_project.plant_workspace.diagnostics.module_accumulated_light_visible =
+        diagnostics.module_accumulated_light_visible;
+    updated_project.plant_workspace.diagnostics.module_vigor_visible = diagnostics.module_vigor_visible;
     updated_project.plant_workspace.diagnostics.mature_terminal_markers_visible =
         diagnostics.mature_terminal_markers_visible;
 
-    auto updated_simulation = plant_simulation_;
-    auto configured = updated_simulation.set_flow_diagnostics({
-        .accumulated_light = diagnostics.accumulated_light_flow_visible,
-        .vigor = diagnostics.vigor_flow_visible,
-    });
-    if (!configured) {
-        return std::unexpected(from_growth_error(configured.error()));
-    }
-    auto committed = commit_project(std::move(updated_project));
-    if (!committed) {
-        return committed;
-    }
-    plant_simulation_ = std::move(updated_simulation);
-    return {};
+    // Diagnostics only select what the projection draws from the snapshot, so no
+    // simulation state changes with them.
+    return commit_project(std::move(updated_project));
 }
 
 Result<project::PlantType> DesktopSession::plant_type(std::string_view plant_type_id) const

@@ -67,16 +67,27 @@ export function PlantPanel(props: {
 								<span class="text-[13px]">Direct-light bounding spheres</span>
 								<SwitchControl><SwitchThumb /></SwitchControl>
 							</Switch>
-							<Switch checked={state().accumulated_light_flow_visible} disabled={props.busy}
-								onChange={(value) => props.onDiagnostics({ accumulated_light_flow_visible: value })}
+							{/* Both diagnostics tint the same module surface, so only one can show. */}
+							<Switch checked={state().module_accumulated_light_visible} disabled={props.busy}
+								onChange={(value) =>
+									props.onDiagnostics({
+										module_accumulated_light_visible: value,
+										...(value ? { module_vigor_visible: false } : {}),
+									})
+								}
 								class="flex items-center justify-between gap-4">
-								<span class="text-[13px]">Accumulated-light flow</span>
+								<span class="text-[13px]">Module accumulated light</span>
 								<SwitchControl><SwitchThumb /></SwitchControl>
 							</Switch>
-							<Switch checked={state().vigor_flow_visible} disabled={props.busy}
-								onChange={(value) => props.onDiagnostics({ vigor_flow_visible: value })}
+							<Switch checked={state().module_vigor_visible} disabled={props.busy}
+								onChange={(value) =>
+									props.onDiagnostics({
+										module_vigor_visible: value,
+										...(value ? { module_accumulated_light_visible: false } : {}),
+									})
+								}
 								class="flex items-center justify-between gap-4">
-								<span class="text-[13px]">Vigor flow</span>
+								<span class="text-[13px]">Module vigor</span>
 								<SwitchControl><SwitchThumb /></SwitchControl>
 							</Switch>
 							<Switch checked={state().mature_terminal_markers_visible} disabled={props.busy}
