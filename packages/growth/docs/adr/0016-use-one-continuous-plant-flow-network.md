@@ -1,7 +1,9 @@
 ---
-status: superseded by ADR-0019
+status: accepted
 ---
 
-# Use one continuous plant flow network
+# Use one continuous conduit network for the pipe model
 
-Represent basipetal light and acropetal vigor as one continuous network through module branch topology and terminal attachments. An immature module is a leaf whose accumulated light equals its direct light exposure. A mature module divides its direct exposure equally among terminals; an occupied terminal adds its child's accumulated light, then branch topology carries the total toward the module root. Vigor traverses the same topology in reverse: occupied terminals feed existing children, while eligible unoccupied terminals attach children. This composes the paper's module-scale and plant-scale passes without duplicate traversal rules and directly supplies continuous diagnostic paths.
+The conduit network spans module branch topology and terminal attachments as one rooted tree, and serves the Eq. 8 pipe model: diameters develop continuously across module-attachment junctions because a module boundary is not a physical pipe break.
+
+Light and vigor do not use this network. Synthetic Silviculture computes them at two scales that this conduit must not merge: a plant-scale pass over the module tree, and a module-scale terminal pass inside a mature module. See `0020-two-scale-light-and-vigor.md`.

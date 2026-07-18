@@ -698,58 +698,38 @@ Result<void> PlantSimulation::rebuild_snapshot(bool include_flow_diagnostics)
         direct_light[module] = light_exposure(collision_measure(geometries[module].sphere, others));
     }
 
+    // Pass A: basipetal light accumulation over the module tree.
+    // Paper: Q_accumulated(u), summed tip-to-root across module attachments.
     std::vector<float> accumulated(module_count, 0.0F);
-    std::vector<std::vector<float>> node_light(module_count);
     for (std::size_t reverse = module_count; reverse > 0; --reverse) {
         const std::size_t module = reverse - 1;
         const auto& record = module_records_[module];
-        const auto& prototype = prepared_prototypes_[record.prototype_index];
-        node_light[module].assign(prototype.nodes.size(), 0.0F);
         if (!record.diagnostics_active) {
             continue;
         }
-        if (record.physiological_age + kEpsilon < record.fully_grown_age) {
-            accumulated[module] = direct_light[module];
-            node_light[module][prototype.root_node] = direct_light[module];
-            continue;
+        accumulated[module] += direct_light[module];
+        if (const auto parent = record.parent_module_index) {
+            accumulated[*parent] += accumulated[module];
         }
-        const float terminal_share = direct_light[module] / static_cast<float>(prototype.terminal_nodes.size());
-        for (const auto terminal : prototype.terminal_nodes) {
-            float terminal_light = terminal_share;
-            if (const auto child = child_module_by_node[module_node_offsets[module] + terminal]) {
-                terminal_light += accumulated[*child];
-            }
-            node_light[module][terminal] = terminal_light;
-        }
-        const std::function<float(std::size_t)> accumulate_from_node = [&](std::size_t node) {
-            float total = node_light[module][node];
-            for (const auto child_segment : prototype.child_segments_by_node[node]) {
-                total += accumulate_from_node(prototype.segments[child_segment].child_node);
-            }
-            node_light[module][node] = total;
-            return total;
-        };
-        accumulated[module] = accumulate_from_node(prototype.root_node);
     }
 
+    // Pass B: acropetal vigor distribution over the module tree, Eq. 2 applied at
+    // each module intersection. The flux is conserved -- a module's vigor divides
+    // entirely among its child modules. Maximum module vigor never truncates it
+    // here; it only normalizes the Eq. 5 growth rate and morphospace D'.
     std::vector<float> module_vigor(module_count, 0.0F);
     std::vector<float> module_growth(module_count, 0.0F);
-    std::vector<std::vector<float>> node_vigor(module_count);
-    const float root_vigor_budget = module_records_.empty()
-        ? 0.0F
-        : std::min(accumulated[0], plant_type_.root_max_vigor);
     if (!module_records_.empty()) {
-        module_vigor[0] = std::min(root_vigor_budget, kMaximumModuleVigor);
+        // Paper: v̄(u_root) = min(Q_accumulated(u_root), v̄_rootmax).
+        module_vigor[0] = std::min(accumulated[0], plant_type_.root_max_vigor);
     }
     const float apical_control = current_apical_control(plant_type_, plant_age_);
     for (std::size_t module = 0; module < module_count; ++module) {
         const auto& record = module_records_[module];
         const auto& prototype = prepared_prototypes_[record.prototype_index];
-        node_vigor[module].assign(prototype.nodes.size(), 0.0F);
         if (!record.diagnostics_active) {
             continue;
         }
-        module_vigor[module] = std::min(module_vigor[module], kMaximumModuleVigor);
         auto rate = growth_rate(plant_type_, {
             .vigor = module_vigor[module],
             .min_vigor = kMinimumModuleVigor,
@@ -759,7 +739,80 @@ Result<void> PlantSimulation::rebuild_snapshot(bool include_flow_diagnostics)
             return std::unexpected(rate.error());
         }
         module_growth[module] = *rate;
-        node_vigor[module][prototype.root_node] = module == 0 ? root_vigor_budget : module_vigor[module];
+
+        std::optional<std::size_t> main_child;
+        std::vector<std::size_t> lateral_children;
+        float lateral_light = 0.0F;
+        for (const auto terminal : prototype.terminal_nodes) {
+            const auto child = child_module_by_node[module_node_offsets[module] + terminal];
+            if (!child || !module_records_[*child].diagnostics_active) {
+                continue;
+            }
+            if (terminal == prototype.main_axis_terminal_node) {
+                main_child = *child;
+            } else {
+                lateral_children.push_back(*child);
+                lateral_light += accumulated[*child];
+            }
+        }
+
+        if (lateral_children.empty()) {
+            if (main_child) {
+                module_vigor[*main_child] = module_vigor[module];
+            }
+            continue;
+        }
+        // Paper: u_m is the main-axis child and the remaining children form u_l.
+        // Without a main-axis child Eq. 2 leaves the main branch zero light, so the
+        // whole flux belongs to the lateral group.
+        const auto fork = main_child
+            ? fork_vigor_split(module_vigor[module], accumulated[*main_child], lateral_light,
+                               lateral_children.size(), apical_control)
+            : ForkVigorSplit{
+                  .main = 0.0F,
+                  .lateral_total = module_vigor[module],
+                  .lateral_light = lateral_light,
+                  .lateral_count = lateral_children.size(),
+              };
+        if (main_child) {
+            module_vigor[*main_child] = fork.main;
+        }
+        for (const auto child : lateral_children) {
+            module_vigor[child] = fork.lateral_share(accumulated[child]);
+        }
+    }
+
+    // Pass C: module-scale terminal vigor for mature modules. Paper: terminal light
+    // is the module's own direct exposure divided equally, q(n_i) = Q(u)/#n, and the
+    // module's vigor is distributed over that light. Its result gates attachment; it
+    // is module-scale v, distinct from the plant-scale v̄ computed above.
+    std::vector<std::vector<float>> node_vigor(module_count);
+    for (std::size_t module = 0; module < module_count; ++module) {
+        const auto& record = module_records_[module];
+        const auto& prototype = prepared_prototypes_[record.prototype_index];
+        node_vigor[module].assign(prototype.nodes.size(), 0.0F);
+        if (!record.diagnostics_active ||
+            record.physiological_age + kEpsilon < record.fully_grown_age) {
+            continue;
+        }
+
+        std::vector<float> node_light(prototype.nodes.size(), 0.0F);
+        const float terminal_share =
+            direct_light[module] / static_cast<float>(prototype.terminal_nodes.size());
+        for (const auto terminal : prototype.terminal_nodes) {
+            node_light[terminal] = terminal_share;
+        }
+        const std::function<float(std::size_t)> accumulate_from_node = [&](std::size_t node) {
+            float total = node_light[node];
+            for (const auto child_segment : prototype.child_segments_by_node[node]) {
+                total += accumulate_from_node(prototype.segments[child_segment].child_node);
+            }
+            node_light[node] = total;
+            return total;
+        };
+        (void)accumulate_from_node(prototype.root_node);
+
+        node_vigor[module][prototype.root_node] = module_vigor[module];
         std::queue<std::size_t> queue;
         queue.push(prototype.root_node);
         while (!queue.empty()) {
@@ -781,30 +834,21 @@ Result<void> PlantSimulation::rebuild_snapshot(bool include_flow_diagnostics)
                 std::size_t lateral_count = 0;
                 for (const auto child_segment : children) {
                     if (child_segment != *main_segment) {
-                        lateral_light += node_light[module][prototype.segments[child_segment].child_node];
+                        lateral_light += node_light[prototype.segments[child_segment].child_node];
                         ++lateral_count;
                     }
                 }
-                const auto fork = fork_vigor_split(node_vigor[module][node], node_light[module][main_node],
+                const auto fork = fork_vigor_split(node_vigor[module][node], node_light[main_node],
                                                    lateral_light, lateral_count, apical_control);
                 node_vigor[module][main_node] = fork.main;
                 for (const auto child_segment : children) {
                     if (child_segment == *main_segment) continue;
                     const auto child_node = prototype.segments[child_segment].child_node;
-                    node_vigor[module][child_node] = fork.lateral_share(node_light[module][child_node]);
+                    node_vigor[module][child_node] = fork.lateral_share(node_light[child_node]);
                 }
             }
             for (const auto child_segment : children) {
                 queue.push(prototype.segments[child_segment].child_node);
-            }
-        }
-        if (record.physiological_age + kEpsilon >= record.fully_grown_age) {
-            for (const auto terminal : prototype.terminal_nodes) {
-                if (const auto child = child_module_by_node[module_node_offsets[module] + terminal]) {
-                    if (module_records_[*child].diagnostics_active) {
-                        module_vigor[*child] = std::min(node_vigor[module][terminal], kMaximumModuleVigor);
-                    }
-                }
             }
         }
     }

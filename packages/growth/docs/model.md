@@ -36,7 +36,8 @@ v̄(u_l) = v̄(u) - v̄(u_m)
 - `collision_measure` calculates Eq. 1's raw cubic-meter intersection sum over every other module; see ADR 0006.
 - `light_exposure` calculates direct light exposure `Q(u)`.
 - Accumulated light includes each module's direct exposure exactly once; see ADR 0007.
-- Mature modules divide direct exposure equally among terminals; occupied terminals add child accumulated light, and prototype branch topology carries the combined value toward the module root. Vigor traverses the same topology in reverse.
+- Light and vigor are computed at the paper's two scales (ADR 0020). At plant scale, accumulated light sums over the module tree and Eq. 2 divides `v̄` among child modules at each module intersection, weighting the main-axis child against the lateral group by accumulated light; the division is exact, so a child's vigor is never reduced in transit. At module scale, a mature module divides its own direct exposure equally across its terminals, `q(n_i) = Q(u)/#n`, accumulates that over its branch topology, and distributes `v̄(u)` over it to give each terminal a vigor `v` that gates attachment.
+- Maximum module vigor bounds Eq. 5 and `D'`, never the propagated flux, so `v̄(u)` may exceed it (ADR 0008).
 - Flow diagnostics are optional derived detail, not simulation state. An immature module divides its direct exposure equally among the leaf points of its currently developed segment structure; diagnostic light accumulates rootward and vigor follows the existing main/lateral split toward those frontiers. Diagnostics are rebuilt from the current committed state only when requested (ADR 0019).
 - The root vigor budget follows accumulated light up to `v̄_rootmax`; see ADR 0009.
 - `split_vigor` performs one binary Borchert-Honda split. Main-axis continuations are precomputed from prototype geometry using ADR 0010. Multiple laterals form one group for Eq. 2, then divide their shared budget proportionally by accumulated light using ADR 0011. An all-zero-light fork uses `λ` and `1−λ` directly rather than sending all vigor to main or producing `0/0`.
@@ -60,7 +61,7 @@ D' = v̄(u_parent) · D / v̄_max
           D low     D mid     D high
 ```
 
-Each axis uses levels `{1/6, 1/2, 5/6}`. Determinacy increases across columns; apical control increases across rows. Maximum module vigor is the shared constant `v̄_max = 1`, distinct from `v̄_rootmax`; a root selection query uses full module vigor, making `D' = D` (ADR 0008).
+Each axis uses levels `{1/6, 1/2, 5/6}`. Determinacy increases across columns; apical control increases across rows. Maximum module vigor is the shared constant `v̄_max = 1`, distinct from `v̄_rootmax`. `D' = v̄(u_parent) D / v̄_max` normalizes into `[0, D]` only for a bounded numerator, so the parent's vigor is clamped to `v̄_max` for this query alone (ADR 0005, ADR 0008).
 
 ### Orientation
 
@@ -73,7 +74,7 @@ f_tropism(u_α) = |cos(α_tropism) - cos(u_α)|                    Eq. 4
 
 ### Attachment, shedding, and senescence reference
 
-For a mature module, each terminal receives `q(n_i) = Q(u) / #n`. An occupied terminal adds its child's accumulated light and passes allocated vigor into that child; an unoccupied terminal attaches a child when its allocated vigor exceeds `v̄_min`. All eligible attachments commit together when the maturity-crossing step commits. Their orientations are selected main-axis first, then by decreasing mature-tangent alignment with the main tangent, so progressively more lateral siblings account for earlier selected mature bounds.
+For a mature module, each terminal receives `q(n_i) = Q(u) / #n` from the module's own direct exposure, so eligibility does not depend on which sibling terminals are already occupied. An unoccupied terminal attaches a child when its module-scale vigor exceeds `v̄_min`; an occupied terminal's child draws its vigor from the plant-scale pass instead (ADR 0020). All eligible attachments commit together when the maturity-crossing step commits. Their orientations are selected main-axis first, then by decreasing mature-tangent alignment with the main tangent, so progressively more lateral siblings account for earlier selected mature bounds.
 
 Parent terminals and child roots form shared conduit junctions. In one whole-plant postorder, a leaf edge receives support diameter `φ`; every other edge receives `sqrt(sum(child current diameter²))`. Each segment interpolates from `φ` toward that support by its diameter maturity, and retains the greatest diameter it has developed. This produces exact Eq. 8 proportions at mature supported forks, smooth attachment development, and no surviving-pipe shrink after future shedding (ADR 0018). The conduit topology remains derived; only one diameter per architecture edge persists.
 

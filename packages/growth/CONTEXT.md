@@ -13,16 +13,17 @@ This package implements renderer-independent branch-module development, paper eq
 - **Module ID**: monotonically increasing plant-local integer assigned at attachment, stable for the module's lifetime and never reused after shedding. It is machine identity, not label content.
 - **Plant type**: complete Table 4 parameter set; never call it a species in library code.
 - **Vigor**: one module's growth potential `v̄(u)`.
-- **Maximum module vigor**: shared per-module cap `v̄_max = 1`; it is distinct from a plant type's maximum root vigor budget.
+- **Maximum module vigor**: shared per-module scale `v̄_max = 1`; it is distinct from a plant type's maximum root vigor. It normalizes the Eq. 5 growth rate and morphospace `D'` only, so a module's vigor may exceed it.
+- **Module-scale terminal vigor**: per-terminal vigor `v` inside a mature module, distributed over that module's own direct exposure divided equally across its terminals. It gates attachment and is distinct from plant-scale `v̄(u)`.
 - **Minimum module vigor**: provisional shared cutoff `v̄_min = 0.02` used by growth, attachment, and shedding until whole-plant calibration is possible.
 - **Shedding**: removal of a below-minimum-vigor module and its attached descendant subtree before surviving modules grow or attach children in that plant step.
-- **Root vigor budget**: total vigor entering the acropetal pass, equal to root accumulated light capped by the plant type's maximum root vigor.
+- **Root vigor**: the root module's vigor, equal to its accumulated light capped by the plant type's maximum root vigor. It is the whole plant's vigor flux, divided without loss among descendants.
 - **Maximum root vigor**: plant type's Table 4 cap `v̄_rootmax` on the root vigor budget.
 - **Direct light exposure**: one module's available light/space estimate `Q(u)`, derived from raw bounding-sphere intersections with every other module except itself. Its conduit flow diagnostic divides it equally across the module's developed frontier, matching the paper's equal-terminal rule at maturity.
 - **Accumulated light**: a module's direct light exposure plus the accumulated light of all its attached child subtrees. Mature modules route this through terminal and branch topology; an immature leaf module's accumulated light equals its direct light exposure.
 - **Module bounding sphere**: sphere enclosing a module's currently developed points, centered at their module-local axis-aligned bounds midpoint with radius equal to the furthest point. The rigid module transform places that sphere in plant space, so its size is orientation-invariant and depends on spatial extent rather than branching endpoint density.
-- **Basipetal pass**: tip-to-root accumulated-light calculation described by the papers, not currently orchestrated.
-- **Acropetal pass**: root-to-tip vigor distribution through the same continuous module/terminal topology used by accumulated light.
+- **Basipetal pass**: tip-to-root accumulated-light calculation over the module tree.
+- **Acropetal pass**: root-to-tip vigor distribution over the module tree, dividing each module's vigor among its child modules at module intersections.
 - **Morphospace**: fixed apical-control/determinacy grid used by the pure selection policy.
 - **Main axis**: precomputed dominant continuation through a prototype fork. Children within 10 degrees of the straightest continuation are treated as equivalently aligned, then resolved by pipe-diameter factor, exact alignment, longest downstream path, and stable segment order. Following these continuations identifies one main-axis terminal; all other terminals are lateral.
 - **Lateral group**: all non-main children at one fork, treated as one side of the Borchert-Honda split before their shared vigor is divided proportionally by accumulated light.
