@@ -4,7 +4,7 @@ status: accepted
 
 # Compute light and vigor at the paper's two scales
 
-Synthetic Silviculture separates plant-scale vigor `v̄(u)` from module-scale terminal vigor `v`, and the implementation keeps them separate.
+Synthetic Silviculture separates plant-scale vigor `v̄(u)` from module-scale terminal vigor `v`, and the implementation keeps them separate. Neither uses the continuous conduit network of `0016-develop-pipes-over-shared-conduit-junctions.md`; merging the two scales into that one traversal lets an occupied terminal's subtree distort decisions the paper computes from a module's own light.
 
 **Plant scale.** A basipetal pass over the module tree accumulates light, `Q_accumulated(u) = Q_direct(u) + Σ Q_accumulated(child)`. An acropetal pass then divides vigor at each module intersection by Eq. 2, weighting the main-axis child against the lateral group by their accumulated light. The division is exact, so a module's vigor reaches its children undiminished. The result drives Eq. 5 growth and morphospace `D′`.
 
