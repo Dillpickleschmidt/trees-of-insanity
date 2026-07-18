@@ -248,6 +248,7 @@ TEST_CASE("coupled command save failure preserves project simulation and camera 
 
     const auto before_state = session->plant_state();
     REQUIRE(before_state);
+    const auto before_orbit = session->active_orbit();
     CHECK(before_state->plant_age > 0.0F);
     CHECK_FALSE(session->active_camera_needs_frame());
     auto updated_type = session->plant_type(before_state->plant_type_id);
@@ -258,6 +259,11 @@ TEST_CASE("coupled command save failure preserves project simulation and camera 
     auto blocked_temporary_path = project_path;
     blocked_temporary_path += ".tmp";
     REQUIRE(std::filesystem::create_directory(blocked_temporary_path));
+    CHECK_FALSE(session->plant_step());
+    const auto after_failed_step = session->plant_state();
+    REQUIRE(after_failed_step);
+    CHECK(after_failed_step->plant_age == Catch::Approx(before_state->plant_age));
+    CHECK(session->active_orbit().target.z == Catch::Approx(before_orbit.target.z));
     CHECK_FALSE(session->update_plant_type(*updated_type));
 
     const auto after_state = session->plant_state();
@@ -308,7 +314,7 @@ TEST_CASE("Plant workspace steps and resets one diagnosed root")
     REQUIRE(session->set_active_workspace("plant"));
     REQUIRE(session->active_camera_needs_frame());
     REQUIRE(session->update_active_orbit({
-        .target = {.x = 0.0F, .y = 0.0F, .z = 0.5F},
+        .target = {.x = 1.25F, .y = -0.75F, .z = 0.5F},
         .radius = 2.0F,
         .azimuth_radians = -0.5F,
         .elevation_radians = 0.1F,
@@ -341,16 +347,26 @@ TEST_CASE("Plant workspace steps and resets one diagnosed root")
     REQUIRE(session->set_plant_timestep(2.0F));
     REQUIRE(session->plant_step());
     CHECK_FALSE(session->active_camera_needs_frame());
-    CHECK(session->active_orbit().target.z == Catch::Approx(0.5F));
-    CHECK(session->active_orbit().radius == Catch::Approx(2.0F));
-    CHECK(session->active_orbit().azimuth_radians == Catch::Approx(-0.5F));
-    CHECK(session->active_orbit().elevation_radians == Catch::Approx(0.1F));
+    const auto stepped_orbit = session->active_orbit();
+    CHECK(stepped_orbit.target.x == Catch::Approx(1.25F));
+    CHECK(stepped_orbit.target.y == Catch::Approx(-0.75F));
+    CHECK(stepped_orbit.radius == Catch::Approx(2.0F));
+    CHECK(stepped_orbit.azimuth_radians == Catch::Approx(-0.5F));
+    CHECK(stepped_orbit.elevation_radians == Catch::Approx(0.1F));
     auto stepped = session->plant_state();
     REQUIRE(stepped);
     CHECK(stepped->plant_age == Catch::Approx(2.0F));
     CHECK(stepped->root_physiological_age == Catch::Approx(initial->growth_rate * 2.0F));
     auto developed_preview = session->plant_preview_snapshot();
     REQUIRE(developed_preview);
+    REQUIRE_FALSE(developed_preview->snapshot.segments.empty());
+    float minimum_z = developed_preview->snapshot.segments.front().parent_position.z;
+    float maximum_z = minimum_z;
+    for (const auto& segment : developed_preview->snapshot.segments) {
+        minimum_z = std::min({minimum_z, segment.parent_position.z, segment.child_position.z});
+        maximum_z = std::max({maximum_z, segment.parent_position.z, segment.child_position.z});
+    }
+    CHECK(stepped_orbit.target.z == Catch::Approx((minimum_z + maximum_z) * 0.5F));
     const auto developed_projection = toi::render::make_plant_preview_stage_projection(
         developed_preview->snapshot, developed_preview->mature_root_snapshot,
         {.show_collision_spheres = true, .show_labels = true});

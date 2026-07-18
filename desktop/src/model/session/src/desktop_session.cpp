@@ -92,6 +92,17 @@ constexpr float kPrototypeLibraryGeometryScale = 2.0F;
     std::unreachable();
 }
 
+[[nodiscard]] float plant_vertical_midpoint(growth::PlantSnapshot snapshot)
+{
+    float minimum_z = snapshot.segments.front().parent_position.z;
+    float maximum_z = minimum_z;
+    for (const auto& segment : snapshot.segments) {
+        minimum_z = std::min({minimum_z, segment.parent_position.z, segment.child_position.z});
+        maximum_z = std::max({maximum_z, segment.parent_position.z, segment.child_position.z});
+    }
+    return (minimum_z + maximum_z) * 0.5F;
+}
+
 [[nodiscard]] ApplicationError make_error(ApplicationError::Code code, std::string message)
 {
     return {.code = code, .message = std::move(message)};
@@ -498,10 +509,20 @@ Result<void> DesktopSession::set_active_workspace(std::string_view workspace)
 
 Result<void> DesktopSession::plant_step()
 {
-    auto stepped = plant_simulation_.step(project_.plant_workspace.simulation_timestep);
+    auto stepped_simulation = plant_simulation_;
+    auto stepped = stepped_simulation.step(project_.plant_workspace.simulation_timestep);
     if (!stepped) {
         return std::unexpected(from_growth_error(stepped.error()));
     }
+
+    auto updated_project = project_;
+    updated_project.plant_workspace.viewport.orbit.target.z =
+        plant_vertical_midpoint(stepped_simulation.snapshot());
+    auto committed = commit_project(std::move(updated_project));
+    if (!committed) {
+        return committed;
+    }
+    plant_simulation_ = std::move(stepped_simulation);
     return {};
 }
 
