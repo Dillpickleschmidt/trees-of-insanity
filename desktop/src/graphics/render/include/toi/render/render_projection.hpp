@@ -68,8 +68,6 @@ struct DiagnosticOverlaySurfaceVertex {
     growth::Vec3 position;
     growth::Vec3 color;
     float alpha = 1.0F;
-    float distance_from_root = 0.0F;
-    float animation_direction = 0.0F;
 };
 
 struct DiagnosticOverlaySphere {
@@ -82,8 +80,8 @@ struct DiagnosticOverlaySphere {
 struct PlantDiagnosticOptions {
     bool show_collision_spheres = false;
     bool show_labels = false;
-    bool show_accumulated_light_flow = false;
-    bool show_vigor_flow = false;
+    bool show_module_accumulated_light = false;
+    bool show_module_vigor = false;
     bool show_mature_terminals = false;
 };
 

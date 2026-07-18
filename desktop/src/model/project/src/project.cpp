@@ -528,8 +528,8 @@ namespace {
     return json{
         {"module_diagnostic_labels_visible", diagnostics.module_diagnostic_labels_visible},
         {"direct_light_bounding_spheres_visible", diagnostics.direct_light_bounding_spheres_visible},
-        {"accumulated_light_flow_visible", diagnostics.accumulated_light_flow_visible},
-        {"vigor_flow_visible", diagnostics.vigor_flow_visible},
+        {"module_accumulated_light_visible", diagnostics.module_accumulated_light_visible},
+        {"module_vigor_visible", diagnostics.module_vigor_visible},
         {"mature_terminal_markers_visible", diagnostics.mature_terminal_markers_visible},
     };
 }
@@ -541,8 +541,8 @@ namespace {
     }
     auto labels = bool_from_json(value, "module_diagnostic_labels_visible");
     auto spheres = bool_from_json(value, "direct_light_bounding_spheres_visible");
-    auto light = bool_from_json(value, "accumulated_light_flow_visible");
-    auto vigor = bool_from_json(value, "vigor_flow_visible");
+    auto light = bool_from_json(value, "module_accumulated_light_visible");
+    auto vigor = bool_from_json(value, "module_vigor_visible");
     auto terminals = bool_from_json(value, "mature_terminal_markers_visible");
     if (!labels)
         return std::unexpected(labels.error());
@@ -557,8 +557,8 @@ namespace {
     return PlantDiagnostics{
         .module_diagnostic_labels_visible = *labels,
         .direct_light_bounding_spheres_visible = *spheres,
-        .accumulated_light_flow_visible = *light,
-        .vigor_flow_visible = *vigor,
+        .module_accumulated_light_visible = *light,
+        .module_vigor_visible = *vigor,
         .mature_terminal_markers_visible = *terminals,
     };
 }

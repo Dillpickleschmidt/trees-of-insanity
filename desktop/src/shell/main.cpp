@@ -90,8 +90,8 @@ make_preview_projection(const toi::model::DesktopSession& session, int width = 1
             {
                 .show_collision_spheres = plant_state->direct_light_bounding_spheres_visible,
                 .show_labels = plant_state->module_diagnostic_labels_visible,
-                .show_accumulated_light_flow = plant_state->accumulated_light_flow_visible,
-                .show_vigor_flow = plant_state->vigor_flow_visible,
+                .show_module_accumulated_light = plant_state->module_accumulated_light_visible,
+                .show_module_vigor = plant_state->module_vigor_visible,
                 .show_mature_terminals = plant_state->mature_terminal_markers_visible,
             },
             options);

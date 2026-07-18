@@ -48,9 +48,9 @@ make_chain_build_requests(const growth::GrowthSnapshot& snapshot,
     const std::vector<ChainBuildRequest>& topology_requests, const growth::GrowthSnapshot& snapshot,
     const growth::GrowthSnapshot& topology_snapshot, const growth::BranchModulePrototype& prepared_prototype);
 [[nodiscard]] std::vector<MeshGeometry> build_meshes(const std::vector<ChainBuildRequest>& requests);
-void append_plant_flow_surface(std::vector<DiagnosticOverlaySurfaceVertex>& vertices,
-                               const std::vector<MeshGeometry>& meshes,
-                               const growth::PlantSnapshot& snapshot, PlantDiagnosticOptions diagnostics);
+void append_plant_module_surface(std::vector<DiagnosticOverlaySurfaceVertex>& vertices,
+                                 const std::vector<MeshGeometry>& meshes,
+                                 const growth::PlantSnapshot& snapshot, PlantDiagnosticOptions diagnostics);
 [[nodiscard]] std::vector<GrowthPreviewMeshAttributes> mesh_attributes_for(const std::vector<MeshGeometry>& meshes);
 [[nodiscard]] GrowthPreviewCamera make_camera_from_bounds(Bounds bounds, int requested_width, int requested_height);
 
@@ -78,7 +78,7 @@ GrowthPreviewStageProjection make_plant_preview_stage_projection(
         .camera = camera,
         .mesh_attributes = mesh_attributes_for(dynamic_meshes),
     };
-    append_plant_flow_surface(projection.diagnostic_surface_vertices, dynamic_meshes, snapshot, diagnostics);
+    append_plant_module_surface(projection.diagnostic_surface_vertices, dynamic_meshes, snapshot, diagnostics);
 
     for (const auto& module : snapshot.modules) {
         if (diagnostics.show_collision_spheres && module.collision_sphere.radius > 0.0F) {
@@ -169,6 +169,8 @@ constexpr std::string_view kCameraPath = "/OVCamera";
 constexpr std::string_view kRenderProductPath = "/OVRenderProduct";
 constexpr std::string_view kRenderSettingsPath = "/OVRenderSettings";
 constexpr int kRadialSegmentCount = 10;
+constexpr float kMatureModuleSurfaceAlpha = 0.35F;
+constexpr float kDevelopingModuleSurfaceAlpha = 0.95F;
 constexpr float kPi = 3.14159265358979323846F;
 constexpr float kTwoPi = 2.0F * kPi;
 constexpr float kEpsilon = 1.0e-6F;
@@ -846,61 +848,77 @@ std::vector<MeshGeometry> build_meshes(const std::vector<ChainBuildRequest>& req
     return meshes;
 }
 
-void append_plant_flow_surface(std::vector<DiagnosticOverlaySurfaceVertex>& vertices,
-                               const std::vector<MeshGeometry>& meshes,
-                               const growth::PlantSnapshot& snapshot, PlantDiagnosticOptions diagnostics)
+// Vigor and accumulated light are per-module scalars, so a module's whole surface
+// takes one tint. Magenta marks vigor past the maximum, where further allocation
+// no longer raises the growth rate.
+[[nodiscard]] growth::Vec3 module_diagnostic_color(float value, float maximum)
 {
-    if ((!diagnostics.show_accumulated_light_flow && !diagnostics.show_vigor_flow) ||
-        snapshot.flow_diagnostics.empty()) {
+    constexpr growth::Vec3 kSaturatedColor{.x = 1.0F, .y = 0.0F, .z = 1.0F};
+    if (value > maximum + growth::kEpsilon) {
+        return kSaturatedColor;
+    }
+    return weight_map_color(maximum <= growth::kEpsilon ? 0.0F
+                                                        : std::clamp(value / maximum, 0.0F, 1.0F));
+}
+
+void append_plant_module_surface(std::vector<DiagnosticOverlaySurfaceVertex>& vertices,
+                                 const std::vector<MeshGeometry>& meshes,
+                                 const growth::PlantSnapshot& snapshot, PlantDiagnosticOptions diagnostics)
+{
+    if ((!diagnostics.show_module_vigor && !diagnostics.show_module_accumulated_light) ||
+        snapshot.modules.empty()) {
         return;
     }
 
-    struct SegmentFlows {
-        const growth::PlantFlowDiagnostic* light = nullptr;
-        const growth::PlantFlowDiagnostic* vigor = nullptr;
+    // Accumulated light has no fixed ceiling, so the root normalizes it: it carries
+    // the whole plant's light by construction.
+    const float light_maximum = snapshot.modules.front().accumulated_light;
+
+    struct SegmentTint {
+        bool tinted = false;
+        growth::Vec3 color;
+        float alpha = 0.0F;
     };
-    std::vector<SegmentFlows> flows(snapshot.segments.size());
-    for (const auto& flow : snapshot.flow_diagnostics) {
-        if (flow.kind == growth::FlowKind::AccumulatedLight && diagnostics.show_accumulated_light_flow) {
-            flows[flow.segment_index].light = &flow;
-        } else if (flow.kind == growth::FlowKind::Vigor && diagnostics.show_vigor_flow) {
-            flows[flow.segment_index].vigor = &flow;
+    std::vector<SegmentTint> tints(snapshot.segments.size());
+    for (const auto& module : snapshot.modules) {
+        const bool mature = module.physiological_age + growth::kEpsilon >= module.fully_grown_age;
+        const auto color = diagnostics.show_module_vigor
+            ? module_diagnostic_color(module.vigor, growth::kMaximumModuleVigor)
+            : module_diagnostic_color(module.accumulated_light, light_maximum);
+        for (std::size_t offset = 0; offset < module.segments.count; ++offset) {
+            const auto segment = module.segments.offset + offset;
+            if (segment < tints.size()) {
+                // A mature module has stopped developing, so its vigor no longer drives
+                // growth; dimming it keeps still-developing modules legible.
+                tints[segment] = {
+                    .tinted = true,
+                    .color = color,
+                    .alpha = mature ? kMatureModuleSurfaceAlpha : kDevelopingModuleSurfaceAlpha,
+                };
+            }
         }
     }
 
     constexpr std::array<std::size_t, 6> triangle_corners{0, 1, 2, 0, 2, 3};
-    constexpr float kSurfaceAlpha = 0.9F;
-    vertices.reserve(snapshot.flow_diagnostics.size() * kRadialSegmentCount * triangle_corners.size());
+    vertices.reserve(snapshot.segments.size() * kRadialSegmentCount * triangle_corners.size());
     for (const auto& mesh : meshes) {
         std::size_t face_vertex_offset = 0;
         for (std::size_t face = 0; face < mesh.face_vertex_counts.size(); ++face) {
             const auto face_vertex_count = static_cast<std::size_t>(mesh.face_vertex_counts[face]);
             if (face_vertex_count == 4) {
                 const auto source_segment = static_cast<std::size_t>(mesh.face_source_segment_ids[face]);
-                const auto append_flow = [&](const growth::PlantFlowDiagnostic* flow, float direction) {
-                    if (flow == nullptr) return;
-                    const auto color = weight_map_color(
-                        std::clamp(flow->amount / flow->root_total, 0.0F, 1.0F));
-                    const std::array<float, 4> distances{
-                        flow->start_distance_from_root,
-                        flow->start_distance_from_root,
-                        flow->end_distance_from_root,
-                        flow->end_distance_from_root,
-                    };
+                if (source_segment < tints.size() && tints[source_segment].tinted) {
+                    const auto& tint = tints[source_segment];
                     for (const auto corner : triangle_corners) {
                         const auto point = static_cast<std::size_t>(
                             mesh.face_vertex_indices[face_vertex_offset + corner]);
                         vertices.push_back({
                             .position = mesh.points[point],
-                            .color = color,
-                            .alpha = kSurfaceAlpha,
-                            .distance_from_root = distances[corner],
-                            .animation_direction = direction,
+                            .color = tint.color,
+                            .alpha = tint.alpha,
                         });
                     }
-                };
-                append_flow(flows[source_segment].light, -1.0F);
-                append_flow(flows[source_segment].vigor, 1.0F);
+                }
             }
             face_vertex_offset += face_vertex_count;
         }

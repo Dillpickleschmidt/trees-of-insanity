@@ -14,8 +14,6 @@ layout(push_constant) uniform PushConstants {
 
 layout(location = 0) in vec3 fragment_world_position;
 layout(location = 1) in vec4 fragment_color;
-layout(location = 2) in float fragment_distance_from_root;
-layout(location = 3) flat in float fragment_animation_direction;
 
 layout(location = 0) out vec4 out_color;
 
@@ -29,10 +27,5 @@ void main()
         discard;
     }
 
-    float phase = fragment_distance_from_root * 24.0 -
-                  fragment_animation_direction * pc.depth.z * 2.0;
-    if (fract(phase) > 0.55) {
-        discard;
-    }
     out_color = fragment_color;
 }

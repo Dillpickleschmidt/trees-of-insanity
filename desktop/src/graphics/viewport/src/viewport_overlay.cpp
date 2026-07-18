@@ -358,8 +358,6 @@ Result<ViewportOverlay> ViewportOverlay::create(VulkanContext& context, VkFormat
         {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(OverlaySurfaceVertex, position)},
         {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(OverlaySurfaceVertex, color)},
         {2, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlaySurfaceVertex, alpha)},
-        {3, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlaySurfaceVertex, distance_from_root)},
-        {4, 0, VK_FORMAT_R32_SFLOAT, offsetof(OverlaySurfaceVertex, animation_direction)},
     }};
     vertex_input.pVertexBindingDescriptions = &surface_binding;
     vertex_input.vertexAttributeDescriptionCount = static_cast<std::uint32_t>(surface_attributes.size());

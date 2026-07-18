@@ -79,8 +79,6 @@ std::vector<OverlaySurfaceVertex> build_overlay_surface(
             .position = {vertex.position.x, vertex.position.y, vertex.position.z},
             .color = {vertex.color.x, vertex.color.y, vertex.color.z},
             .alpha = vertex.alpha,
-            .distance_from_root = vertex.distance_from_root,
-            .animation_direction = vertex.animation_direction,
         });
     }
     return vertices;
