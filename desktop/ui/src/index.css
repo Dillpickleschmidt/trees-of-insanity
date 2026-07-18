@@ -359,6 +359,35 @@ body {
   background: color-mix(in srgb, var(--grow) 28%, transparent);
 }
 
+.module-diagnostic-label-shell {
+  filter:
+    url("#module-diagnostic-label-outline")
+    drop-shadow(0 8px 8px rgb(0 0 0 / 25%));
+}
+
+.module-diagnostic-label {
+  --corner-radius: 6px;
+  --tail-half-width: 8px;
+  --tail-height: 10px;
+
+  padding-bottom: calc(0.25rem + var(--tail-height));
+  clip-path: shape(
+    from var(--corner-radius) 0,
+    hline to calc(100% - var(--corner-radius)),
+    arc to 100% var(--corner-radius) of var(--corner-radius) cw,
+    vline to calc(100% - var(--tail-height) - var(--corner-radius)),
+    arc to calc(100% - var(--corner-radius)) calc(100% - var(--tail-height)) of var(--corner-radius) cw,
+    hline to calc(50% + var(--tail-half-width)),
+    line to 50% 100%,
+    line to calc(50% - var(--tail-half-width)) calc(100% - var(--tail-height)),
+    hline to var(--corner-radius),
+    arc to 0 calc(100% - var(--tail-height) - var(--corner-radius)) of var(--corner-radius) cw,
+    vline to var(--corner-radius),
+    arc to var(--corner-radius) 0 of var(--corner-radius) cw,
+    close
+  );
+}
+
 /* Eyebrow — the small tracked labels that title each region of the panel. */
 .eyebrow {
   font-size: 0.6875rem;
