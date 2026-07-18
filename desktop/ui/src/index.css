@@ -360,9 +360,20 @@ body {
 }
 
 .module-diagnostic-label-shell {
+  scale: 0.96;
+  transform-origin: 50% 100%;
+  transition: scale 160ms ease-out;
   filter:
     url("#module-diagnostic-label-outline")
     drop-shadow(0 8px 8px rgb(0 0 0 / 25%));
+}
+
+.module-diagnostic-label-shell:hover {
+  scale: 1;
+}
+
+.module-diagnostic-label-shell:hover .module-diagnostic-label {
+  background-color: var(--background);
 }
 
 .module-diagnostic-label {
@@ -372,6 +383,7 @@ body {
 
   padding-bottom: calc(0.25rem + var(--tail-height));
   pointer-events: auto;
+  transition: background-color 160ms ease-out;
   clip-path: shape(
     from var(--corner-radius) 0,
     hline to calc(100% - var(--corner-radius)),
@@ -387,6 +399,13 @@ body {
     arc to var(--corner-radius) 0 of var(--corner-radius) cw,
     close
   );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .module-diagnostic-label-shell,
+  .module-diagnostic-label {
+    transition: none;
+  }
 }
 
 /* Eyebrow — the small tracked labels that title each region of the panel. */
