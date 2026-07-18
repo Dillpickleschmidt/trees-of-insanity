@@ -1,61 +1,69 @@
 # Plan: repeated attachment
 
-Implementation plan for the attachment half of milestone 5. Delete this file when the work lands; the ADRs and `packages/growth/docs/model.md` carry the decisions afterwards.
+Implementation plan for the attachment half of milestone 5. Delete this file after implementation; retain durable behavior in the growth ADRs and `packages/growth/docs/model.md`.
 
 ## Scope
 
-**In:** generalize attachment from the root-only path to every module that crosses maturity, so generation 2 and beyond attach.
+**In:** attachment for every module that crosses maturity, including generation 2 and later.
 
-**Out:** shedding, terminal reuse after shedding, re-attachment at terminals that were ineligible when their module matured, senescence.
+**Out:** shedding, terminal reuse after shedding, later attachment at terminals that were ineligible during maturity crossing, and senescence.
 
-## Decisions already settled
+## Required behavior
 
-Do not re-litigate these; they were chosen deliberately.
-
-- **One-shot at crossing.** A module attaches only during the step it crosses maturity. Terminals ineligible then are never revisited. Re-attachment at terminals freed by shedding belongs to the shedding milestone.
-- **One combined orientation batch.** When several modules cross in the same step, every new child avoids every other new child, not just its own siblings. Parents are processed in module-record order, which is parent-first creation order and therefore deterministic. The shared avoidance list grows as each child is oriented.
-- **Per-parent prototype selection.** `nearest_morphospace_prototype` uses that parent's own vigor for `D'`, and one prototype is reused across that parent's eligible terminals (ADR 0005).
-
-## What the two-scale vigor work already handles
-
-- **A child holds no vigor during the step that creates it.** The terminal-to-child vigor handoff no longer exists; Pass B assigns a child its vigor on the following step. No code is needed to enforce this.
-- **New children are excluded from all three passes** while `diagnostics_active` is false, so a parent does not divide vigor among children that do not functionally exist yet.
-- **A module intersection with no main-axis child** is handled: Eq. 2 leaves the main branch zero light and the whole flux goes to the lateral group. Repeated attachment reaches this case far more often than root-only attachment does — plant type `i` reaches it on every attachment step.
-
-## Correction: the module-scale terminal seeding does not affect this milestone
-
-Terminal eligibility is seeded by a module's own direct exposure, `q(n_i) = Q(u)/#n`, rather than by accumulated light that includes child subtrees. That change does **not** alter attachment at any generation.
-
-A module evaluates its terminals exactly once, when it crosses maturity, and at that instant it has no children, because children attach only during their parent's own crossing step. Every terminal's child-light term is therefore zero and both seedings agree. Expect no topology change from it here.
-
-It matters in two other places: the `MatureTerminalSnapshot.vigor` reported for a module that already has children, and the shedding milestone, where a mature module would re-evaluate terminals with some occupied and some freed.
+- A module may attach children only during the step in which it crosses maturity.
+- Only modules present at the start of the attachment phase may act as parents. A child cannot attach its own children in its creation step.
+- Each crossed parent selects one morphospace prototype from its own pre-integration vigor and uses it for every eligible terminal.
+- Crossed parents are processed in module-record order. Their eligible terminals use the prototype's prepared orientation order.
+- All children created in one step share one orientation batch. Each selected mature child sphere participates in every later orientation in that batch, including orientations for another parent.
+- An attachment requires an unoccupied terminal with module-scale terminal vigor above `kMinimumModuleVigor`.
+- New module IDs increase monotonically, and every child record and attachment event identifies the correct parent module and terminal.
 
 ## Implementation
 
-All anchors are in `packages/growth/src/plant_simulation.cpp`, whose attachment block currently spans roughly lines 258-320.
+Implement the attachment batch in `PlantSimulation::step` in `packages/growth/src/plant_simulation.cpp`.
 
-1. **Capture per-module pre-commit vigor.** `precommit_root_vigor` (line 241) reads the root's vigor from the pre-integration snapshot. Replace it with a vector filled from that same snapshot; `snapshot_modules_` is in module-record order, so indices align. This vigor is raw and may exceed maximum module vigor, which is correct: `vigor_scaled_determinacy` clamps internally, so `D'` stays within `[0, D]` without clamping at the call site.
+1. After the initial `rebuild_snapshot()`, save `module_records_.size()` as the attachment cohort size. Build a pre-integration vigor vector from `snapshot_modules_`; snapshot and record indices share module-record order. Keep each value raw because `vigor_scaled_determinacy` performs the morphospace-only clamp.
 
-2. **Compute a crossed flag per module.** `old_ages` (line 248) already covers every module. Generalize the `root_crossed` predicate (line 262) to `old_ages[i] < fully_grown_age[i] && physiological_age[i] >= fully_grown_age[i]`.
+2. Capture each cohort module's old physiological age, integrate its new age, and record whether it crossed maturity:
 
-3. **Freeze the pre-attachment module count** before the loop. Iterating only that prefix is what prevents a child attached this step from attaching its own children in the same step.
+   ```text
+   old_age < fully_grown_age && physiological_age >= fully_grown_age
+   ```
 
-4. **Rebuild the crossing snapshot once** if any module crossed, and compute plant-wide determinacy and apical control once; both are functions of plant age and identical for every parent.
+3. Seed one orientation-sphere vector from the initial snapshot's module spheres. Keep this vector for the complete attachment batch.
 
-5. **Loop parents in module-record order.** For each crossed module: select its prototype from its own pre-commit vigor; walk its prototype's ordered terminal nodes; skip terminals that are occupied or whose vigor is at or below minimum module vigor; orient against the shared sphere list seeded at line 242; append each new child's mature sphere to that list so later parents' children avoid it; push the child record with `parent_module_index` set to this parent and the attachment event with its id.
+4. If at least one module crossed, call `rebuild_snapshot()` once to produce mature terminal positions, tangents, occupancy, and vigor. Compute determinacy and apical control once for the step.
 
-Consider lifting the block into a private `attach_matured_children` method. It is deep enough to justify the header change rather than being a thin wrapper, but confirm before adding it.
+5. Iterate crossed parent indices from zero to the saved cohort size. Copy the parent's ID, prototype index, and transform before appending children so `module_records_` reallocation cannot invalidate parent state.
+
+6. For each parent:
+   - Select one prototype with `nearest_morphospace_prototype(apical_control, vigor_scaled_determinacy(determinacy, preintegration_vigor[parent_index]))`.
+   - Compute the selected prototype's fully grown age once.
+   - Visit the parent's terminal nodes in `prototype_orientation_data_` order.
+   - Find the corresponding `MatureTerminalSnapshot` by parent ID and terminal node.
+   - Skip missing, occupied, or below-threshold terminals.
+   - Orient the child against the shared orientation-sphere vector.
+   - Append a child record with the parent index, terminal node, age zero, and `diagnostics_active = false`.
+   - Append the attachment event using the parent and child IDs.
+   - Append the child's mature sphere to the shared orientation batch.
+
+Keep attachment as one batch operation. If extracted, a private helper should own the crossed-parent loop, prototype selection, terminal filtering, orientation, and commit rather than wrap individual appends.
 
 ## Tests
 
-New:
-- A second generation attaches once a first-generation child matures, with a correct parent chain.
-- Two modules crossing in the same step orient as one batch: their children avoid each other and placements are deterministic.
-- A terminal ineligible at its parent's crossing stays unattached in later steps even if its vigor later rises, locking in the one-shot gate before the shedding milestone can regress it.
-- Module ids stay monotonic and are never reused.
-
-Existing to watch: `plant development remains deterministic without grandchildren` chooses fixtures that stop before a second generation. If repeated attachment makes those fixtures produce grandchildren, reconcile the fixture or the name rather than re-baselining silently.
+- A first-generation module attaches children when it crosses maturity, producing a correct multi-generation parent chain.
+- A module produces attachments only on its crossing step; later steps do not duplicate them.
+- A terminal below the vigor threshold during crossing remains unattached before shedding, even if its vigor later rises.
+- Parents crossing together select prototypes from their respective vigor values.
+- Children of parents crossing together use one deterministic orientation batch and avoid one another.
+- IDs remain monotonic across generations, and attachment events contain the correct parent IDs and terminal nodes.
+- Light and vigor remain conserved across multiple generations.
+- Repeated plant development remains deterministic across multiple generations.
 
 ## Verification
 
-`ctest --preset core`, the growth standalone suite, and `cmake --build --preset desktop`, since desktop consumes the snapshot. Milestone 5's own bar for this half is deterministic runs, stable ids, and light and vigor conservation across generations.
+- `ctest --preset core`
+- Configure, build, and run the standalone `packages/growth` test suite.
+- `cmake --build --preset desktop`
+
+The attachment half is complete when repeated generations are deterministic, IDs and parent chains remain stable, and light and vigor are conserved.
