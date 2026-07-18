@@ -86,6 +86,7 @@ struct PlantDiagnosticOptions {
 };
 
 struct PlantDiagnosticLabel {
+    std::size_t module_id = 0;
     growth::Vec3 world_position;
     float direct_light_exposure = 0.0F;
     float accumulated_light = 0.0F;

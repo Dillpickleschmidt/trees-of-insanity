@@ -245,6 +245,7 @@ int main(int argc, char* argv[])
                 nlohmann::json payload = nlohmann::json::array();
                 for (const auto& label : labels) {
                     payload.push_back({
+                        {"module_id", label.module_id},
                         {"x", label.x},
                         {"y", label.y},
                         {"visible", label.visible},

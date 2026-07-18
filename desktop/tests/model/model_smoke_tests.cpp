@@ -336,6 +336,7 @@ TEST_CASE("Plant workspace steps and resets one diagnosed root")
     CHECK(seed_projection.diagnostic_lines.empty());
     CHECK(seed_projection.diagnostic_spheres.empty());
     REQUIRE(seed_projection.diagnostic_labels.size() == 1);
+    CHECK(seed_projection.diagnostic_labels.front().module_id == 0);
 
     REQUIRE(session->set_plant_timestep(2.0F));
     REQUIRE(session->plant_step());
@@ -430,7 +431,10 @@ TEST_CASE("Plant maturity crossing exposes one attached generation")
          .show_labels = true,
          .show_module_vigor = true,
          .show_mature_terminals = true});
-    CHECK(projection.diagnostic_labels.size() == module_count);
+    REQUIRE(projection.diagnostic_labels.size() == module_count);
+    for (std::size_t index = 0; index < module_count; ++index) {
+        CHECK(projection.diagnostic_labels[index].module_id == flowing->snapshot.modules[index].id);
+    }
     REQUIRE_FALSE(projection.diagnostic_surface_vertices.empty());
     CHECK(projection.diagnostic_surface_vertices.size() % 6 == 0);
     for (const auto& vertex : projection.diagnostic_surface_vertices) {

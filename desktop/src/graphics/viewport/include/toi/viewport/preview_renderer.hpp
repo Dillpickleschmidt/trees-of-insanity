@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -37,6 +38,7 @@ struct PreviewRendererDevice {
 };
 
 struct ProjectedPlantDiagnosticLabel {
+    std::size_t module_id = 0;
     float x = 0.0F;
     float y = 0.0F;
     bool visible = false;

@@ -1,10 +1,37 @@
-import { For, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 
 import type { ProjectedPlantDiagnosticLabel } from "../shared/desktopBridge";
 
 export function PlantDiagnosticLabels(props: { labels: ProjectedPlantDiagnosticLabel[] }) {
+	const [moduleStackOrder, setModuleStackOrder] = createSignal(props.labels.map((label) => label.module_id));
+
+	createEffect(() => {
+		const currentModuleIds = props.labels.map((label) => label.module_id);
+		const currentModuleIdSet = new Set(currentModuleIds);
+		setModuleStackOrder((previous) => {
+			const retained = previous.filter((moduleId) => currentModuleIdSet.has(moduleId));
+			const retainedSet = new Set(retained);
+			const next = [...retained, ...currentModuleIds.filter((moduleId) => !retainedSet.has(moduleId))];
+			return next.length === previous.length && next.every((moduleId, index) => moduleId === previous[index])
+				? previous
+				: next;
+		});
+	});
+
+	const moduleStackRanks = createMemo(
+		() => new Map(moduleStackOrder().map((moduleId, index) => [moduleId, index])),
+	);
+
+	const bringModuleLabelToFront = (moduleId: number) => {
+		setModuleStackOrder((previous) =>
+			previous[previous.length - 1] === moduleId
+				? previous
+				: [...previous.filter((existingId) => existingId !== moduleId), moduleId],
+		);
+	};
+
 	return (
-		<>
+		<div class="pointer-events-none absolute inset-0 z-20">
 			<svg aria-hidden="true" class="absolute size-0">
 				<defs>
 					<filter
@@ -37,13 +64,17 @@ export function PlantDiagnosticLabels(props: { labels: ProjectedPlantDiagnosticL
 				{(label) => (
 					<Show when={label.visible}>
 						<div
-							class="module-diagnostic-label-shell pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-full"
+							class="module-diagnostic-label-shell pointer-events-none absolute -translate-x-1/2 -translate-y-full"
 							style={{
 								left: `${label.x * 100}%`,
 								top: `${label.y * 100}%`,
+								"z-index": moduleStackRanks().get(label.module_id) ?? 0,
 							}}
 						>
-							<div class="module-diagnostic-label grid grid-cols-[auto_auto] gap-x-3 whitespace-nowrap bg-background/85 px-2 pt-1 font-mono text-[11px] leading-4">
+							<div
+								class="module-diagnostic-label grid grid-cols-[auto_auto] gap-x-3 whitespace-nowrap bg-background/85 px-2 pt-1 font-mono text-[11px] leading-4"
+								onPointerEnter={() => bringModuleLabelToFront(label.module_id)}
+							>
 								<span>Direct light</span>
 								<span class="justify-self-end text-right tabular-nums">{format(label.direct_light_exposure)}</span>
 								<span>Accum. light</span>
@@ -55,7 +86,7 @@ export function PlantDiagnosticLabels(props: { labels: ProjectedPlantDiagnosticL
 					</Show>
 				)}
 			</For>
-		</>
+		</div>
 	);
 }
 

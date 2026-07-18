@@ -91,6 +91,7 @@ GrowthPreviewStageProjection make_plant_preview_stage_projection(
         }
         if (diagnostics.show_labels) {
             projection.diagnostic_labels.push_back({
+                .module_id = module.id,
                 .world_position = module.root_position,
                 .direct_light_exposure = module.direct_light_exposure,
                 .accumulated_light = module.accumulated_light,

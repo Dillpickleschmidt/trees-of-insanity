@@ -131,6 +131,7 @@ std::vector<ProjectedPlantDiagnosticLabel> project_diagnostic_labels(
                                                     dot(relative, camera.up) / depth
                                        : 0.0F;
         projected.push_back({
+            .module_id = label.module_id,
             .x = normalized_x,
             .y = normalized_y,
             .visible = depth > camera.near_clip && normalized_x >= 0.0F && normalized_x <= 1.0F &&

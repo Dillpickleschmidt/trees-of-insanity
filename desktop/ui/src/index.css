@@ -371,6 +371,7 @@ body {
   --tail-height: 10px;
 
   padding-bottom: calc(0.25rem + var(--tail-height));
+  pointer-events: auto;
   clip-path: shape(
     from var(--corner-radius) 0,
     hline to calc(100% - var(--corner-radius)),
