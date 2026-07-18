@@ -51,8 +51,11 @@ VigorSplit split_vigor(float available_vigor, float main_axis_light, float later
 
 float vigor_scaled_determinacy(float determinacy, float module_vigor)
 {
-    // Paper: D' = v̄(u) D / v̄_max, with shared module v̄_max = 1.
-    return module_vigor * determinacy / kMaximumModuleVigor;
+    // Paper: D' = v̄(u) D / v̄_max, with shared module v̄_max = 1. Dividing by v̄_max
+    // only normalizes into [0, D] when the numerator is itself bounded by v̄_max, so
+    // the clamp belongs here rather than on the propagated vigor flux.
+    const float normalized_vigor = std::min(module_vigor, kMaximumModuleVigor);
+    return normalized_vigor * determinacy / kMaximumModuleVigor;
 }
 
 std::size_t nearest_morphospace_prototype(float apical_control, float determinacy)

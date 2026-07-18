@@ -29,7 +29,7 @@ The growth-owned conduit seam must be stable before graphics consumes it. Shader
 - Flow renders as a Vulkan material-like pass over the exact pipe surface mesh. It is not an ovrtx material and does not create ribbons or separately tessellated rings.
 - Animation must recompose cached ovrtx color/depth; it must not rerender the ray-traced scene.
 
-See growth ADRs 0018–0019 and desktop ADR 0014.
+See growth ADRs 0016 and 0018, and desktop ADR 0014.
 
 ## Current mismatch
 

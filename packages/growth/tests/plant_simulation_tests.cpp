@@ -304,7 +304,7 @@ TEST_CASE("flow diagnostics are derived on demand through developed frontiers")
     CHECK(simulation->snapshot().flow_diagnostics.empty());
 }
 
-TEST_CASE("root vigor budget can exceed one module's vigor")
+TEST_CASE("acropetal vigor flux is conserved across module attachments")
 {
     using namespace toi::growth;
     auto plant_type = make_plant_type();
@@ -313,19 +313,44 @@ TEST_CASE("root vigor budget can exceed one module's vigor")
     REQUIRE(simulation);
     REQUIRE(simulation->step(10'000.0F));
     REQUIRE(simulation->step(1.0F));
-    REQUIRE(simulation->set_flow_diagnostics({.vigor = true}));
     const auto snapshot = simulation->snapshot();
-    CHECK(module_by_id(snapshot, 0).vigor == Catch::Approx(kMaximumModuleVigor));
-    CHECK(module_by_id(snapshot, 1).vigor == Catch::Approx(kMaximumModuleVigor));
-    const auto vigor = std::ranges::find(snapshot.flow_diagnostics, FlowKind::Vigor,
-                                         &PlantFlowDiagnostic::kind);
-    REQUIRE(vigor != snapshot.flow_diagnostics.end());
-    CHECK(vigor->root_total == Catch::Approx(2.0F));
-    const auto child_vigor = std::ranges::find_if(snapshot.flow_diagnostics, [&](const auto& flow) {
-        return flow.kind == FlowKind::Vigor && snapshot.segments[flow.segment_index].module_id == 1;
-    });
-    REQUIRE(child_vigor != snapshot.flow_diagnostics.end());
-    CHECK(child_vigor->amount == Catch::Approx(kMaximumModuleVigor));
+
+    // The root carries its whole budget; maximum module vigor does not truncate it.
+    const auto& root = module_by_id(snapshot, 0);
+    CHECK(root.vigor == Catch::Approx(2.0F));
+    CHECK(root.vigor > kMaximumModuleVigor);
+
+    // Vigor above the maximum survives a module junction rather than being discarded.
+    CHECK(module_by_id(snapshot, 1).vigor > kMaximumModuleVigor);
+
+    // Eq. 2 conserves: the children of a module receive exactly its vigor.
+    float distributed = 0.0F;
+    for (const auto& module : snapshot.modules) {
+        if (module.parent_module_id && *module.parent_module_id == 0) {
+            distributed += module.vigor;
+        }
+    }
+    CHECK(distributed == Catch::Approx(root.vigor));
+}
+
+TEST_CASE("maximum module vigor bounds the growth rate, not the propagated flux")
+{
+    using namespace toi::growth;
+    const auto plant_type = make_plant_type();
+    const auto at_maximum = growth_rate(plant_type, {.vigor = kMaximumModuleVigor,
+                                                     .min_vigor = kMinimumModuleVigor,
+                                                     .max_vigor = kMaximumModuleVigor});
+    const auto above_maximum = growth_rate(plant_type, {.vigor = 9.9F,
+                                                        .min_vigor = kMinimumModuleVigor,
+                                                        .max_vigor = kMaximumModuleVigor});
+    REQUIRE(at_maximum);
+    REQUIRE(above_maximum);
+    CHECK(*above_maximum == Catch::Approx(*at_maximum));
+
+    // Paper: D' = v̄(u) D / v̄_max normalizes into [0, D], so raw vigor above the
+    // maximum must not scale determinacy past its unscaled value.
+    CHECK(vigor_scaled_determinacy(0.4F, 9.9F) == Catch::Approx(0.4F));
+    CHECK(vigor_scaled_determinacy(0.4F, 0.5F) == Catch::Approx(0.2F));
 }
 
 TEST_CASE("accumulated-light and vigor flow remain deterministic without grandchildren")
