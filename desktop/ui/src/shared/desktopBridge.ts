@@ -1,3 +1,5 @@
+import type { PlantState } from "./desktopActions";
+
 export type Rect = {
 	x: number;
 	y: number;
@@ -19,6 +21,12 @@ export type ViewportPhase = "detached" | "starting" | "warming" | "rendering" | 
 export type ViewportExtent = {
 	width: number;
 	height: number;
+};
+
+export type PlantRunProgress = {
+	state: PlantState | undefined;
+	running: boolean;
+	error: string;
 };
 
 export type ProjectedPlantDiagnosticLabel = {

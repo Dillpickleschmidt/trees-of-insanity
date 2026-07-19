@@ -18,7 +18,7 @@ namespace {
 
 using nlohmann::json;
 
-constexpr int kProjectVersion = 2;
+constexpr int kProjectVersion = 3;
 constexpr std::string_view kDefaultPlantTypeId = "plant-type-1";
 constexpr char kDefaultPlantTypePreset = 'o';
 
@@ -54,7 +54,8 @@ Project make_default_project(std::size_t default_prototype_id, std::string defau
     project.plant_workspace = {
         .root_prototype_id = default_prototype_id,
         .plant_type_id = std::string(kDefaultPlantTypeId),
-        .simulation_timestep = 1.0F,
+        .target_age = 500.0F,
+        .step_size = 10.0F,
         .diagnostics = {},
         .viewport = viewport,
     };
@@ -222,9 +223,11 @@ Result<void> validate_project(const Project& project)
         project.module_workspace.physiological_age < 0.0F) {
         return std::unexpected(invalid_project("Module physiological age must be finite and non-negative"));
     }
-    if (!std::isfinite(project.plant_workspace.simulation_timestep) ||
-        project.plant_workspace.simulation_timestep <= 0.0F) {
-        return std::unexpected(invalid_project("Plant simulation timestep must be finite and positive"));
+    if (!std::isfinite(project.plant_workspace.target_age) || project.plant_workspace.target_age < 0.0F) {
+        return std::unexpected(invalid_project("Plant target age must be finite and non-negative"));
+    }
+    if (!std::isfinite(project.plant_workspace.step_size) || project.plant_workspace.step_size <= 0.0F) {
+        return std::unexpected(invalid_project("Plant step size must be finite and positive"));
     }
     if (!viewport_is_valid(project.module_workspace.viewport) ||
         !viewport_is_valid(project.plant_workspace.viewport) ||
@@ -584,7 +587,8 @@ namespace {
          {
              {"root_prototype_id", project.plant_workspace.root_prototype_id},
              {"plant_type_id", project.plant_workspace.plant_type_id},
-             {"simulation_timestep", project.plant_workspace.simulation_timestep},
+             {"target_age", project.plant_workspace.target_age},
+             {"step_size", project.plant_workspace.step_size},
              {"diagnostics", diagnostics_to_json(project.plant_workspace.diagnostics)},
              {"viewport", viewport_to_json(project.plant_workspace.viewport)},
          }},
@@ -674,13 +678,16 @@ namespace {
     const auto& plant = value.at("plant_workspace");
     auto root_prototype = size_from_json(plant, "root_prototype_id");
     auto plant_plant_type = string_from_json(plant, "plant_type_id");
-    auto timestep = float_from_json(plant, "simulation_timestep");
+    auto target_age = float_from_json(plant, "target_age");
+    auto step_size = float_from_json(plant, "step_size");
     if (!root_prototype)
         return std::unexpected(root_prototype.error());
     if (!plant_plant_type)
         return std::unexpected(plant_plant_type.error());
-    if (!timestep)
-        return std::unexpected(timestep.error());
+    if (!target_age)
+        return std::unexpected(target_age.error());
+    if (!step_size)
+        return std::unexpected(step_size.error());
     if (!plant.contains("diagnostics"))
         return std::unexpected(invalid_project("Plant workspace missing diagnostics"));
     auto diagnostics = diagnostics_from_json(plant.at("diagnostics"));
@@ -693,7 +700,8 @@ namespace {
         return std::unexpected(plant_viewport.error());
     project.plant_workspace = {.root_prototype_id = *root_prototype,
                                .plant_type_id = std::move(*plant_plant_type),
-                               .simulation_timestep = *timestep,
+                               .target_age = *target_age,
+                               .step_size = *step_size,
                                .diagnostics = *diagnostics,
                                .viewport = std::move(*plant_viewport)};
 

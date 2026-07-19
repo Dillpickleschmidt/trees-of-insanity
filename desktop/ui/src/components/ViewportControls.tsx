@@ -12,7 +12,9 @@ export function ViewportControls(props: {
 	view: ViewportPreferencesView | undefined;
 	status: ViewportStatus;
 	busy: boolean;
+	framesPerSecond: number;
 	onChange: (patch: Partial<ViewportPreferences>) => void;
+	onFramesPerSecond: (framesPerSecond: number) => void;
 }) {
 	const preferences = () => props.view!.preferences;
 	const activeEnvironment = () =>
@@ -110,6 +112,19 @@ export function ViewportControls(props: {
 										<SwitchThumb />
 									</SwitchControl>
 								</Switch>
+
+								<Field label="Viewport FPS">
+									<input
+										type="number"
+										min="1"
+										max="240"
+										step="1"
+										value={props.framesPerSecond}
+										disabled={props.busy}
+										onChange={(event) => props.onFramesPerSecond(event.currentTarget.valueAsNumber)}
+										class="h-9 w-full rounded-md border border-border bg-background px-3 font-mono text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
+									/>
+								</Field>
 
 								<Field label="Environment">
 									<Select<HdriEnvironment>

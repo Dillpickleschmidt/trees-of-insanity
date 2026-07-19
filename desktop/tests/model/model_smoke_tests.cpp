@@ -63,7 +63,7 @@ TEST_CASE("fresh project contains complete typed workspace state")
 
     auto project = toi::project::load_project(project_path);
     REQUIRE(project);
-    CHECK(project->version == 2);
+    CHECK(project->version == 3);
     CHECK(project->active_workspace == toi::project::Workspace::Module);
     CHECK(project->plant_type_library.plant_types.size() == 1);
     CHECK(project->module_workspace.prototype_id == 8);
@@ -71,7 +71,8 @@ TEST_CASE("fresh project contains complete typed workspace state")
     CHECK(project->module_workspace.physiological_age == Catch::Approx(63.5755F).margin(0.001F));
     CHECK(project->plant_workspace.root_prototype_id == 8);
     CHECK(project->plant_workspace.plant_type_id == "plant-type-1");
-    CHECK(project->plant_workspace.simulation_timestep == Catch::Approx(1.0F));
+    CHECK(project->plant_workspace.target_age == Catch::Approx(500.0F));
+    CHECK(project->plant_workspace.step_size == Catch::Approx(10.0F));
     CHECK_FALSE(project->plant_workspace.diagnostics.module_diagnostic_labels_visible);
     CHECK_FALSE(project->plant_workspace.diagnostics.direct_light_bounding_spheres_visible);
     CHECK_FALSE(project->plant_workspace.diagnostics.module_accumulated_light_visible);
@@ -107,7 +108,8 @@ TEST_CASE("typed Project round-trips independent workspaces")
         .elevation_radians = -0.25F,
     };
     project.plant_workspace.plant_type_id = "plant-type-2";
-    project.plant_workspace.simulation_timestep = 0.25F;
+    project.plant_workspace.target_age = 250.0F;
+    project.plant_workspace.step_size = 0.25F;
     project.plant_workspace.diagnostics.module_vigor_visible = true;
     project.plant_workspace.viewport.active_hdri_environment_id = "hdri:plant.exr";
     project.ecosystem_workspace.viewport.active_hdri_environment_id = "hdri:ecosystem.exr";
@@ -118,7 +120,8 @@ TEST_CASE("typed Project round-trips independent workspaces")
     REQUIRE(loaded);
     CHECK(loaded->active_workspace == Workspace::Ecosystem);
     CHECK(loaded->module_workspace.viewport.orbit.target.y == Catch::Approx(2.0F));
-    CHECK(loaded->plant_workspace.simulation_timestep == Catch::Approx(0.25F));
+    CHECK(loaded->plant_workspace.target_age == Catch::Approx(250.0F));
+    CHECK(loaded->plant_workspace.step_size == Catch::Approx(0.25F));
     CHECK(loaded->plant_workspace.diagnostics.module_vigor_visible);
     CHECK(loaded->plant_workspace.viewport.active_hdri_environment_id == "hdri:plant.exr");
     CHECK(loaded->ecosystem_workspace.viewport.active_hdri_environment_id == "hdri:ecosystem.exr");
@@ -237,14 +240,14 @@ TEST_CASE("project-only command save failure preserves session state")
     std::filesystem::remove_all(blocked_temporary_path);
 }
 
-TEST_CASE("coupled command save failure preserves project simulation and camera state")
+TEST_CASE("Plant type save failure preserves project simulation and camera state")
 {
     const auto project_path = fresh_project_path("coupled-save-failure");
     auto session = toi::model::DesktopSession::create(session_options(project_path));
     REQUIRE(session);
     REQUIRE(session->set_active_workspace("plant"));
     REQUIRE(session->update_active_orbit({.radius = 2.0F}));
-    REQUIRE(session->plant_step());
+    REQUIRE(session->advance_plant());
 
     const auto before_state = session->plant_state();
     REQUIRE(before_state);
@@ -259,16 +262,12 @@ TEST_CASE("coupled command save failure preserves project simulation and camera 
     auto blocked_temporary_path = project_path;
     blocked_temporary_path += ".tmp";
     REQUIRE(std::filesystem::create_directory(blocked_temporary_path));
-    CHECK_FALSE(session->plant_step());
-    const auto after_failed_step = session->plant_state();
-    REQUIRE(after_failed_step);
-    CHECK(after_failed_step->plant_age == Catch::Approx(before_state->plant_age));
-    CHECK(session->active_orbit().target.z == Catch::Approx(before_orbit.target.z));
     CHECK_FALSE(session->update_plant_type(*updated_type));
 
     const auto after_state = session->plant_state();
     REQUIRE(after_state);
     CHECK(after_state->plant_age == Catch::Approx(before_state->plant_age));
+    CHECK(session->active_orbit().target.z == Catch::Approx(before_orbit.target.z));
     CHECK_FALSE(session->active_camera_needs_frame());
     const auto after_type = session->plant_type(before_state->plant_type_id);
     REQUIRE(after_type);
@@ -322,7 +321,6 @@ TEST_CASE("Plant workspace steps and resets one diagnosed root")
 
     auto initial = session->plant_state();
     REQUIRE(initial);
-    CHECK(initial->paused);
     CHECK(initial->plant_age == Catch::Approx(0.0F));
     CHECK(initial->root_physiological_age == Catch::Approx(0.0F));
     CHECK(initial->direct_light_exposure == Catch::Approx(1.0F));
@@ -344,8 +342,10 @@ TEST_CASE("Plant workspace steps and resets one diagnosed root")
     REQUIRE(seed_projection.diagnostic_labels.size() == 1);
     CHECK(seed_projection.diagnostic_labels.front().module_id == 0);
 
-    REQUIRE(session->set_plant_timestep(2.0F));
-    REQUIRE(session->plant_step());
+    REQUIRE(session->update_plant_run_settings(2.0F, 2.0F));
+    auto reached_target = session->advance_plant();
+    REQUIRE(reached_target);
+    CHECK(reached_target->reached_target);
     CHECK_FALSE(session->active_camera_needs_frame());
     const auto stepped_orbit = session->active_orbit();
     CHECK(stepped_orbit.target.x == Catch::Approx(1.25F));
@@ -385,6 +385,7 @@ TEST_CASE("Plant workspace steps and resets one diagnosed root")
     CHECK(developed_projection.camera.eye.x == Catch::Approx(seed_projection.camera.eye.x));
     CHECK(developed_projection.camera.eye.y == Catch::Approx(seed_projection.camera.eye.y));
     CHECK(developed_projection.camera.eye.z == Catch::Approx(seed_projection.camera.eye.z));
+    REQUIRE(session->finish_plant_run());
 
     REQUIRE(session->update_plant_diagnostics({
         .module_diagnostic_labels_visible = true,
@@ -401,11 +402,58 @@ TEST_CASE("Plant workspace steps and resets one diagnosed root")
     auto reopened_state = reopened->plant_state();
     REQUIRE(reopened_state);
     CHECK(reopened_state->plant_age == Catch::Approx(0.0F));
-    CHECK(reopened_state->timestep == Catch::Approx(2.0F));
+    CHECK(reopened_state->target_age == Catch::Approx(2.0F));
+    CHECK(reopened_state->step_size == Catch::Approx(2.0F));
+    CHECK(reopened->active_orbit().target.z == Catch::Approx(stepped_orbit.target.z));
     CHECK(reopened_state->module_diagnostic_labels_visible);
     CHECK(reopened_state->direct_light_bounding_spheres_visible);
     REQUIRE(reopened->set_active_workspace("module"));
     CHECK(reopened->active_orbit().radius == Catch::Approx(4.0F));
+}
+
+TEST_CASE("Plant run advances by step size and lands exactly on its target age")
+{
+    const auto project_path = fresh_project_path("plant-run-target");
+    auto session = toi::model::DesktopSession::create(session_options(project_path));
+    REQUIRE(session);
+    REQUIRE(session->set_active_workspace("plant"));
+    REQUIRE(session->update_plant_run_settings(25.0F, 10.0F));
+    auto persisted_before_run = toi::project::load_project(project_path);
+    REQUIRE(persisted_before_run);
+    const float persisted_camera_target_z = persisted_before_run->plant_workspace.viewport.orbit.target.z;
+
+    auto first = session->advance_plant();
+    REQUIRE(first);
+    CHECK_FALSE(first->reached_target);
+    CHECK(session->plant_state()->plant_age == Catch::Approx(10.0F));
+
+    auto second = session->advance_plant();
+    REQUIRE(second);
+    CHECK_FALSE(second->reached_target);
+    CHECK(session->plant_state()->plant_age == Catch::Approx(20.0F));
+
+    auto final = session->advance_plant();
+    REQUIRE(final);
+    CHECK(final->reached_target);
+    CHECK(session->plant_state()->plant_age == Catch::Approx(25.0F));
+
+    auto persisted_during_run = toi::project::load_project(project_path);
+    REQUIRE(persisted_during_run);
+    CHECK(persisted_during_run->plant_workspace.viewport.orbit.target.z ==
+          Catch::Approx(persisted_camera_target_z));
+    const auto completed_orbit = session->active_orbit();
+    REQUIRE(session->finish_plant_run());
+    auto persisted_after_run = toi::project::load_project(project_path);
+    REQUIRE(persisted_after_run);
+    CHECK(persisted_after_run->plant_workspace.viewport.orbit.target.z ==
+          Catch::Approx(completed_orbit.target.z));
+
+    REQUIRE(session->plant_reset());
+    REQUIRE(session->update_plant_run_settings(0.0000005F, 10.0F));
+    auto tiny_final = session->advance_plant();
+    REQUIRE(tiny_final);
+    CHECK(tiny_final->reached_target);
+    CHECK(session->plant_state()->plant_age == Catch::Approx(0.0000005F));
 }
 
 TEST_CASE("Plant maturity crossing exposes one attached generation")
@@ -415,7 +463,7 @@ TEST_CASE("Plant maturity crossing exposes one attached generation")
     REQUIRE(session);
     REQUIRE(session->set_active_workspace("plant"));
     REQUIRE(session->update_active_orbit({.radius = 3.0F}));
-    REQUIRE(session->set_plant_timestep(1'000.0F));
+    REQUIRE(session->update_plant_run_settings(2'000.0F, 1'000.0F));
     REQUIRE(session->update_plant_diagnostics({
         .module_diagnostic_labels_visible = true,
         .direct_light_bounding_spheres_visible = true,
@@ -423,7 +471,7 @@ TEST_CASE("Plant maturity crossing exposes one attached generation")
         .module_vigor_visible = true,
         .mature_terminal_markers_visible = true,
     }));
-    REQUIRE(session->plant_step());
+    REQUIRE(session->advance_plant());
 
     auto attached = session->plant_preview_snapshot();
     REQUIRE(attached);
@@ -437,7 +485,7 @@ TEST_CASE("Plant maturity crossing exposes one attached generation")
     CHECK_FALSE(session->active_camera_needs_frame());
 
     const auto module_count = attached->snapshot.modules.size();
-    REQUIRE(session->plant_step());
+    REQUIRE(session->advance_plant());
     auto flowing = session->plant_preview_snapshot();
     REQUIRE(flowing);
     CHECK(flowing->snapshot.modules.size() == module_count);
@@ -498,7 +546,7 @@ TEST_CASE("Plant-selected type changes reset the transient simulation")
     auto session = toi::model::DesktopSession::create(
         session_options(fresh_project_path("plant-type-reset")));
     REQUIRE(session);
-    REQUIRE(session->plant_step());
+    REQUIRE(session->advance_plant());
     CHECK(session->plant_state()->plant_age > 0.0F);
 
     auto selected = session->plant_type("plant-type-1");
@@ -510,7 +558,7 @@ TEST_CASE("Plant-selected type changes reset the transient simulation")
 
     auto second = session->create_plant_type("Second", 'a');
     REQUIRE(second);
-    REQUIRE(session->plant_step());
+    REQUIRE(session->advance_plant());
     REQUIRE(session->delete_plant_type("plant-type-1"));
     CHECK(session->plant_state()->plant_age == Catch::Approx(0.0F));
     CHECK(session->plant_state()->plant_type_id == second->id);

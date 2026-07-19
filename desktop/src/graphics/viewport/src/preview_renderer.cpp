@@ -314,6 +314,22 @@ void PreviewRenderer::set_guide_options(bool guides_visible, bool world_origin_a
     condition_.notify_all();
 }
 
+void PreviewRenderer::set_max_frames_per_second(float frames_per_second)
+{
+    if (!std::isfinite(frames_per_second)) {
+        return;
+    }
+    frames_per_second = std::clamp(frames_per_second, 1.0F, 240.0F);
+    {
+        std::lock_guard lock(mutex_);
+        minimum_scene_frame_interval_ =
+            std::chrono::milliseconds(std::max(1, static_cast<int>(std::ceil(1000.0F / frames_per_second))));
+        next_scene_frame_time_ = {};
+        next_overlay_frame_time_ = {};
+    }
+    condition_.notify_all();
+}
+
 void PreviewRenderer::set_frame_ready_callback(std::function<void()> callback)
 {
     std::lock_guard lock(mutex_);
@@ -369,16 +385,22 @@ bool PreviewRenderer::prepare_frame_on_render_thread()
     bool overlay_only = false;
     {
         std::lock_guard lock(mutex_);
+        const auto now = std::chrono::steady_clock::now();
         if (ready_slot_ >= 0) {
             slot_index = ready_slot_;
             ready_slot_ = -1;
             old_displayed_slot = displayed_slot_;
             displayed_slot_ = slot_index;
             slots_[slot_index].ready = false;
+            next_overlay_frame_time_ = now + minimum_scene_frame_interval_;
         } else if (displayed_slot_ >= 0 &&
                    !slots_[displayed_slot_].overlay_surface_vertices.empty()) {
+            if (next_overlay_frame_time_ > now) {
+                return false;
+            }
             slot_index = displayed_slot_;
             overlay_only = true;
+            next_overlay_frame_time_ = now + minimum_scene_frame_interval_;
         } else {
             return false;
         }
@@ -727,6 +749,12 @@ void PreviewRenderer::render_loop()
                 condition_.wait(lock, [this] { return !running_ || !resize_waiting_; });
                 continue;
             }
+            const auto now = std::chrono::steady_clock::now();
+            if (next_scene_frame_time_ > now) {
+                condition_.wait_until(lock, next_scene_frame_time_);
+                continue;
+            }
+            next_scene_frame_time_ = now + minimum_scene_frame_interval_;
             for (int index = 0; index < kSlotCount; ++index) {
                 if (index != displayed_slot_ && !slots_[index].rendering && !slots_[index].ready) {
                     slot_index = index;

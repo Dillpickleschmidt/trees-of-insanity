@@ -1,5 +1,6 @@
 import type { CommandRequest, CommandResponse } from "./shared/desktopActions";
 import type {
+	PlantRunProgress,
 	ProjectedPlantDiagnosticLabel,
 	Rect,
 	ViewportCameraInput,
@@ -19,6 +20,7 @@ type DesktopBridge = {
 	cameraInput(kind: string, dx: number, dy: number, viewportHeight: number): void;
 	viewportStatusChanged: QtSignal<[string]>;
 	plantDiagnosticLabelsChanged: QtSignal<[string]>;
+	plantRunProgressChanged: QtSignal<[string, boolean, string]>;
 };
 
 declare global {
@@ -64,6 +66,23 @@ export function updateViewportRect(rect: Rect) {
 
 export function sendViewportCameraInput(input: ViewportCameraInput) {
 	void bridgePromise.then((bridge) => bridge.cameraInput(input.kind, input.dx, input.dy, input.viewportHeight));
+}
+
+export function onPlantRunProgress(listener: (progress: PlantRunProgress) => void) {
+	let bridge: DesktopBridge | undefined;
+	const receive = (serializedState: string, running: boolean, error: string) => {
+		const response = JSON.parse(serializedState) as CommandResponse<"plant.get_state">;
+		if (!response.ok) {
+			listener({ state: undefined, running: false, error: response.error });
+			return;
+		}
+		listener({ state: response.result, running, error });
+	};
+	void bridgePromise.then((resolved) => {
+		bridge = resolved;
+		bridge.plantRunProgressChanged.connect(receive);
+	});
+	return () => bridge?.plantRunProgressChanged.disconnect(receive);
 }
 
 export function onPlantDiagnosticLabels(listener: (labels: ProjectedPlantDiagnosticLabel[]) => void) {

@@ -26,9 +26,25 @@ TEST_CASE("raw desktop actions report response and preview effect")
     CHECK(visual.preview_changed);
 
     auto nonvisual = toi::desktop::dispatch_action(
-        *session, R"({"method":"plant.set_timestep","params":{"timestep":0.5}})");
+        *session, R"({"method":"plant.set_run_settings","params":{"target_age":250,"step_size":0.5}})");
     CHECK(nlohmann::json::parse(nonvisual.response).at("ok") == true);
     CHECK_FALSE(nonvisual.preview_changed);
+
+    auto run = toi::desktop::dispatch_action(*session, R"({"method":"plant.run"})");
+    CHECK(nlohmann::json::parse(run.response).at("ok") == true);
+    CHECK(run.plant_run_control == toi::desktop::PlantRunControl::Start);
+    auto stop = toi::desktop::dispatch_action(*session, R"({"method":"plant.stop"})");
+    CHECK(nlohmann::json::parse(stop.response).at("ok") == true);
+    CHECK(stop.plant_run_control == toi::desktop::PlantRunControl::Stop);
+
+    auto frames_per_second = toi::desktop::dispatch_action(
+        *session, R"({"method":"viewport.set_frames_per_second","params":{"frames_per_second":60}})");
+    CHECK(nlohmann::json::parse(frames_per_second.response).at("ok") == true);
+    CHECK(frames_per_second.viewport_frames_per_second == 60.0);
+    auto invalid_frames_per_second = toi::desktop::dispatch_action(
+        *session, R"({"method":"viewport.set_frames_per_second","params":{"frames_per_second":0}})");
+    CHECK(nlohmann::json::parse(invalid_frames_per_second.response).at("ok") == false);
+    CHECK_FALSE(invalid_frames_per_second.viewport_frames_per_second);
 
     const auto before_invalid_prototype = session->state();
     REQUIRE(before_invalid_prototype);

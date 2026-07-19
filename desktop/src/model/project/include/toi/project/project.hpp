@@ -80,7 +80,8 @@ struct PlantDiagnostics {
 struct PlantWorkspaceState {
     std::size_t root_prototype_id = 0;
     std::string plant_type_id;
-    float simulation_timestep = 1.0F;
+    float target_age = 500.0F;
+    float step_size = 10.0F;
     PlantDiagnostics diagnostics;
     ViewportState viewport;
 };
@@ -90,7 +91,7 @@ struct EcosystemWorkspaceState {
 };
 
 struct Project {
-    int version = 2;
+    int version = 3;
     PlantTypeLibrary plant_type_library;
     Workspace active_workspace = Workspace::Module;
     ModuleWorkspaceState module_workspace;

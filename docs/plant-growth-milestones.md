@@ -26,7 +26,7 @@ Verify existing Module behavior and persistence before enabling Plant.
 - Add stateful `PlantSimulation` with `create`, `step`, and zero-copy `snapshot`.
 - Create one automatically selected age-zero root at world origin.
 - Compute direct light exposure, accumulated light, root/module vigor, growth rate, and physiological age.
-- Enable Plant with Reset, Next step, paused timestep editing, stable camera, root label, and direct-light sphere.
+- Enable Plant with Reset, target-age Run/Stop controls, editable step size, stable camera, root label, and direct-light sphere.
 
 Do not add topology growth in this slice; a mature root remains mature.
 

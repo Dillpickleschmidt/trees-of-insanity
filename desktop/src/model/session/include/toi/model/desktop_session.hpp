@@ -103,8 +103,8 @@ struct PlantStateView {
     float plant_age = 0.0F;
     float root_physiological_age = 0.0F;
     float root_fully_grown_age = 0.0F;
-    float timestep = 1.0F;
-    bool paused = true;
+    float target_age = 500.0F;
+    float step_size = 10.0F;
     std::size_t root_prototype_id = 0;
     std::string plant_type_id;
     bool module_diagnostic_labels_visible = false;
@@ -116,6 +116,10 @@ struct PlantStateView {
     float accumulated_light = 0.0F;
     float vigor = 0.0F;
     float growth_rate = 0.0F;
+};
+
+struct PlantAdvanceResult {
+    bool reached_target = false;
 };
 
 struct PlantPreviewSnapshot {
@@ -166,9 +170,10 @@ public:
 
     [[nodiscard]] PreviewEnvironment preview_environment() const;
     [[nodiscard]] Result<void> set_active_workspace(std::string_view workspace);
-    [[nodiscard]] Result<void> plant_step();
+    [[nodiscard]] Result<PlantAdvanceResult> advance_plant();
+    [[nodiscard]] Result<void> finish_plant_run();
     [[nodiscard]] Result<void> plant_reset();
-    [[nodiscard]] Result<void> set_plant_timestep(float timestep);
+    [[nodiscard]] Result<void> update_plant_run_settings(float target_age, float step_size);
     [[nodiscard]] Result<void> update_plant_diagnostics(PlantDiagnosticsUpdate diagnostics);
 
     [[nodiscard]] Result<project::PlantType> create_plant_type(std::string name, char preset_key);
@@ -195,6 +200,7 @@ private:
     import::BranchModulePrototypeLibrary prototype_library_;
     project::Project project_;
     growth::PlantSimulation plant_simulation_;
+    std::optional<float> plant_run_camera_target_z_;
     bool module_camera_needs_frame_ = true;
     bool plant_camera_needs_frame_ = true;
 };
