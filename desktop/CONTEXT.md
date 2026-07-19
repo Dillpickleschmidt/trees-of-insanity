@@ -26,7 +26,7 @@ The desktop product owns one local Project with project-wide content and typed s
 - Graphics: projects module growth snapshots and transfers ovrtx frames CUDA→Vulkan.
 - Shell: Qt-owned window/device/composition and WebChannel boundary.
 - UI: transparent Solid controls over the native viewport texture.
-- Workspace tabs: Module and the first-generation Plant slice are implemented; Ecosystem remains a disabled placeholder until its own simulation exists.
+- Workspace tabs: Module and repeated-attachment Plant simulation are implemented; Ecosystem remains a disabled placeholder until its own simulation exists.
 
 Plant types, presets, Table 4 parameters, prototype assets/import, and Project CRUD remain because module growth consumes them.
 

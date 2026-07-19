@@ -61,10 +61,71 @@ toi::growth::BranchModulePrototypeLibrary make_unordered_terminal_library()
     return library;
 }
 
+toi::growth::BranchModulePrototype make_linear_prototype(std::size_t id)
+{
+    using namespace toi::growth;
+    return {
+        .id = id,
+        .name = "linear-" + std::to_string(id),
+        .nodes = {{{0.0F, 0.0F, 0.0F}, 0.0F}, {{0.0F, 0.0F, 1.0F}, 0.0F}},
+        .segments = {{0, 1, {0.0F, 0.0F, 1.0F}, 1.0F, 1.0F, 1.0F, 1.0F}},
+        .root_node = 0,
+        .terminal_nodes = {1},
+        .child_segments_by_node = {{0}, {}},
+        .incoming_segment_by_node = {std::nullopt, 0},
+    };
+}
+
+toi::growth::BranchModulePrototypeLibrary make_repeated_attachment_library()
+{
+    using namespace toi::growth;
+    BranchModulePrototypeLibrary library;
+    for (std::size_t id = 0; id < 9; ++id) {
+        library.prototypes.push_back(make_linear_prototype(id));
+    }
+    library.prototypes[7] = {
+        .id = 7,
+        .name = "symmetric-root",
+        .nodes = {
+            {{0.0F, 0.0F, 0.0F}, 0.0F},
+            {{0.0F, 0.0F, 1.0F}, 0.0F},
+            {{-2.5F, 0.0F, 1.0F}, 0.0F},
+            {{-1.5F, 0.0F, 1.0F}, 0.0F},
+            {{2.5F, 0.0F, 1.0F}, 0.0F},
+            {{1.5F, 0.0F, 1.0F}, 0.0F},
+        },
+        .segments = {
+            {0, 1, {0.0F, 0.0F, 1.0F}, 1.0F, 1.0F, 1.0F, 1.0F},
+            {1, 2, {-1.0F, 0.0F, 0.0F}, 1.0F, 1.0F, 1.0F, 2.5F},
+            {2, 3, {1.0F, 0.0F, 0.0F}, 1.0F, 1.0F, 1.0F, 1.0F},
+            {1, 4, {1.0F, 0.0F, 0.0F}, 1.0F, 1.0F, 1.0F, 2.5F},
+            {4, 5, {-1.0F, 0.0F, 0.0F}, 1.0F, 1.0F, 1.0F, 1.0F},
+        },
+        .root_node = 0,
+        .terminal_nodes = {5, 3},
+        .child_segments_by_node = {{0}, {1, 3}, {2}, {}, {4}, {}},
+        .incoming_segment_by_node = {std::nullopt, 0, 1, 2, 3, 4},
+    };
+    return library;
+}
+
 toi::growth::PlantTypeParameters make_plant_type()
 {
     auto plant_type = *toi::growth::plant_type_preset_by_key('a');
     plant_type.tropism_strength = 0.0F;
+    return plant_type;
+}
+
+toi::growth::PlantTypeParameters make_repeated_attachment_plant_type()
+{
+    auto plant_type = make_plant_type();
+    plant_type.root_max_vigor = 1.0F;
+    plant_type.apical_control = 0.8F;
+    plant_type.determinacy = 1.0F;
+    plant_type.mature_apical_control.reset();
+    plant_type.mature_determinacy.reset();
+    plant_type.flowering_age = 0.0F;
+    plant_type.tropism_weight = 0.0F;
     return plant_type;
 }
 
@@ -77,6 +138,122 @@ std::span<const toi::growth::PlantSegmentSnapshot> module_segments(const toi::gr
                                                                    const toi::growth::PlantModuleSnapshot& module)
 {
     return snapshot.segments.subspan(module.segments.offset, module.segments.count);
+}
+
+const toi::growth::MatureTerminalSnapshot& only_terminal(const toi::growth::PlantSnapshot& snapshot,
+                                                         std::size_t module_id)
+{
+    const auto terminal = std::ranges::find(snapshot.mature_terminals, module_id,
+                                            &toi::growth::MatureTerminalSnapshot::module_id);
+    return *terminal;
+}
+
+float direction_alignment(toi::growth::Vec3 left, toi::growth::Vec3 right)
+{
+    return left.x * right.x + left.y * right.y + left.z * right.z;
+}
+
+void check_vec3_equal(toi::growth::Vec3 left, toi::growth::Vec3 right)
+{
+    CHECK(left.x == right.x);
+    CHECK(left.y == right.y);
+    CHECK(left.z == right.z);
+}
+
+void check_transform_equal(const toi::growth::RigidTransform& left,
+                           const toi::growth::RigidTransform& right)
+{
+    check_vec3_equal(left.x_axis, right.x_axis);
+    check_vec3_equal(left.y_axis, right.y_axis);
+    check_vec3_equal(left.z_axis, right.z_axis);
+    check_vec3_equal(left.translation, right.translation);
+}
+
+void check_snapshots_equal(const toi::growth::PlantSnapshot& left,
+                           const toi::growth::PlantSnapshot& right)
+{
+    CHECK(left.plant_age == right.plant_age);
+    REQUIRE(left.modules.size() == right.modules.size());
+    REQUIRE(left.segments.size() == right.segments.size());
+    REQUIRE(left.mature_terminals.size() == right.mature_terminals.size());
+    REQUIRE(left.attachment_events.size() == right.attachment_events.size());
+
+    for (std::size_t index = 0; index < left.modules.size(); ++index) {
+        const auto& left_module = left.modules[index];
+        const auto& right_module = right.modules[index];
+        CHECK(left_module.id == right_module.id);
+        CHECK(left_module.prototype_id == right_module.prototype_id);
+        CHECK(left_module.parent_module_id == right_module.parent_module_id);
+        CHECK(left_module.parent_terminal_node == right_module.parent_terminal_node);
+        check_transform_equal(left_module.transform, right_module.transform);
+        check_vec3_equal(left_module.root_position, right_module.root_position);
+        CHECK(left_module.physiological_age == right_module.physiological_age);
+        CHECK(left_module.fully_grown_age == right_module.fully_grown_age);
+        CHECK(left_module.direct_light_exposure == right_module.direct_light_exposure);
+        CHECK(left_module.accumulated_light == right_module.accumulated_light);
+        CHECK(left_module.vigor == right_module.vigor);
+        CHECK(left_module.growth_rate == right_module.growth_rate);
+        check_vec3_equal(left_module.collision_sphere.center, right_module.collision_sphere.center);
+        CHECK(left_module.collision_sphere.radius == right_module.collision_sphere.radius);
+        CHECK(left_module.segments.offset == right_module.segments.offset);
+        CHECK(left_module.segments.count == right_module.segments.count);
+    }
+    for (std::size_t index = 0; index < left.segments.size(); ++index) {
+        const auto& left_segment = left.segments[index];
+        const auto& right_segment = right.segments[index];
+        CHECK(left_segment.module_id == right_segment.module_id);
+        CHECK(left_segment.source_segment_id == right_segment.source_segment_id);
+        check_vec3_equal(left_segment.parent_position, right_segment.parent_position);
+        check_vec3_equal(left_segment.child_position, right_segment.child_position);
+        check_vec3_equal(left_segment.mature_parent_position, right_segment.mature_parent_position);
+        check_vec3_equal(left_segment.mature_child_position, right_segment.mature_child_position);
+        CHECK(left_segment.diameter == right_segment.diameter);
+        CHECK(left_segment.state == right_segment.state);
+        CHECK(left_segment.main_continuation_segment == right_segment.main_continuation_segment);
+    }
+    for (std::size_t index = 0; index < left.mature_terminals.size(); ++index) {
+        const auto& left_terminal = left.mature_terminals[index];
+        const auto& right_terminal = right.mature_terminals[index];
+        CHECK(left_terminal.module_id == right_terminal.module_id);
+        CHECK(left_terminal.terminal_node == right_terminal.terminal_node);
+        check_vec3_equal(left_terminal.position, right_terminal.position);
+        check_vec3_equal(left_terminal.tangent, right_terminal.tangent);
+        CHECK(left_terminal.host_radius == right_terminal.host_radius);
+        CHECK(left_terminal.vigor == right_terminal.vigor);
+        CHECK(left_terminal.axis_role == right_terminal.axis_role);
+        CHECK(left_terminal.child_module_id == right_terminal.child_module_id);
+    }
+    for (std::size_t index = 0; index < left.attachment_events.size(); ++index) {
+        const auto& left_event = left.attachment_events[index];
+        const auto& right_event = right.attachment_events[index];
+        CHECK(left_event.child_module_id == right_event.child_module_id);
+        CHECK(left_event.parent_module_id == right_event.parent_module_id);
+        CHECK(left_event.parent_terminal_node == right_event.parent_terminal_node);
+        CHECK(left_event.prototype_id == right_event.prototype_id);
+    }
+}
+
+void check_recursive_light_and_vigor_conservation(const toi::growth::PlantSnapshot& snapshot)
+{
+    for (std::size_t module_index = 0; module_index < snapshot.modules.size(); ++module_index) {
+        const auto& parent = snapshot.modules[module_index];
+        CHECK(parent.id == module_index);
+        float accumulated_light = parent.direct_light_exposure;
+        float distributed_vigor = 0.0F;
+        std::size_t child_count = 0;
+        for (const auto& child : snapshot.modules) {
+            if (child.parent_module_id == parent.id) {
+                CHECK(child.id > parent.id);
+                accumulated_light += child.accumulated_light;
+                distributed_vigor += child.vigor;
+                ++child_count;
+            }
+        }
+        CHECK(parent.accumulated_light == Catch::Approx(accumulated_light));
+        if (child_count > 0) {
+            CHECK(parent.vigor == Catch::Approx(distributed_vigor));
+        }
+    }
 }
 
 } // namespace
@@ -217,6 +394,98 @@ TEST_CASE("same-step siblings orient from main terminal to least aligned lateral
     CHECK(snapshot.attachment_events[2].parent_terminal_node == 3);
 }
 
+TEST_CASE("descendants attach in parent order with one cross-parent orientation batch")
+{
+    using namespace toi::growth;
+    auto simulation = PlantSimulation::create(
+        make_repeated_attachment_library(), make_repeated_attachment_plant_type(), 7);
+    REQUIRE(simulation);
+
+    REQUIRE(simulation->step(100'000.0F));
+    auto first_generation = simulation->snapshot();
+    REQUIRE(first_generation.modules.size() == 3);
+    REQUIRE(first_generation.attachment_events.size() == 2);
+    CHECK(first_generation.attachment_events[0].child_module_id == 1);
+    CHECK(first_generation.attachment_events[1].child_module_id == 2);
+    CHECK(first_generation.attachment_events[0].parent_module_id == 0);
+    CHECK(first_generation.attachment_events[1].parent_module_id == 0);
+
+    REQUIRE(simulation->step(100'000.0F));
+    auto second_generation = simulation->snapshot();
+    REQUIRE(second_generation.modules.size() == 5);
+    REQUIRE(second_generation.attachment_events.size() == 2);
+    CHECK(second_generation.attachment_events[0].child_module_id == 3);
+    CHECK(second_generation.attachment_events[0].parent_module_id == 1);
+    CHECK(second_generation.attachment_events[0].parent_terminal_node == 1);
+    CHECK(second_generation.attachment_events[0].prototype_id == 8);
+    CHECK(second_generation.attachment_events[1].child_module_id == 4);
+    CHECK(second_generation.attachment_events[1].parent_module_id == 2);
+    CHECK(second_generation.attachment_events[1].parent_terminal_node == 1);
+    CHECK(second_generation.attachment_events[1].prototype_id == 6);
+    CHECK(module_by_id(second_generation, 3).parent_module_id == 1);
+    CHECK(module_by_id(second_generation, 3).parent_terminal_node == 1);
+    CHECK(module_by_id(second_generation, 4).parent_module_id == 2);
+    CHECK(module_by_id(second_generation, 4).parent_terminal_node == 1);
+    CHECK(module_by_id(second_generation, 3).physiological_age == Catch::Approx(0.0F));
+    CHECK(module_by_id(second_generation, 4).physiological_age == Catch::Approx(0.0F));
+    CHECK(module_by_id(second_generation, 3).vigor == Catch::Approx(0.0F));
+    CHECK(module_by_id(second_generation, 4).vigor == Catch::Approx(0.0F));
+    CHECK(direction_alignment(module_by_id(second_generation, 3).transform.z_axis,
+                              only_terminal(second_generation, 1).tangent) > 0.999F);
+    CHECK(direction_alignment(module_by_id(second_generation, 4).transform.z_axis,
+                              only_terminal(second_generation, 2).tangent) < 0.99F);
+
+    REQUIRE(simulation->step(100'000.0F));
+    auto third_generation = simulation->snapshot();
+    REQUIRE(third_generation.modules.size() == 7);
+    REQUIRE(third_generation.attachment_events.size() == 2);
+    CHECK(third_generation.attachment_events[0].child_module_id == 5);
+    CHECK(third_generation.attachment_events[0].parent_module_id == 3);
+    CHECK(third_generation.attachment_events[0].parent_terminal_node == 1);
+    CHECK(third_generation.attachment_events[1].child_module_id == 6);
+    CHECK(third_generation.attachment_events[1].parent_module_id == 4);
+    CHECK(third_generation.attachment_events[1].parent_terminal_node == 1);
+
+    REQUIRE(simulation->step(1.0F));
+    const auto activated = simulation->snapshot();
+    CHECK(activated.modules.size() == 7);
+    CHECK(activated.attachment_events.empty());
+}
+
+TEST_CASE("terminal attachment eligibility is limited to its parent's maturity-crossing step")
+{
+    using namespace toi::growth;
+    auto plant_type = make_plant_type();
+    plant_type.root_max_vigor = 1.0F;
+    plant_type.apical_control = 0.99F;
+    plant_type.mature_apical_control = 0.5F;
+    plant_type.flowering_age = 1.0F;
+    auto simulation = PlantSimulation::create(make_library(), plant_type, 7);
+    REQUIRE(simulation);
+
+    REQUIRE(simulation->step(10'000.0F));
+    const auto crossed = simulation->snapshot();
+    REQUIRE(crossed.modules.size() == 2);
+    REQUIRE(crossed.attachment_events.size() == 1);
+    const auto unattached = std::ranges::find_if(crossed.mature_terminals, [](const auto& terminal) {
+        return terminal.module_id == 0 && !terminal.child_module_id;
+    });
+    REQUIRE(unattached != crossed.mature_terminals.end());
+    CHECK(unattached->vigor > kMinimumModuleVigor);
+    const std::size_t unattached_node = unattached->terminal_node;
+
+    REQUIRE(simulation->step(1.0F));
+    const auto later = simulation->snapshot();
+    CHECK(later.modules.size() == 2);
+    CHECK(later.attachment_events.empty());
+    const auto still_unattached = std::ranges::find_if(later.mature_terminals, [&](const auto& terminal) {
+        return terminal.module_id == 0 && terminal.terminal_node == unattached_node;
+    });
+    REQUIRE(still_unattached != later.mature_terminals.end());
+    CHECK_FALSE(still_unattached->child_module_id);
+    CHECK(still_unattached->vigor > kMinimumModuleVigor);
+}
+
 TEST_CASE("continuous pipe crosses parent and child module attachment")
 {
     using namespace toi::growth;
@@ -307,26 +576,26 @@ TEST_CASE("maximum module vigor bounds the growth rate, not the propagated flux"
     CHECK(vigor_scaled_determinacy(0.4F, 0.5F) == Catch::Approx(0.2F));
 }
 
-TEST_CASE("plant development remains deterministic without grandchildren")
+TEST_CASE("repeated plant development conserves light and vigor and remains deterministic")
 {
     using namespace toi::growth;
-    auto first = PlantSimulation::create(make_library(), make_plant_type(), 7);
-    auto second = PlantSimulation::create(make_library(), make_plant_type(), 7);
+    auto first = PlantSimulation::create(
+        make_repeated_attachment_library(), make_repeated_attachment_plant_type(), 7);
+    auto second = PlantSimulation::create(
+        make_repeated_attachment_library(), make_repeated_attachment_plant_type(), 7);
     REQUIRE(first);
     REQUIRE(second);
-    for (const float timestep : {10'000.0F, 100.0F, 10'000.0F}) {
+
+    for (const float timestep : {100'000.0F, 100'000.0F, 100'000.0F, 1.0F}) {
         REQUIRE(first->step(timestep));
         REQUIRE(second->step(timestep));
+        check_snapshots_equal(first->snapshot(), second->snapshot());
     }
-    const auto left = first->snapshot();
-    const auto right = second->snapshot();
-    REQUIRE(left.modules.size() == 3);
-    REQUIRE(left.modules.size() == right.modules.size());
-    CHECK(module_by_id(left, 1).physiological_age == Catch::Approx(module_by_id(right, 1).physiological_age));
-    CHECK(left.mature_terminals.size() >= 6);
-    for (const auto& terminal : left.mature_terminals) {
-        if (terminal.module_id != 0) CHECK_FALSE(terminal.child_module_id);
-    }
+
+    const auto snapshot = first->snapshot();
+    REQUIRE(snapshot.modules.size() == 7);
+    CHECK(snapshot.attachment_events.empty());
+    check_recursive_light_and_vigor_conservation(snapshot);
 }
 
 TEST_CASE("plant simulation rejects invalid inputs without mutation")
