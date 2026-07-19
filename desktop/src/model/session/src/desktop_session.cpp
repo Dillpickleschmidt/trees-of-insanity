@@ -509,12 +509,19 @@ Result<void> DesktopSession::set_active_workspace(std::string_view workspace)
 
 Result<PlantAdvanceResult> DesktopSession::advance_plant()
 {
-    const float remaining_years = project_.plant_workspace.target_age - plant_simulation_.snapshot().plant_age;
+    const float plant_age = plant_simulation_.snapshot().plant_age;
+    const float remaining_years = project_.plant_workspace.target_age - plant_age;
     if (remaining_years <= 0.0F) {
         return PlantAdvanceResult{.reached_target = true};
     }
 
-    auto stepped = plant_simulation_.step(std::min(project_.plant_workspace.step_size, remaining_years));
+    const float step_size = std::min(project_.plant_workspace.step_size, remaining_years);
+    if (plant_age + step_size == plant_age) {
+        return std::unexpected(make_error(
+            ApplicationError::Code::InvalidCommand,
+            "Plant step size is too small to advance the current plant age"));
+    }
+    auto stepped = plant_simulation_.step(step_size);
     if (!stepped) {
         return std::unexpected(from_growth_error(stepped.error()));
     }

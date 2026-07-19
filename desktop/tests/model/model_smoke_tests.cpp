@@ -456,6 +456,24 @@ TEST_CASE("Plant run advances by step size and lands exactly on its target age")
     CHECK(session->plant_state()->plant_age == Catch::Approx(0.0000005F));
 }
 
+TEST_CASE("Plant run rejects a step size too small to advance represented age")
+{
+    auto session = toi::model::DesktopSession::create(
+        session_options(fresh_project_path("plant-run-float-progress")));
+    REQUIRE(session);
+    REQUIRE(session->update_plant_run_settings(16'777'216.0F, 16'777'216.0F));
+    auto large_step = session->advance_plant();
+    REQUIRE(large_step);
+    REQUIRE(large_step->reached_target);
+
+    REQUIRE(session->update_plant_run_settings(16'777'220.0F, 1.0F));
+    auto stalled = session->advance_plant();
+    REQUIRE_FALSE(stalled);
+    CHECK(stalled.error().code == toi::model::ApplicationError::Code::InvalidCommand);
+    CHECK(stalled.error().message == "Plant step size is too small to advance the current plant age");
+    CHECK(session->plant_state()->plant_age == Catch::Approx(16'777'216.0F));
+}
+
 TEST_CASE("Plant maturity crossing exposes one attached generation")
 {
     auto session = toi::model::DesktopSession::create(
