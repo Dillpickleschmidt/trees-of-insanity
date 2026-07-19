@@ -10,6 +10,7 @@
 #include <vulkan/vulkan.h>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -72,6 +73,7 @@ public:
     [[nodiscard]] std::optional<render::OrbitView> apply_camera_input(std::string_view kind, float dx, float dy,
                                                                       int viewport_height);
     void set_guide_options(bool guides_visible, bool world_origin_axes_visible);
+    void set_max_frames_per_second(float frames_per_second);
     void set_frame_ready_callback(std::function<void()> callback);
     void set_diagnostic_labels_callback(
         std::function<void(std::vector<ProjectedPlantDiagnosticLabel>)> callback);
@@ -125,6 +127,9 @@ private:
     int requested_height_ = 0;
     bool guides_visible_ = true;
     bool world_origin_axes_visible_ = true;
+    std::chrono::milliseconds minimum_scene_frame_interval_{34};
+    std::chrono::steady_clock::time_point next_scene_frame_time_{};
+    std::chrono::steady_clock::time_point next_overlay_frame_time_{};
     std::optional<render::GrowthPreviewCamera> base_camera_;
     std::optional<render::OrbitView> orbit_;
     int ready_slot_ = -1;

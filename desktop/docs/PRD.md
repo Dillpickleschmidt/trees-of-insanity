@@ -13,7 +13,7 @@ One fresh Project stores project-wide authored content plus complete typed state
 - GPU-only asynchronous CUDA→Vulkan frame path; no CPU image readback.
 - Interactive camera changes coalesce and never block the UI thread.
 - Module and Plant keep independent controls, selections, cameras, environments, and viewport diagnostics.
-- Plant simulation steps atomically and independently from render cadence; timestep changes only while paused.
+- Plant runs advance through atomic steps as quickly as possible to an absolute target age, support stopping between steps, and coalesce previews to the configurable Viewport FPS limit.
 - Plant diagnostics provide independent labels, direct-light spheres, accumulated-light flow, vigor flow, and mature-terminal toggles.
 - Ecosystem cannot activate until implemented.
 - Loaded/empty UI states remain distinct and controls are keyboard accessible.

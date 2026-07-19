@@ -12,7 +12,13 @@ import { ViewportControls } from "~/components/ViewportControls";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "~/components/ui/select";
 import { Slider } from "~/components/ui/slider";
 import { Viewport } from "~/components/Viewport";
-import { appClient, onPlantDiagnosticLabels, onViewportStatus, reportUiEvent } from "~/shell";
+import {
+	appClient,
+	onPlantDiagnosticLabels,
+	onPlantRunProgress,
+	onViewportStatus,
+	reportUiEvent,
+} from "~/shell";
 import type { ProjectedPlantDiagnosticLabel, ViewportStatus } from "./shared/desktopBridge";
 import type {
 	PlantDiagnostics,
@@ -26,6 +32,7 @@ import {
 	colorThemes,
 	type PlantTypePresetKey,
 	plantTypePresetLabel,
+	storedNumber,
 	storedTheme,
 	type UiTheme,
 	uiThemes,
@@ -66,6 +73,10 @@ export function App() {
 	const [dragSliderValue, setDragSliderValue] = createSignal<number | null>(null);
 	const [nativeViewportStatus, setNativeViewportStatus] = createSignal(initialViewportStatus);
 	const [plantLabels, setPlantLabels] = createSignal<ProjectedPlantDiagnosticLabel[]>([]);
+	const [plantRunning, setPlantRunning] = createSignal(false);
+	const [viewportFramesPerSecond, setViewportFramesPerSecondValue] = createSignal(
+		storedNumber("toi.viewportFramesPerSecond", 30, 1, 240),
+	);
 	const [stateResource, { mutate: mutateState, refetch: refetchState }] = createResource(async () => {
 		const current = await appClient.command("app.get_state");
 		reportUiEvent("app-state-loaded", {
@@ -86,7 +97,7 @@ export function App() {
 		() => appClient.command("module.get_growth_snapshot_summary"),
 	);
 	const summary = () => (summaryResource.state === "errored" ? undefined : summaryResource());
-	const [plantStateResource, { refetch: refetchPlantState }] = createResource(
+	const [plantStateResource, { mutate: mutatePlantState, refetch: refetchPlantState }] = createResource(
 		() => (state()?.active_workspace === "plant" ? "plant" : undefined),
 		() => appClient.command("plant.get_state"),
 	);
@@ -97,6 +108,7 @@ export function App() {
 	const viewport = () => (viewportResource.state === "errored" ? undefined : viewportResource());
 	let disposeViewportStatus = () => {};
 	let disposePlantLabels = () => {};
+	let disposePlantRunProgress = () => {};
 	let latestAgeGeneration = 0;
 	let pendingAgeUpdate: { age: number; generation: number } | null = null;
 	let ageRequestInFlight = false;
@@ -202,9 +214,41 @@ export function App() {
 		void runViewportCommand(patch);
 	}
 
-	function setPlantTimestep(timestep: number) {
-		if (!Number.isFinite(timestep) || timestep <= 0) return;
-		void runPlantCommand(() => appClient.command("plant.set_timestep", { timestep }));
+	function setPlantRunSettings(patch: { target_age?: number; step_size?: number }) {
+		if (patch.target_age !== undefined && (!Number.isFinite(patch.target_age) || patch.target_age < 0)) return;
+		if (patch.step_size !== undefined && (!Number.isFinite(patch.step_size) || patch.step_size <= 0)) return;
+		void runPlantCommand(() => appClient.command("plant.set_run_settings", patch));
+	}
+
+	async function startPlantRun() {
+		setPlantPending(true);
+		setError(null);
+		setPlantRunning(true);
+		try {
+			await appClient.command("plant.run");
+		} catch (caught) {
+			setPlantRunning(false);
+			handleCommandError(caught);
+		} finally {
+			setPlantPending(false);
+		}
+	}
+
+	async function stopPlantRun() {
+		setPlantPending(true);
+		setError(null);
+		try {
+			await appClient.command("plant.stop");
+		} catch (caught) {
+			handleCommandError(caught);
+		} finally {
+			setPlantPending(false);
+		}
+	}
+
+	function updateViewportFramesPerSecond(framesPerSecond: number) {
+		if (!Number.isFinite(framesPerSecond) || framesPerSecond < 1 || framesPerSecond > 240) return;
+		setViewportFramesPerSecondValue(framesPerSecond);
 	}
 
 	function setPlantDiagnostics(patch: Partial<PlantDiagnostics>) {
@@ -311,9 +355,17 @@ export function App() {
 		window.localStorage.setItem("toi.colorTheme", colorTheme());
 	});
 
+	createEffect(() => {
+		const framesPerSecond = viewportFramesPerSecond();
+		window.localStorage.setItem("toi.viewportFramesPerSecond", String(framesPerSecond));
+		void appClient.command("viewport.set_frames_per_second", { frames_per_second: framesPerSecond })
+			.catch(handleCommandError);
+	});
+
 	onCleanup(() => {
 		disposeViewportStatus();
 		disposePlantLabels();
+		disposePlantRunProgress();
 		if (ageSubmitTimer !== undefined) {
 			window.clearTimeout(ageSubmitTimer);
 		}
@@ -331,6 +383,15 @@ export function App() {
 		);
 		disposeViewportStatus = onViewportStatus(setNativeViewportStatus);
 		disposePlantLabels = onPlantDiagnosticLabels(setPlantLabels);
+		disposePlantRunProgress = onPlantRunProgress((progress) => {
+			setPlantRunning(progress.running);
+			if (progress.state !== undefined) {
+				mutatePlantState(progress.state);
+			}
+			if (progress.error !== "") {
+				setError(progress.error);
+			}
+		});
 		reportUiEvent("app-mounted");
 	});
 
@@ -359,7 +420,7 @@ export function App() {
 					<TopBar
 						status={errorMessage() ? "Command failed" : "Connected"}
 						tone={errorMessage() ? "error" : "live"}
-						busy={workspacePending() || stateResource.loading}
+						busy={workspacePending() || stateResource.loading || plantRunning()}
 						previews={state()!.workspace_previews}
 						activeWorkspace={state()!.active_workspace}
 						onSelectWorkspace={(workspace) => void selectWorkspace(workspace)}
@@ -384,11 +445,13 @@ export function App() {
 								<PlantPanel
 									state={plantState()}
 									busy={plantBusy()}
+									running={plantRunning()}
 									onReset={() =>
 										void runPlantCommand(() => appClient.command("plant.reset"))
 									}
-									onStep={() => void runPlantCommand(() => appClient.command("plant.step"))}
-									onTimestep={setPlantTimestep}
+									onRun={() => void startPlantRun()}
+									onStop={() => void stopPlantRun()}
+									onRunSettings={setPlantRunSettings}
 									onDiagnostics={setPlantDiagnostics}
 								/>
 							}
@@ -592,7 +655,9 @@ export function App() {
 					view={viewport()}
 					status={nativeViewportStatus()}
 					busy={viewportBusy()}
+					framesPerSecond={viewportFramesPerSecond()}
 					onChange={setViewportPreference}
+					onFramesPerSecond={updateViewportFramesPerSecond}
 				/>
 			</div>
 		</div>

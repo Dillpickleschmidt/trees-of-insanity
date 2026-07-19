@@ -61,3 +61,8 @@ export function storedTheme<T extends string>(key: string, fallback: T, allowed:
 	const value = window.localStorage.getItem(key) as T | null;
 	return value && allowed.includes(value) ? value : fallback;
 }
+
+export function storedNumber(key: string, fallback: number, minimum: number, maximum: number) {
+	const value = Number(window.localStorage.getItem(key));
+	return Number.isFinite(value) && value >= minimum && value <= maximum ? value : fallback;
+}

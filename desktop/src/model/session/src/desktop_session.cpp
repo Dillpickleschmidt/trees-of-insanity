@@ -435,8 +435,8 @@ Result<PlantStateView> DesktopSession::plant_state() const
         .plant_age = snapshot.plant_age,
         .root_physiological_age = root.physiological_age,
         .root_fully_grown_age = root.fully_grown_age,
-        .timestep = project_.plant_workspace.simulation_timestep,
-        .paused = true,
+        .target_age = project_.plant_workspace.target_age,
+        .step_size = project_.plant_workspace.step_size,
         .root_prototype_id = project_.plant_workspace.root_prototype_id,
         .plant_type_id = project_.plant_workspace.plant_type_id,
         .module_diagnostic_labels_visible = diagnostics.module_diagnostic_labels_visible,
@@ -507,23 +507,37 @@ Result<void> DesktopSession::set_active_workspace(std::string_view workspace)
     return commit_project(std::move(updated_project));
 }
 
-Result<void> DesktopSession::plant_step()
+Result<PlantAdvanceResult> DesktopSession::advance_plant()
 {
-    auto stepped_simulation = plant_simulation_;
-    auto stepped = stepped_simulation.step(project_.plant_workspace.simulation_timestep);
+    const float plant_age = plant_simulation_.snapshot().plant_age;
+    const float remaining_years = project_.plant_workspace.target_age - plant_age;
+    if (remaining_years <= 0.0F) {
+        return PlantAdvanceResult{.reached_target = true};
+    }
+
+    const float step_size = std::min(project_.plant_workspace.step_size, remaining_years);
+    if (plant_age + step_size == plant_age) {
+        return std::unexpected(make_error(
+            ApplicationError::Code::InvalidCommand,
+            "Plant step size is too small to advance the current plant age"));
+    }
+    auto stepped = plant_simulation_.step(step_size);
     if (!stepped) {
         return std::unexpected(from_growth_error(stepped.error()));
     }
 
-    auto updated_project = project_;
-    updated_project.plant_workspace.viewport.orbit.target.z =
-        plant_vertical_midpoint(stepped_simulation.snapshot());
-    auto committed = commit_project(std::move(updated_project));
-    if (!committed) {
-        return committed;
+    plant_run_camera_target_z_ = plant_vertical_midpoint(plant_simulation_.snapshot());
+    return PlantAdvanceResult{
+        .reached_target = plant_simulation_.snapshot().plant_age >= project_.plant_workspace.target_age,
+    };
+}
+
+Result<void> DesktopSession::finish_plant_run()
+{
+    if (!plant_run_camera_target_z_) {
+        return {};
     }
-    plant_simulation_ = std::move(stepped_simulation);
-    return {};
+    return commit_project(project_);
 }
 
 Result<void> DesktopSession::plant_reset()
@@ -533,18 +547,24 @@ Result<void> DesktopSession::plant_reset()
         return std::unexpected(simulation.error());
     }
     plant_simulation_ = std::move(*simulation);
+    plant_run_camera_target_z_.reset();
     plant_camera_needs_frame_ = true;
     return {};
 }
 
-Result<void> DesktopSession::set_plant_timestep(float timestep)
+Result<void> DesktopSession::update_plant_run_settings(float target_age, float step_size)
 {
-    if (!std::isfinite(timestep) || timestep <= 0.0F) {
+    if (!std::isfinite(target_age) || target_age < 0.0F) {
         return std::unexpected(
-            make_error(ApplicationError::Code::InvalidCommand, "Plant timestep must be finite and positive"));
+            make_error(ApplicationError::Code::InvalidCommand, "Plant target age must be finite and non-negative"));
+    }
+    if (!std::isfinite(step_size) || step_size <= 0.0F) {
+        return std::unexpected(
+            make_error(ApplicationError::Code::InvalidCommand, "Plant step size must be finite and positive"));
     }
     auto updated_project = project_;
-    updated_project.plant_workspace.simulation_timestep = timestep;
+    updated_project.plant_workspace.target_age = target_age;
+    updated_project.plant_workspace.step_size = step_size;
     return commit_project(std::move(updated_project));
 }
 
@@ -689,6 +709,7 @@ Result<void> DesktopSession::commit_plant_type_change(project::Project updated_p
     }
     if (updated_simulation) {
         plant_simulation_ = std::move(*updated_simulation);
+        plant_run_camera_target_z_.reset();
         plant_camera_needs_frame_ = true;
     }
     return {};
@@ -707,7 +728,11 @@ ViewportAppearance DesktopSession::viewport_preferences() const
 
 project::OrbitState DesktopSession::active_orbit() const
 {
-    return active_viewport(project_).orbit;
+    auto orbit = active_viewport(project_).orbit;
+    if (project_.active_workspace == project::Workspace::Plant && plant_run_camera_target_z_) {
+        orbit.target.z = *plant_run_camera_target_z_;
+    }
+    return orbit;
 }
 
 bool DesktopSession::active_camera_needs_frame() const
@@ -764,11 +789,15 @@ Result<void> DesktopSession::update_active_orbit(project::OrbitState orbit)
 
 Result<void> DesktopSession::commit_project(project::Project project)
 {
+    if (plant_run_camera_target_z_) {
+        project.plant_workspace.viewport.orbit.target.z = *plant_run_camera_target_z_;
+    }
     auto saved = project::save_project(options_.project_path, project);
     if (!saved) {
         return std::unexpected(from_project_error(saved.error()));
     }
     project_ = std::move(project);
+    plant_run_camera_target_z_.reset();
     return {};
 }
 

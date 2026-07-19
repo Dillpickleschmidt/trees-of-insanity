@@ -57,8 +57,8 @@ export type PlantState = {
 	plant_age: number;
 	root_physiological_age: number;
 	root_fully_grown_age: number;
-	timestep: number;
-	paused: boolean;
+	target_age: number;
+	step_size: number;
 	root_prototype_id: number;
 	plant_type_id: string;
 	module_diagnostic_labels_visible: boolean;
@@ -115,12 +115,17 @@ export type CommandMap = {
 	"module.get_growth_snapshot_summary": { params: NoParams; result: GrowthSnapshotSummary };
 	"plant.get_state": { params: NoParams; result: PlantState };
 	"plant.reset": { params: NoParams; result: NoParams };
-	"plant.step": { params: NoParams; result: NoParams };
-	"plant.set_timestep": { params: { timestep: number }; result: NoParams };
+	"plant.run": { params: NoParams; result: NoParams };
+	"plant.stop": { params: NoParams; result: NoParams };
+	"plant.set_run_settings": {
+		params: { target_age?: number; step_size?: number };
+		result: NoParams;
+	};
 	"plant.set_diagnostics": { params: Partial<PlantDiagnostics>; result: NoParams };
 	"workspace.set": { params: { workspace: Workspace }; result: NoParams };
 	"plant_types.create": { params: { name: string; preset_key?: PlantTypePresetKey }; result: PlantTypeSummary };
 	"viewport.get_preferences": { params: NoParams; result: ViewportPreferencesView };
+	"viewport.set_frames_per_second": { params: { frames_per_second: number }; result: NoParams };
 	"viewport.set_preferences": { params: Partial<ViewportPreferences>; result: NoParams };
 };
 

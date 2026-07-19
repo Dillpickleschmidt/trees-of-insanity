@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <exception>
 #include <string>
 #include <utility>
@@ -17,6 +18,8 @@ using nlohmann::json;
 struct ActionResult {
     json response;
     bool preview_changed = false;
+    PlantRunControl plant_run_control = PlantRunControl::None;
+    std::optional<double> viewport_frames_per_second;
 };
 
 [[nodiscard]] ActionResult execute_action(DesktopSession& session, const json& request);
@@ -28,7 +31,10 @@ ActionDispatchResult dispatch_action(DesktopSession& session, std::string_view r
 {
     try {
         auto result = execute_action(session, json::parse(request));
-        return {.response = result.response.dump(), .preview_changed = result.preview_changed};
+        return {.response = result.response.dump(),
+                .preview_changed = result.preview_changed,
+                .plant_run_control = result.plant_run_control,
+                .viewport_frames_per_second = result.viewport_frames_per_second};
     } catch (const std::exception& error) {
         return {.response = response_error(error.what()).response.dump(), .preview_changed = false};
     }
@@ -139,8 +145,8 @@ namespace {
         {"plant_age", state.plant_age},
         {"root_physiological_age", state.root_physiological_age},
         {"root_fully_grown_age", state.root_fully_grown_age},
-        {"timestep", state.timestep},
-        {"paused", state.paused},
+        {"target_age", state.target_age},
+        {"step_size", state.step_size},
         {"root_prototype_id", state.root_prototype_id},
         {"plant_type_id", state.plant_type_id},
         {"module_diagnostic_labels_visible", state.module_diagnostic_labels_visible},
@@ -212,12 +218,21 @@ namespace {
         auto result = session.plant_reset();
         return result ? response_ok(json::object(), true) : response_error(result.error());
     }
-    if (method == "plant.step") {
-        auto result = session.plant_step();
-        return result ? response_ok(json::object(), true) : response_error(result.error());
+    if (method == "plant.run") {
+        return {.response = json{{"ok", true}, {"result", json::object()}},
+                .plant_run_control = PlantRunControl::Start};
     }
-    if (method == "plant.set_timestep") {
-        auto result = session.set_plant_timestep(params.at("timestep").get<float>());
+    if (method == "plant.stop") {
+        return {.response = json{{"ok", true}, {"result", json::object()}},
+                .plant_run_control = PlantRunControl::Stop};
+    }
+    if (method == "plant.set_run_settings") {
+        auto state = session.plant_state();
+        if (!state) {
+            return response_error(state.error());
+        }
+        auto result = session.update_plant_run_settings(
+            params.value("target_age", state->target_age), params.value("step_size", state->step_size));
         return result ? response_ok(json::object()) : response_error(result.error());
     }
     if (method == "plant.set_diagnostics") {
@@ -266,6 +281,14 @@ namespace {
             {"preferences", to_json(session.viewport_preferences())},
             {"hdri_environments", environments},
         });
+    }
+    if (method == "viewport.set_frames_per_second") {
+        const double frames_per_second = params.at("frames_per_second").get<double>();
+        if (!std::isfinite(frames_per_second) || frames_per_second < 1.0 || frames_per_second > 240.0) {
+            return response_error("frames_per_second must be between 1 and 240");
+        }
+        return {.response = json{{"ok", true}, {"result", json::object()}},
+                .viewport_frames_per_second = frames_per_second};
     }
     if (method == "viewport.set_preferences") {
         auto preferences = session.viewport_preferences();

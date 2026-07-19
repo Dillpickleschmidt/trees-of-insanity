@@ -1,4 +1,4 @@
-import { RotateCcw, StepForward } from "lucide-solid";
+import { Play, RotateCcw, Square } from "lucide-solid";
 import { Show } from "solid-js";
 
 import { Readout, Section } from "~/components/panelPrimitives";
@@ -9,12 +9,18 @@ function formatNumber(value: number, digits = 3) {
 	return Number.isFinite(value) ? value.toFixed(digits) : "—";
 }
 
+function formatInputNumber(value: number) {
+	return Number.isFinite(value) ? String(Number(value.toPrecision(8))) : "";
+}
+
 export function PlantPanel(props: {
 	state: PlantState | undefined;
 	busy: boolean;
+	running: boolean;
 	onReset: () => void;
-	onStep: () => void;
-	onTimestep: (timestep: number) => void;
+	onRun: () => void;
+	onStop: () => void;
+	onRunSettings: (patch: { target_age?: number; step_size?: number }) => void;
 	onDiagnostics: (patch: Partial<PlantDiagnostics>) => void;
 }) {
 	return (
@@ -26,22 +32,47 @@ export function PlantPanel(props: {
 				<div class="space-y-6">
 					<Section eyebrow="Simulation">
 						<div class="grid grid-cols-2 gap-2">
-							<button type="button" disabled={props.busy} onClick={props.onReset}
+							<button type="button" disabled={props.busy || props.running} onClick={props.onReset}
 								class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium transition-colors hover:bg-accent disabled:opacity-40">
 								<RotateCcw class="size-4" /> Reset
 							</button>
-							<button type="button" disabled={props.busy} onClick={props.onStep}
-								class="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40">
-								<StepForward class="size-4" /> Next step
+							<button
+								type="button"
+								disabled={props.busy}
+								onClick={() => (props.running ? props.onStop() : props.onRun())}
+								class="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+							>
+								<Show when={props.running} fallback={<><Play class="size-4" /> Run</>}>
+									<Square class="size-3.5" /> Stop
+								</Show>
 							</button>
 						</div>
-						<label class="mt-4 block text-[12px] text-muted-foreground">
-							Timestep (years)
-							<input type="number" min="0.001" step="0.1" value={state().timestep}
-								disabled={props.busy || !state().paused}
-								onChange={(event) => props.onTimestep(event.currentTarget.valueAsNumber)}
-								class="mt-1.5 h-9 w-full rounded-md border border-border bg-background px-3 font-mono text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40" />
-						</label>
+						<div class="mt-4 grid grid-cols-2 gap-2">
+							<label class="block text-[12px] text-muted-foreground">
+								Target age
+								<input
+									type="number"
+									min="0"
+									step="1"
+									value={formatInputNumber(state().target_age)}
+									disabled={props.busy || props.running}
+									onChange={(event) => props.onRunSettings({ target_age: event.currentTarget.valueAsNumber })}
+									class="mt-1.5 h-9 w-full rounded-md border border-border bg-background px-3 font-mono text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
+								/>
+							</label>
+							<label class="block text-[12px] text-muted-foreground">
+								Step size (years)
+								<input
+									type="number"
+									min="0.001"
+									step="0.1"
+									value={formatInputNumber(state().step_size)}
+									disabled={props.busy || props.running}
+									onChange={(event) => props.onRunSettings({ step_size: event.currentTarget.valueAsNumber })}
+									class="mt-1.5 h-9 w-full rounded-md border border-border bg-background px-3 font-mono text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
+								/>
+							</label>
+						</div>
 					</Section>
 
 					<Section eyebrow="Plant state">
@@ -55,20 +86,20 @@ export function PlantPanel(props: {
 
 					<Section eyebrow="Diagnostics">
 						<div class="space-y-4">
-							<Switch checked={state().module_diagnostic_labels_visible} disabled={props.busy}
+							<Switch checked={state().module_diagnostic_labels_visible} disabled={props.busy || props.running}
 								onChange={(value) => props.onDiagnostics({ module_diagnostic_labels_visible: value })}
 								class="flex items-center justify-between gap-4">
 								<span class="text-[13px]">Module diagnostic labels</span>
 								<SwitchControl><SwitchThumb /></SwitchControl>
 							</Switch>
-							<Switch checked={state().direct_light_bounding_spheres_visible} disabled={props.busy}
+							<Switch checked={state().direct_light_bounding_spheres_visible} disabled={props.busy || props.running}
 								onChange={(value) => props.onDiagnostics({ direct_light_bounding_spheres_visible: value })}
 								class="flex items-center justify-between gap-4">
 								<span class="text-[13px]">Direct-light bounding spheres</span>
 								<SwitchControl><SwitchThumb /></SwitchControl>
 							</Switch>
 							{/* Both diagnostics tint the same module surface, so only one can show. */}
-							<Switch checked={state().module_accumulated_light_visible} disabled={props.busy}
+							<Switch checked={state().module_accumulated_light_visible} disabled={props.busy || props.running}
 								onChange={(value) =>
 									props.onDiagnostics({
 										module_accumulated_light_visible: value,
@@ -79,7 +110,7 @@ export function PlantPanel(props: {
 								<span class="text-[13px]">Module accumulated light</span>
 								<SwitchControl><SwitchThumb /></SwitchControl>
 							</Switch>
-							<Switch checked={state().module_vigor_visible} disabled={props.busy}
+							<Switch checked={state().module_vigor_visible} disabled={props.busy || props.running}
 								onChange={(value) =>
 									props.onDiagnostics({
 										module_vigor_visible: value,
@@ -90,7 +121,7 @@ export function PlantPanel(props: {
 								<span class="text-[13px]">Module vigor</span>
 								<SwitchControl><SwitchThumb /></SwitchControl>
 							</Switch>
-							<Switch checked={state().mature_terminal_markers_visible} disabled={props.busy}
+							<Switch checked={state().mature_terminal_markers_visible} disabled={props.busy || props.running}
 								onChange={(value) => props.onDiagnostics({ mature_terminal_markers_visible: value })}
 								class="flex items-center justify-between gap-4">
 								<span class="text-[13px]">Mature-terminal markers</span>

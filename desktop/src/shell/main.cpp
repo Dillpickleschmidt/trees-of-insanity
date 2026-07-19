@@ -237,9 +237,33 @@ int main(int argc, char* argv[])
         previewRenderer->set_guide_options(initialEnvironment.guides_visible,
                                            initialEnvironment.world_origin_axes_visible);
         viewportItem->setRenderer(previewRenderer.get());
-        previewRenderer->set_frame_ready_callback([viewportItem] {
-            QTimer::singleShot(33, viewportItem, [viewportItem] { viewportItem->update(); });
+        QTimer viewportFrameTimer;
+        viewportFrameTimer.setInterval(34);
+        viewportFrameTimer.setSingleShot(true);
+        viewportFrameTimer.setTimerType(Qt::PreciseTimer);
+        QObject::connect(&viewportFrameTimer, &QTimer::timeout, viewportItem,
+                         [viewportItem] { viewportItem->update(); });
+        previewRenderer->set_frame_ready_callback([viewportItem, &viewportFrameTimer] {
+            QMetaObject::invokeMethod(
+                viewportItem,
+                [&viewportFrameTimer] {
+                    if (!viewportFrameTimer.isActive()) {
+                        viewportFrameTimer.start();
+                    }
+                },
+                Qt::QueuedConnection);
         });
+        QObject::connect(bridge.get(), &DesktopBridge::viewportFramesPerSecondChanged, viewportItem,
+                         [renderer = previewRenderer.get(), &viewportFrameTimer](double framesPerSecond) {
+                             const int interval =
+                                 std::max(1, static_cast<int>(std::ceil(1000.0 / framesPerSecond)));
+                             viewportFrameTimer.setInterval(interval);
+                             renderer->set_max_frames_per_second(static_cast<float>(framesPerSecond));
+                         });
+        const double initialViewportFramesPerSecond = bridge->viewportFramesPerSecond();
+        viewportFrameTimer.setInterval(
+            std::max(1, static_cast<int>(std::ceil(1000.0 / initialViewportFramesPerSecond))));
+        previewRenderer->set_max_frames_per_second(static_cast<float>(initialViewportFramesPerSecond));
         previewRenderer->set_diagnostic_labels_callback(
             [bridge = bridge.get()](std::vector<toi::viewport::ProjectedPlantDiagnosticLabel> labels) {
                 nlohmann::json payload = nlohmann::json::array();
@@ -349,6 +373,9 @@ int main(int argc, char* argv[])
         bridge->publishViewportStatus(to_viewport_status_json(
             {.phase = "starting", .message = "Qt Vulkan viewport starting on " + vulkanDevice->name()}));
         exitCode = application.exec();
+#if defined(TOI_ENABLE_OVRTX)
+        previewRenderer->set_frame_ready_callback({});
+#endif
     }
 #if defined(TOI_ENABLE_OVRTX)
     previewRenderer.reset();
