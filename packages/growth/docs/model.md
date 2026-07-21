@@ -1,6 +1,6 @@
 # Growth model and equation library
 
-Reference for the retained Synthetic Silviculture math and its source model in Palubicki et al. 2009. The library develops branch modules and currently simulates a root module with one attached generation.
+Reference for the retained Synthetic Silviculture math and its source model in Palubicki et al. 2009. The library develops branch modules and simulates arbitrary-depth repeated attachment.
 
 ## Module development
 
@@ -103,7 +103,7 @@ The 16 presets retain Synthetic Silviculture Table 4 exactly:
 
 ## Current implementation
 
-`PlantSimulation` owns plant architecture, one attached generation, atomic stepping, continuous attachment-aware pipe/light/vigor traversal, optional current-state conduit diagnostics, and zero-copy plant snapshots. Repeated descendant attachment, shedding, and senescence enter through later milestones.
+`PlantSimulation` owns plant architecture, repeated descendant attachment, atomic stepping, continuous attachment-aware pipe/light/vigor traversal, current-state diagnostics, and zero-copy plant snapshots. Shedding and senescence enter through later milestones.
 
 ## Sources
 

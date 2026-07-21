@@ -49,8 +49,6 @@ Verify the first attached generation before long runs.
 
 Verify deterministic runs, stable IDs, light/vigor conservation, and absence of attach/shed oscillation.
 
-The attachment half is planned in `plans/milestone-5-repeated-attachment.md`.
-
 ## 6. Senescence
 
 Implement and calibrate the paper's linear post-`p_max` root-vigor decline only after healthy growth is trusted.

@@ -237,85 +237,35 @@ Result<void> PlantSimulation::step(float timestep)
         if (!current) {
             return std::unexpected(current.error());
         }
-        const auto precommit_root = std::ranges::find(next.snapshot_modules_, 0, &PlantModuleSnapshot::id);
-        const float precommit_root_vigor = precommit_root->vigor;
+        const std::size_t attachment_cohort_size = next.module_records_.size();
+        std::vector<float> preintegration_vigor;
+        preintegration_vigor.reserve(attachment_cohort_size);
         std::vector<Sphere> orientation_spheres;
         orientation_spheres.reserve(next.snapshot_modules_.size() + next.snapshot_terminals_.size());
         for (const auto& module : next.snapshot_modules_) {
+            preintegration_vigor.push_back(module.vigor);
             orientation_spheres.push_back(module.collision_sphere);
         }
 
-        std::vector<float> old_ages;
-        old_ages.reserve(next.module_records_.size());
-        for (auto& module : next.module_records_) {
-            old_ages.push_back(module.physiological_age);
-            const auto snapshot_module = std::ranges::find(next.snapshot_modules_, module.id,
-                                                           &PlantModuleSnapshot::id);
+        std::vector<std::size_t> crossed_parent_indices;
+        crossed_parent_indices.reserve(attachment_cohort_size);
+        for (std::size_t module_index = 0; module_index < attachment_cohort_size; ++module_index) {
+            auto& module = next.module_records_[module_index];
+            const float old_age = module.physiological_age;
             module.physiological_age = std::min(
                 module.fully_grown_age,
-                physiological_age_euler_step(module.physiological_age, snapshot_module->growth_rate, timestep));
+                physiological_age_euler_step(
+                    old_age, next.snapshot_modules_[module_index].growth_rate, timestep));
+            if (old_age < module.fully_grown_age &&
+                module.physiological_age >= module.fully_grown_age) {
+                crossed_parent_indices.push_back(module_index);
+            }
         }
 
-        const auto root_record = std::ranges::find(next.module_records_, 0, &ModuleRecord::id);
-        const std::size_t root_record_index = static_cast<std::size_t>(root_record - next.module_records_.begin());
-        const RigidTransform root_transform = root_record->transform;
-        const bool root_crossed = old_ages[root_record_index] < root_record->fully_grown_age &&
-                                  root_record->physiological_age >= root_record->fully_grown_age;
-        if (root_crossed) {
-            auto crossing_state = next.rebuild_snapshot();
-            if (!crossing_state) {
-                return std::unexpected(crossing_state.error());
-            }
-            const float determinacy = parameter_for_plant_age(
-                next.plant_type_.determinacy, next.plant_type_.mature_determinacy,
-                next.plant_type_.flowering_age, next.plant_age_);
-            const float apical_control = current_apical_control(next.plant_type_, next.plant_age_);
-            const std::size_t selected_id = nearest_morphospace_prototype(
-                apical_control, vigor_scaled_determinacy(determinacy, precommit_root_vigor));
-            const auto selected = std::ranges::find(next.prepared_prototypes_, selected_id,
-                                                    &BranchModulePrototype::id);
-            const std::size_t selected_index =
-                static_cast<std::size_t>(selected - next.prepared_prototypes_.begin());
-            auto selected_mature_age = fully_grown_age(*selected, next.plant_type_);
-            if (!selected_mature_age) {
-                return std::unexpected(selected_mature_age.error());
-            }
-
-            const auto& ordered_terminal_nodes =
-                next.prototype_orientation_data_[root_record->prototype_index].ordered_terminal_nodes;
-            for (const auto terminal_node : ordered_terminal_nodes) {
-                const auto terminal = std::ranges::find_if(next.snapshot_terminals_, [&](const auto& value) {
-                    return value.module_id == 0 && value.terminal_node == terminal_node;
-                });
-                if (terminal == next.snapshot_terminals_.end() || terminal->child_module_id ||
-                    terminal->vigor <= kMinimumModuleVigor) {
-                    continue;
-                }
-                const std::size_t child_id = next.next_module_id_++;
-                const OrientedChild oriented = orient_child(
-                    root_transform, terminal->position, terminal->tangent, *selected,
-                    next.prototype_orientation_data_[selected_index].mature_sphere,
-                    next.plant_type_, orientation_spheres);
-                next.module_records_.push_back({
-                    .id = child_id,
-                    .prototype_index = selected_index,
-                    .parent_module_index = root_record_index,
-                    .parent_terminal_node = terminal_node,
-                    .transform = oriented.transform,
-                    .physiological_age = 0.0F,
-                    .fully_grown_age = *selected_mature_age,
-                    .developed_diameters = std::vector<float>(
-                        selected->segments.size(), next.plant_type_.terminal_thickness * kCentimetersToMeters),
-                    .diagnostics_active = false,
-                });
-                next.snapshot_attachment_events_.push_back({
-                    .child_module_id = child_id,
-                    .parent_module_id = 0,
-                    .parent_terminal_node = terminal_node,
-                    .prototype_id = selected_id,
-                });
-                orientation_spheres.push_back(oriented.mature_sphere);
-            }
+        auto attached = next.attach_crossed_modules(
+            crossed_parent_indices, preintegration_vigor, std::move(orientation_spheres));
+        if (!attached) {
+            return std::unexpected(attached.error());
         }
 
         next.plant_age_ += timestep;
@@ -342,6 +292,83 @@ PlantSnapshot PlantSimulation::snapshot() const
         .mature_terminals = snapshot_terminals_,
         .attachment_events = snapshot_attachment_events_,
     };
+}
+
+Result<void> PlantSimulation::attach_crossed_modules(
+    std::span<const std::size_t> crossed_parent_indices,
+    std::span<const float> preintegration_vigor,
+    std::vector<Sphere> orientation_spheres)
+{
+    if (crossed_parent_indices.empty()) {
+        return {};
+    }
+
+    auto crossing_state = rebuild_snapshot();
+    if (!crossing_state) {
+        return crossing_state;
+    }
+    const float determinacy = parameter_for_plant_age(
+        plant_type_.determinacy, plant_type_.mature_determinacy,
+        plant_type_.flowering_age, plant_age_);
+    const float apical_control = current_apical_control(plant_type_, plant_age_);
+    module_records_.reserve(module_records_.size() + snapshot_terminals_.size());
+    snapshot_attachment_events_.reserve(snapshot_terminals_.size());
+    orientation_spheres.reserve(orientation_spheres.size() + snapshot_terminals_.size());
+
+    for (const std::size_t parent_index : crossed_parent_indices) {
+        const std::size_t parent_id = module_records_[parent_index].id;
+        const std::size_t parent_prototype_index = module_records_[parent_index].prototype_index;
+        const RigidTransform parent_transform = module_records_[parent_index].transform;
+        const std::size_t selected_id = nearest_morphospace_prototype(
+            apical_control,
+            vigor_scaled_determinacy(determinacy, preintegration_vigor[parent_index]));
+        const auto selected = std::ranges::find(
+            prepared_prototypes_, selected_id, &BranchModulePrototype::id);
+        const std::size_t selected_index =
+            static_cast<std::size_t>(selected - prepared_prototypes_.begin());
+        auto selected_mature_age = fully_grown_age(*selected, plant_type_);
+        if (!selected_mature_age) {
+            return std::unexpected(selected_mature_age.error());
+        }
+
+        const auto& ordered_terminal_nodes =
+            prototype_orientation_data_[parent_prototype_index].ordered_terminal_nodes;
+        for (const std::size_t terminal_node : ordered_terminal_nodes) {
+            const auto terminal = std::ranges::find_if(snapshot_terminals_, [&](const auto& value) {
+                return value.module_id == parent_id && value.terminal_node == terminal_node;
+            });
+            if (terminal == snapshot_terminals_.end() || terminal->child_module_id ||
+                terminal->vigor <= kMinimumModuleVigor) {
+                continue;
+            }
+
+            const std::size_t child_id = next_module_id_++;
+            const OrientedChild oriented = orient_child(
+                parent_transform, terminal->position, terminal->tangent, *selected,
+                prototype_orientation_data_[selected_index].mature_sphere,
+                plant_type_, orientation_spheres);
+            module_records_.push_back({
+                .id = child_id,
+                .prototype_index = selected_index,
+                .parent_module_index = parent_index,
+                .parent_terminal_node = terminal_node,
+                .transform = oriented.transform,
+                .physiological_age = 0.0F,
+                .fully_grown_age = *selected_mature_age,
+                .developed_diameters = std::vector<float>(
+                    selected->segments.size(), plant_type_.terminal_thickness * kCentimetersToMeters),
+                .diagnostics_active = false,
+            });
+            snapshot_attachment_events_.push_back({
+                .child_module_id = child_id,
+                .parent_module_id = parent_id,
+                .parent_terminal_node = terminal_node,
+                .prototype_id = selected_id,
+            });
+            orientation_spheres.push_back(oriented.mature_sphere);
+        }
+    }
+    return {};
 }
 
 Result<void> PlantSimulation::rebuild_conduit(ConduitWorkset& workset)

@@ -255,6 +255,10 @@ private:
 
     PlantSimulation() = default;
 
+    [[nodiscard]] Result<void> attach_crossed_modules(
+        std::span<const std::size_t> crossed_parent_indices,
+        std::span<const float> preintegration_vigor,
+        std::vector<Sphere> orientation_spheres);
     [[nodiscard]] Result<void> rebuild_conduit(ConduitWorkset& workset);
     [[nodiscard]] Result<void> rebuild_snapshot();
 

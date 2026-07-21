@@ -474,14 +474,14 @@ TEST_CASE("Plant run rejects a step size too small to advance represented age")
     CHECK(session->plant_state()->plant_age == Catch::Approx(16'777'216.0F));
 }
 
-TEST_CASE("Plant maturity crossing exposes one attached generation")
+TEST_CASE("Plant maturity crossings expose repeated descendant generations")
 {
     auto session = toi::model::DesktopSession::create(
         session_options(fresh_project_path("first-attached-generation")));
     REQUIRE(session);
     REQUIRE(session->set_active_workspace("plant"));
     REQUIRE(session->update_active_orbit({.radius = 3.0F}));
-    REQUIRE(session->update_plant_run_settings(2'000.0F, 1'000.0F));
+    REQUIRE(session->update_plant_run_settings(1'319.0F, 1'000.0F));
     REQUIRE(session->update_plant_diagnostics({
         .module_diagnostic_labels_visible = true,
         .direct_light_bounding_spheres_visible = true,
@@ -502,11 +502,22 @@ TEST_CASE("Plant maturity crossing exposes one attached generation")
     CHECK(session->active_orbit().radius == Catch::Approx(3.0F));
     CHECK_FALSE(session->active_camera_needs_frame());
 
-    const auto module_count = attached->snapshot.modules.size();
+    const auto first_generation_count = attached->snapshot.modules.size();
+    REQUIRE(session->advance_plant());
+    auto repeated = session->plant_preview_snapshot();
+    REQUIRE(repeated);
+    REQUIRE(repeated->snapshot.modules.size() > first_generation_count);
+    CHECK(std::ranges::any_of(repeated->snapshot.attachment_events, [](const auto& event) {
+        return event.parent_module_id != 0;
+    }));
+
+    const auto module_count = repeated->snapshot.modules.size();
+    REQUIRE(session->update_plant_run_settings(1'320.0F, 1'000.0F));
     REQUIRE(session->advance_plant());
     auto flowing = session->plant_preview_snapshot();
     REQUIRE(flowing);
     CHECK(flowing->snapshot.modules.size() == module_count);
+    CHECK(flowing->snapshot.attachment_events.empty());
     const auto projection = toi::render::make_plant_preview_stage_projection(
         flowing->snapshot, flowing->mature_root_snapshot,
         {.show_collision_spheres = true,
