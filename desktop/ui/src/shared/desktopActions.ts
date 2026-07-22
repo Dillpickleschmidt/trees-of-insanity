@@ -53,10 +53,18 @@ export type GrowthSnapshotSummary = {
 	max_diameter: number;
 };
 
+export type PlantRootState = {
+	physiological_age: number;
+	fully_grown_age: number;
+	direct_light_exposure: number;
+	accumulated_light: number;
+	vigor: number;
+	growth_rate: number;
+};
+
 export type PlantState = {
 	plant_age: number;
-	root_physiological_age: number;
-	root_fully_grown_age: number;
+	root: PlantRootState | null;
 	target_age: number;
 	step_size: number;
 	root_prototype_id: number;
@@ -66,10 +74,6 @@ export type PlantState = {
 	module_accumulated_light_visible: boolean;
 	module_vigor_visible: boolean;
 	mature_terminal_markers_visible: boolean;
-	direct_light_exposure: number;
-	accumulated_light: number;
-	vigor: number;
-	growth_rate: number;
 };
 
 export type PlantDiagnostics = Pick<

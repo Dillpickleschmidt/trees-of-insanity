@@ -21,6 +21,13 @@ TEST_CASE("raw desktop actions report response and preview effect")
     CHECK(nlohmann::json::parse(read.response).at("ok") == true);
     CHECK_FALSE(read.preview_changed);
 
+    const auto plant_state = nlohmann::json::parse(
+        toi::desktop::dispatch_action(*session, R"({"method":"plant.get_state"})").response);
+    REQUIRE(plant_state.at("ok") == true);
+    CHECK(plant_state.at("result").at("root").is_object());
+    CHECK(plant_state.at("result").at("root").contains("physiological_age"));
+    CHECK_FALSE(plant_state.at("result").contains("root_physiological_age"));
+
     auto visual = toi::desktop::dispatch_action(*session, R"({"method":"module.set_age","params":{"age":1}})");
     CHECK(nlohmann::json::parse(visual.response).at("ok") == true);
     CHECK(visual.preview_changed);
@@ -80,4 +87,14 @@ TEST_CASE("raw desktop actions report response and preview effect")
     auto malformed = toi::desktop::dispatch_action(*session, "{");
     CHECK(nlohmann::json::parse(malformed.response).at("ok") == false);
     CHECK_FALSE(malformed.preview_changed);
+
+    auto low_vigor_type = session->plant_type("plant-type-1");
+    REQUIRE(low_vigor_type);
+    low_vigor_type->parameters.root_max_vigor = toi::growth::kMinimumModuleVigor * 0.5F;
+    REQUIRE(session->update_plant_type(*low_vigor_type));
+    REQUIRE(session->update_plant_run_settings(10.0F, 10.0F));
+    REQUIRE(session->advance_plant());
+    const auto dead_plant_state = nlohmann::json::parse(
+        toi::desktop::dispatch_action(*session, R"({"method":"plant.get_state"})").response);
+    CHECK(dead_plant_state.at("result").at("root").is_null());
 }

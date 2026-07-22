@@ -9,7 +9,9 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <nlohmann/json.hpp>
+#include <set>
 #include <string>
 #include <string_view>
 
@@ -53,6 +55,88 @@ TEST_CASE("bundled OBJ imports branch module prototypes")
     const auto& prototype = library->prototypes[*cube_008];
     CHECK(prototype.segments.size() == 25);
     CHECK(prototype.segments.front().max_length == Catch::Approx(0.242014F));
+}
+
+TEST_CASE("vacated high-vigor terminal waits for recovery before reuse")
+{
+    auto library = toi::import::load_branch_module_prototype_library_from_obj(prototype_path(), 2.0F);
+    REQUIRE(library);
+    const auto root_prototype_id = toi::import::prototype_id_by_name(*library, "Cube.008");
+    REQUIRE(root_prototype_id);
+    const auto plant_type = toi::growth::plant_type_preset_by_key('b');
+    REQUIRE(plant_type);
+    auto simulation = toi::growth::PlantSimulation::create(
+        *library, *plant_type, *root_prototype_id);
+    REQUIRE(simulation);
+
+    std::optional<toi::growth::SheddingEvent> shed_event;
+    for (int step = 0; step < 300 && !shed_event; ++step) {
+        REQUIRE(simulation->step(10.0F));
+        if (!simulation->snapshot().shedding_events.empty()) {
+            shed_event = simulation->snapshot().shedding_events.front();
+        }
+    }
+    REQUIRE(shed_event);
+    REQUIRE(shed_event->parent_module_id);
+    REQUIRE(shed_event->parent_terminal_node);
+    const auto shed_snapshot = simulation->snapshot();
+    const auto freed_terminal = std::ranges::find_if(
+        shed_snapshot.mature_terminals, [&](const auto& terminal) {
+            return terminal.module_id == *shed_event->parent_module_id &&
+                terminal.terminal_node == *shed_event->parent_terminal_node;
+        });
+    REQUIRE(freed_terminal != shed_snapshot.mature_terminals.end());
+    CHECK_FALSE(freed_terminal->child_module_id);
+    CHECK(freed_terminal->vigor > toi::growth::kMinimumModuleVigor);
+
+    REQUIRE(simulation->step(10.0F));
+    CHECK(std::ranges::none_of(simulation->snapshot().attachment_events, [&](const auto& event) {
+        return event.parent_module_id == *shed_event->parent_module_id &&
+            event.parent_terminal_node == *shed_event->parent_terminal_node;
+    }));
+}
+
+TEST_CASE("terminal reuse after vigor recovery allocates a new stable id")
+{
+    auto library = toi::import::load_branch_module_prototype_library_from_obj(prototype_path(), 2.0F);
+    REQUIRE(library);
+    const auto root_prototype_id = toi::import::prototype_id_by_name(*library, "Cube.008");
+    REQUIRE(root_prototype_id);
+    const auto plant_type = toi::growth::plant_type_preset_by_key('n');
+    REQUIRE(plant_type);
+    auto simulation = toi::growth::PlantSimulation::create(
+        *library, *plant_type, *root_prototype_id);
+    REQUIRE(simulation);
+
+    std::map<std::pair<std::size_t, std::size_t>, std::size_t> attached_child_by_terminal;
+    std::set<std::size_t> shed_module_ids;
+    std::optional<std::size_t> removed_child_id;
+    std::optional<std::size_t> replacement_child_id;
+    for (int step = 0; step < 100 && !replacement_child_id; ++step) {
+        REQUIRE(simulation->step(10.0F));
+        const auto snapshot = simulation->snapshot();
+        for (const auto& event : snapshot.shedding_events) {
+            shed_module_ids.insert(event.module_id);
+        }
+        for (const auto& event : snapshot.attachment_events) {
+            const auto terminal = std::pair{event.parent_module_id, event.parent_terminal_node};
+            if (const auto previous = attached_child_by_terminal.find(terminal);
+                previous != attached_child_by_terminal.end()) {
+                removed_child_id = previous->second;
+                replacement_child_id = event.child_module_id;
+                break;
+            }
+            attached_child_by_terminal.emplace(terminal, event.child_module_id);
+        }
+    }
+
+    REQUIRE(removed_child_id);
+    REQUIRE(replacement_child_id);
+    CHECK(shed_module_ids.contains(*removed_child_id));
+    CHECK(*replacement_child_id > *removed_child_id);
+    CHECK(std::ranges::none_of(simulation->snapshot().modules, [&](const auto& module) {
+        return module.id == *removed_child_id;
+    }));
 }
 
 TEST_CASE("fresh project contains complete typed workspace state")
@@ -322,10 +406,11 @@ TEST_CASE("Plant workspace steps and resets one diagnosed root")
     auto initial = session->plant_state();
     REQUIRE(initial);
     CHECK(initial->plant_age == Catch::Approx(0.0F));
-    CHECK(initial->root_physiological_age == Catch::Approx(0.0F));
-    CHECK(initial->direct_light_exposure == Catch::Approx(1.0F));
-    CHECK(initial->accumulated_light == Catch::Approx(1.0F));
-    CHECK(initial->vigor == Catch::Approx(1.0F));
+    REQUIRE(initial->root);
+    CHECK(initial->root->physiological_age == Catch::Approx(0.0F));
+    CHECK(initial->root->direct_light_exposure == Catch::Approx(1.0F));
+    CHECK(initial->root->accumulated_light == Catch::Approx(1.0F));
+    CHECK(initial->root->vigor == Catch::Approx(1.0F));
 
     auto initial_preview = session->plant_preview_snapshot();
     REQUIRE(initial_preview);
@@ -356,7 +441,8 @@ TEST_CASE("Plant workspace steps and resets one diagnosed root")
     auto stepped = session->plant_state();
     REQUIRE(stepped);
     CHECK(stepped->plant_age == Catch::Approx(2.0F));
-    CHECK(stepped->root_physiological_age == Catch::Approx(initial->growth_rate * 2.0F));
+    REQUIRE(stepped->root);
+    CHECK(stepped->root->physiological_age == Catch::Approx(initial->root->growth_rate * 2.0F));
     auto developed_preview = session->plant_preview_snapshot();
     REQUIRE(developed_preview);
     REQUIRE_FALSE(developed_preview->snapshot.segments.empty());
@@ -395,7 +481,8 @@ TEST_CASE("Plant workspace steps and resets one diagnosed root")
     REQUIRE(session->plant_reset());
     CHECK(session->active_camera_needs_frame());
     CHECK(session->plant_state()->plant_age == Catch::Approx(0.0F));
-    CHECK(session->plant_state()->root_physiological_age == Catch::Approx(0.0F));
+    REQUIRE(session->plant_state()->root);
+    CHECK(session->plant_state()->root->physiological_age == Catch::Approx(0.0F));
 
     auto reopened = toi::model::DesktopSession::create(session_options(project_path));
     REQUIRE(reopened);
@@ -568,6 +655,66 @@ TEST_CASE("Plant maturity crossings expose repeated descendant generations")
            projection.diagnostic_spheres[0].color.y != projection.diagnostic_spheres[1].color.y ||
            projection.diagnostic_spheres[0].color.z != projection.diagnostic_spheres[1].color.z));
     CHECK_FALSE(projection.diagnostic_lines.empty());
+}
+
+TEST_CASE("Plant run remains loaded and keeps its camera after the root sheds")
+{
+    auto session = toi::model::DesktopSession::create(
+        session_options(fresh_project_path("dead-plant-run")));
+    REQUIRE(session);
+    REQUIRE(session->set_active_workspace("plant"));
+
+    auto selected = session->plant_type("plant-type-1");
+    REQUIRE(selected);
+    selected->parameters.root_max_vigor = toi::growth::kMinimumModuleVigor * 0.5F;
+    REQUIRE(session->update_plant_type(*selected));
+    REQUIRE(session->update_active_orbit({
+        .target = {.x = 1.0F, .y = 2.0F, .z = 3.0F},
+        .radius = 4.0F,
+        .azimuth_radians = 0.5F,
+        .elevation_radians = 0.25F,
+    }));
+    REQUIRE(session->update_plant_run_settings(20.0F, 10.0F));
+
+    auto died = session->advance_plant();
+    REQUIRE(died);
+    CHECK_FALSE(died->reached_target);
+    const auto dead_state = session->plant_state();
+    REQUIRE(dead_state);
+    CHECK(dead_state->plant_age == Catch::Approx(10.0F));
+    CHECK_FALSE(dead_state->root);
+    const auto dead_orbit = session->active_orbit();
+    CHECK(dead_orbit.target.x == Catch::Approx(1.0F));
+    CHECK(dead_orbit.target.y == Catch::Approx(2.0F));
+    CHECK(dead_orbit.target.z == Catch::Approx(3.0F));
+
+    const auto dead_preview = session->plant_preview_snapshot();
+    REQUIRE(dead_preview);
+    CHECK(dead_preview->snapshot.modules.empty());
+    CHECK(dead_preview->snapshot.segments.empty());
+    const auto dead_projection = toi::render::make_plant_preview_stage_projection(
+        dead_preview->snapshot, dead_preview->mature_root_snapshot,
+        {.show_collision_spheres = true,
+         .show_labels = true,
+         .show_module_accumulated_light = true,
+         .show_mature_terminals = true});
+    CHECK(dead_projection.mesh.chain_count == 0);
+    CHECK(dead_projection.diagnostic_labels.empty());
+    CHECK(dead_projection.diagnostic_spheres.empty());
+    CHECK(dead_projection.diagnostic_lines.empty());
+    CHECK(dead_projection.diagnostic_surface_vertices.empty());
+
+    auto reached_target = session->advance_plant();
+    REQUIRE(reached_target);
+    CHECK(reached_target->reached_target);
+    CHECK(session->plant_state()->plant_age == Catch::Approx(20.0F));
+    CHECK_FALSE(session->plant_state()->root);
+
+    REQUIRE(session->plant_reset());
+    const auto reset = session->plant_state();
+    REQUIRE(reset);
+    CHECK(reset->plant_age == Catch::Approx(0.0F));
+    REQUIRE(reset->root);
 }
 
 TEST_CASE("Plant-selected type changes reset the transient simulation")

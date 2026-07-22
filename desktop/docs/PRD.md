@@ -14,6 +14,7 @@ One fresh Project stores project-wide authored content plus complete typed state
 - Interactive camera changes coalesce and never block the UI thread.
 - Module and Plant keep independent controls, selections, cameras, environments, and viewport diagnostics.
 - Plant runs advance through atomic steps as quickly as possible to an absolute target age, support stopping between steps, and coalesce previews to the configurable Viewport FPS limit.
+- A root shed leaves a loaded dead Plant with no root diagnostics; its run may continue to target age, its camera remains stable, and Reset creates a new root.
 - Plant diagnostics provide independent labels, direct-light spheres, accumulated-light flow, vigor flow, and mature-terminal toggles.
 - Ecosystem cannot activate until implemented.
 - Loaded/empty UI states remain distinct and controls are keyboard accessible.

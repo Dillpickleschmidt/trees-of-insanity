@@ -99,10 +99,18 @@ struct ModulePreviewSnapshot {
     growth::BranchModulePrototype prepared_prototype;
 };
 
+struct PlantRootStateView {
+    float physiological_age = 0.0F;
+    float fully_grown_age = 0.0F;
+    float direct_light_exposure = 0.0F;
+    float accumulated_light = 0.0F;
+    float vigor = 0.0F;
+    float growth_rate = 0.0F;
+};
+
 struct PlantStateView {
     float plant_age = 0.0F;
-    float root_physiological_age = 0.0F;
-    float root_fully_grown_age = 0.0F;
+    std::optional<PlantRootStateView> root;
     float target_age = 500.0F;
     float step_size = 10.0F;
     std::size_t root_prototype_id = 0;
@@ -112,10 +120,6 @@ struct PlantStateView {
     bool module_accumulated_light_visible = false;
     bool module_vigor_visible = false;
     bool mature_terminal_markers_visible = false;
-    float direct_light_exposure = 0.0F;
-    float accumulated_light = 0.0F;
-    float vigor = 0.0F;
-    float growth_rate = 0.0F;
 };
 
 struct PlantAdvanceResult {

@@ -73,9 +73,11 @@ f_tropism(u_α) = |cos(α_tropism) - cos(u_α)|                    Eq. 4
 
 ### Attachment, shedding, and senescence reference
 
-For a mature module, each terminal receives `q(n_i) = Q(u) / #n` from the module's own direct exposure, so eligibility does not depend on which sibling terminals are already occupied. An unoccupied terminal attaches a child when its module-scale vigor exceeds `v̄_min`; an occupied terminal's child draws its vigor from the plant-scale pass instead (ADR 0017). All eligible attachments commit together when the maturity-crossing step commits. Their orientations are selected main-axis first, then by decreasing mature-tangent alignment with the main tangent, so progressively more lateral siblings account for earlier selected mature bounds.
+For each module, every terminal receives `q(n_i) = Q(u) / #n` from the module's own direct exposure, so attachment eligibility does not depend on which sibling terminals are occupied. The private terminal calculation runs in the complete pre-step light/vigor state even for a module that will cross maturity; only mature terminals are exposed publicly. Every mature unoccupied terminal is reconsidered each step and attaches when its module-scale vigor is strictly above `v̄_min`, while an occupied terminal's child draws its vigor from the separate plant-scale pass (ADRs 0017 and 0018). Eligible attachments commit together after survivors develop. Their orientations are selected main-axis first, then by decreasing mature-tangent alignment with the main tangent, so progressively more lateral siblings account for earlier selected mature bounds.
 
-Parent terminals and child roots form shared conduit junctions. In one whole-plant postorder, a leaf edge receives support diameter `φ`; every other edge receives `sqrt(sum(child current diameter²))`. Each segment interpolates from `φ` toward that support by its diameter maturity, and retains the greatest diameter it has developed. This produces exact Eq. 8 proportions at mature supported forks, smooth attachment development, and no surviving-pipe shrink after future shedding (ADR 0016). The conduit topology remains derived; only one diameter per architecture edge persists.
+After pre-step vigor allocation, every module whose plant-scale `v̄` is strictly below `v̄_min` is marked. Maximal marked roots and their descendant subtrees are removed in one parent-first batch before survivors develop; equality survives, nested marks emit no duplicate event, and the root has no exemption. Surviving IDs remain stable, removed IDs are never reused, and one compact event identifies each removed maximal subtree (ADRs 0014 and 0015). A vacated terminal does not attach in that step. Before later reuse, it must be observed at/below the same threshold while empty and then rise strictly above it; this project recovery latch prevents observed attach/shed cycles without a cooldown or second threshold (ADR 0019).
+
+Parent terminals and child roots form shared conduit junctions. In one whole-plant postorder, a leaf edge receives support diameter `φ`; every other edge receives `sqrt(sum(child current diameter²))`. Each segment interpolates from `φ` toward that support by its diameter maturity, and retains the greatest diameter it has developed. This produces exact Eq. 8 proportions at mature supported forks, smooth attachment development, and no surviving-pipe shrink after shedding (ADR 0016). The conduit topology remains derived; only one diameter per architecture edge persists.
 
 The paper does not provide a numerical value for `v̄_min`. Growth, attachment, and shedding provisionally share `v̄_min = 0.02` in the module-vigor range `[0, 1]` until whole-plant calibration is possible.
 
@@ -103,7 +105,7 @@ The 16 presets retain Synthetic Silviculture Table 4 exactly:
 
 ## Current implementation
 
-`PlantSimulation` owns plant architecture, repeated descendant attachment, atomic stepping, continuous attachment-aware pipe/light/vigor traversal, current-state diagnostics, and zero-copy plant snapshots. Shedding and senescence enter through later milestones.
+`PlantSimulation` owns plant architecture, repeated mature-terminal attachment, batched subtree shedding, atomic stepping, attachment/shedding event summaries, current-state diagnostics, and zero-copy plant snapshots. Its private conduit module derives shared-junction topology and develops Eq. 8 diameters; plant-scale and module-scale light/vigor remain separate. Senescence enters through a later milestone.
 
 ## Sources
 

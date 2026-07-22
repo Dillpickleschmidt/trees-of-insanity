@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by 0018
 ---
 
 # Attach children when the maturity-crossing step commits
