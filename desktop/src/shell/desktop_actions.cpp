@@ -141,10 +141,20 @@ namespace {
 
 [[nodiscard]] json to_json(const PlantStateView& state)
 {
+    json root = nullptr;
+    if (state.root) {
+        root = {
+            {"physiological_age", state.root->physiological_age},
+            {"fully_grown_age", state.root->fully_grown_age},
+            {"direct_light_exposure", state.root->direct_light_exposure},
+            {"accumulated_light", state.root->accumulated_light},
+            {"vigor", state.root->vigor},
+            {"growth_rate", state.root->growth_rate},
+        };
+    }
     return json{
         {"plant_age", state.plant_age},
-        {"root_physiological_age", state.root_physiological_age},
-        {"root_fully_grown_age", state.root_fully_grown_age},
+        {"root", std::move(root)},
         {"target_age", state.target_age},
         {"step_size", state.step_size},
         {"root_prototype_id", state.root_prototype_id},
@@ -154,10 +164,6 @@ namespace {
         {"module_accumulated_light_visible", state.module_accumulated_light_visible},
         {"module_vigor_visible", state.module_vigor_visible},
         {"mature_terminal_markers_visible", state.mature_terminal_markers_visible},
-        {"direct_light_exposure", state.direct_light_exposure},
-        {"accumulated_light", state.accumulated_light},
-        {"vigor", state.vigor},
-        {"growth_rate", state.growth_rate},
     };
 }
 

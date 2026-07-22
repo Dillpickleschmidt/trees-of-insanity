@@ -129,6 +129,15 @@ toi::growth::PlantTypeParameters make_repeated_attachment_plant_type()
     return plant_type;
 }
 
+toi::growth::PlantTypeParameters make_shedding_plant_type()
+{
+    auto plant_type = make_repeated_attachment_plant_type();
+    plant_type.apical_control = 0.5F;
+    plant_type.mature_apical_control = 0.99F;
+    plant_type.flowering_age = 150'000.0F;
+    return plant_type;
+}
+
 const toi::growth::PlantModuleSnapshot& module_by_id(const toi::growth::PlantSnapshot& snapshot, std::size_t id)
 {
     return *std::ranges::find(snapshot.modules, id, &toi::growth::PlantModuleSnapshot::id);
@@ -177,6 +186,7 @@ void check_snapshots_equal(const toi::growth::PlantSnapshot& left,
     REQUIRE(left.segments.size() == right.segments.size());
     REQUIRE(left.mature_terminals.size() == right.mature_terminals.size());
     REQUIRE(left.attachment_events.size() == right.attachment_events.size());
+    REQUIRE(left.shedding_events.size() == right.shedding_events.size());
 
     for (std::size_t index = 0; index < left.modules.size(); ++index) {
         const auto& left_module = left.modules[index];
@@ -231,13 +241,19 @@ void check_snapshots_equal(const toi::growth::PlantSnapshot& left,
         CHECK(left_event.parent_terminal_node == right_event.parent_terminal_node);
         CHECK(left_event.prototype_id == right_event.prototype_id);
     }
+    for (std::size_t index = 0; index < left.shedding_events.size(); ++index) {
+        const auto& left_event = left.shedding_events[index];
+        const auto& right_event = right.shedding_events[index];
+        CHECK(left_event.module_id == right_event.module_id);
+        CHECK(left_event.parent_module_id == right_event.parent_module_id);
+        CHECK(left_event.parent_terminal_node == right_event.parent_terminal_node);
+    }
 }
 
 void check_recursive_light_and_vigor_conservation(const toi::growth::PlantSnapshot& snapshot)
 {
     for (std::size_t module_index = 0; module_index < snapshot.modules.size(); ++module_index) {
         const auto& parent = snapshot.modules[module_index];
-        CHECK(parent.id == module_index);
         float accumulated_light = parent.direct_light_exposure;
         float distributed_vigor = 0.0F;
         std::size_t child_count = 0;
@@ -298,6 +314,45 @@ TEST_CASE("root budget remains separate from module vigor")
                                 plant_type.plant_growth_rate;
     CHECK(root.vigor == Catch::Approx(0.5F));
     CHECK(root.growth_rate == Catch::Approx(expected_rate));
+}
+
+TEST_CASE("strict shedding threshold can leave an empty dead plant")
+{
+    using namespace toi::growth;
+    auto equality_type = make_plant_type();
+    equality_type.root_max_vigor = kMinimumModuleVigor;
+    auto equality = PlantSimulation::create(make_library(), equality_type, 7);
+    REQUIRE(equality);
+    REQUIRE(equality->step(1.0F));
+    const auto equality_snapshot = equality->snapshot();
+    REQUIRE(equality_snapshot.modules.size() == 1);
+    CHECK(equality_snapshot.modules.front().vigor == Catch::Approx(kMinimumModuleVigor));
+    CHECK(equality_snapshot.modules.front().growth_rate == Catch::Approx(0.0F));
+    CHECK(equality_snapshot.shedding_events.empty());
+
+    auto below_type = make_plant_type();
+    below_type.root_max_vigor = kMinimumModuleVigor * 0.5F;
+    auto below = PlantSimulation::create(make_library(), below_type, 7);
+    REQUIRE(below);
+    REQUIRE(below->step(1.0F));
+    const auto shed = below->snapshot();
+    CHECK(shed.modules.empty());
+    CHECK(shed.segments.empty());
+    CHECK(shed.mature_terminals.empty());
+    CHECK(shed.attachment_events.empty());
+    REQUIRE(shed.shedding_events.size() == 1);
+    CHECK(shed.shedding_events.front().module_id == 0);
+    CHECK_FALSE(shed.shedding_events.front().parent_module_id);
+    CHECK_FALSE(shed.shedding_events.front().parent_terminal_node);
+    const auto* shedding_events = shed.shedding_events.data();
+    CHECK_FALSE(below->step(0.0F));
+    CHECK(below->snapshot().shedding_events.data() == shedding_events);
+
+    REQUIRE(below->step(1.0F));
+    const auto dead = below->snapshot();
+    CHECK(dead.plant_age == Catch::Approx(2.0F));
+    CHECK(dead.modules.empty());
+    CHECK(dead.shedding_events.empty());
 }
 
 TEST_CASE("maturity crossing atomically attaches every eligible root terminal")
@@ -456,7 +511,89 @@ TEST_CASE("descendants attach in parent order with one cross-parent orientation 
     CHECK(activated.attachment_events.empty());
 }
 
-TEST_CASE("terminal attachment eligibility is limited to its parent's maturity-crossing step")
+TEST_CASE("below-threshold module sheds its descendant subtree before survivors grow")
+{
+    using namespace toi::growth;
+    auto simulation = PlantSimulation::create(
+        make_repeated_attachment_library(), make_shedding_plant_type(), 7);
+    REQUIRE(simulation);
+    REQUIRE(simulation->step(100'000.0F));
+    REQUIRE(simulation->step(100'000.0F));
+    const auto before = simulation->snapshot();
+    REQUIRE(before.modules.size() == 5);
+    const auto& removed_subtree_root = module_by_id(before, 2);
+    CHECK(removed_subtree_root.vigor < kMinimumModuleVigor);
+    CHECK(module_by_id(before, 4).parent_module_id == 2);
+    REQUIRE(removed_subtree_root.parent_terminal_node);
+    const auto removed_parent_terminal = *removed_subtree_root.parent_terminal_node;
+    const auto before_root_segments = module_segments(before, module_by_id(before, 0));
+    const auto supporting_segment = std::ranges::find(
+        before_root_segments, std::optional<std::size_t>{removed_subtree_root.segments.offset},
+        &PlantSegmentSnapshot::main_continuation_segment);
+    REQUIRE(supporting_segment != before_root_segments.end());
+    const auto supporting_source_segment = supporting_segment->source_segment_id;
+
+    struct RetainedDiameter {
+        std::size_t module_id;
+        std::size_t source_segment_id;
+        float diameter;
+    };
+    std::vector<RetainedDiameter> retained_diameters;
+    for (const std::size_t module_id : {0U, 1U, 3U}) {
+        const auto segments = module_segments(before, module_by_id(before, module_id));
+        for (const auto& segment : segments) {
+            retained_diameters.push_back({module_id, segment.source_segment_id, segment.diameter});
+        }
+    }
+
+    REQUIRE(simulation->step(1.0F));
+    const auto shed = simulation->snapshot();
+    REQUIRE(shed.modules.size() == 3);
+    CHECK(shed.modules[0].id == 0);
+    CHECK(shed.modules[1].id == 1);
+    CHECK(shed.modules[2].id == 3);
+    CHECK(module_by_id(shed, 3).parent_module_id == 1);
+    CHECK(std::ranges::none_of(shed.modules, [](const auto& module) {
+        return module.id == 2 || module.id == 4;
+    }));
+    REQUIRE(shed.shedding_events.size() == 1);
+    CHECK(shed.shedding_events.front().module_id == 2);
+    CHECK(shed.shedding_events.front().parent_module_id == 0);
+    CHECK(shed.shedding_events.front().parent_terminal_node == removed_parent_terminal);
+    CHECK(shed.attachment_events.empty());
+
+    const auto released_terminal = std::ranges::find_if(shed.mature_terminals, [&](const auto& terminal) {
+        return terminal.module_id == 0 && terminal.terminal_node == removed_parent_terminal;
+    });
+    REQUIRE(released_terminal != shed.mature_terminals.end());
+    CHECK_FALSE(released_terminal->child_module_id);
+    const auto shed_root_segments = module_segments(shed, module_by_id(shed, 0));
+    const auto exposed_segment = std::ranges::find(
+        shed_root_segments, supporting_source_segment, &PlantSegmentSnapshot::source_segment_id);
+    REQUIRE(exposed_segment != shed_root_segments.end());
+    CHECK_FALSE(exposed_segment->main_continuation_segment);
+
+    for (const auto& retained : retained_diameters) {
+        const auto segments = module_segments(shed, module_by_id(shed, retained.module_id));
+        const auto segment = std::ranges::find(
+            segments, retained.source_segment_id, &PlantSegmentSnapshot::source_segment_id);
+        REQUIRE(segment != segments.end());
+        CHECK(segment->diameter >= retained.diameter);
+    }
+    check_recursive_light_and_vigor_conservation(shed);
+
+    REQUIRE(simulation->step(100'000.0F));
+    const auto continued = simulation->snapshot();
+    CHECK(continued.shedding_events.empty());
+    REQUIRE(continued.attachment_events.size() == 1);
+    CHECK(continued.attachment_events.front().child_module_id == 5);
+    CHECK(continued.attachment_events.front().parent_module_id == 3);
+    CHECK(std::ranges::none_of(continued.modules, [](const auto& module) {
+        return module.id == 2 || module.id == 4;
+    }));
+}
+
+TEST_CASE("mature unoccupied terminal is reconsidered after its parent's maturity-crossing step")
 {
     using namespace toi::growth;
     auto plant_type = make_plant_type();
@@ -480,14 +617,17 @@ TEST_CASE("terminal attachment eligibility is limited to its parent's maturity-c
 
     REQUIRE(simulation->step(1.0F));
     const auto later = simulation->snapshot();
-    CHECK(later.modules.size() == 2);
-    CHECK(later.attachment_events.empty());
-    const auto still_unattached = std::ranges::find_if(later.mature_terminals, [&](const auto& terminal) {
+    CHECK(later.modules.size() == 3);
+    REQUIRE(later.attachment_events.size() == 1);
+    CHECK(later.attachment_events.front().child_module_id == 2);
+    CHECK(later.attachment_events.front().parent_module_id == 0);
+    CHECK(later.attachment_events.front().parent_terminal_node == unattached_node);
+    const auto reconsidered = std::ranges::find_if(later.mature_terminals, [&](const auto& terminal) {
         return terminal.module_id == 0 && terminal.terminal_node == unattached_node;
     });
-    REQUIRE(still_unattached != later.mature_terminals.end());
-    CHECK_FALSE(still_unattached->child_module_id);
-    CHECK(still_unattached->vigor > kMinimumModuleVigor);
+    REQUIRE(reconsidered != later.mature_terminals.end());
+    CHECK(reconsidered->child_module_id == 2);
+    CHECK(reconsidered->vigor > kMinimumModuleVigor);
 }
 
 TEST_CASE("continuous pipe crosses parent and child module attachment")

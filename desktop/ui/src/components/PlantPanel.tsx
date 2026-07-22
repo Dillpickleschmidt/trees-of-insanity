@@ -76,12 +76,20 @@ export function PlantPanel(props: {
 					</Section>
 
 					<Section eyebrow="Plant state">
-						<Readout items={[
-							{ label: "Plant age", value: formatNumber(state().plant_age, 2) },
-							{ label: "Root age", value: formatNumber(state().root_physiological_age, 2) },
-							{ label: "Mature age", value: formatNumber(state().root_fully_grown_age, 2) },
-							{ label: "Growth rate", value: formatNumber(state().growth_rate, 4) },
-						]} />
+						<Show
+							when={state().root}
+							fallback={<Readout items={[
+								{ label: "Plant age", value: formatNumber(state().plant_age, 2) },
+								{ label: "Status", value: "Dead" },
+							]} />}
+						>
+							{(root) => <Readout items={[
+								{ label: "Plant age", value: formatNumber(state().plant_age, 2) },
+								{ label: "Root age", value: formatNumber(root().physiological_age, 2) },
+								{ label: "Mature age", value: formatNumber(root().fully_grown_age, 2) },
+								{ label: "Growth rate", value: formatNumber(root().growth_rate, 4) },
+							]} />}
+						</Show>
 					</Section>
 
 					<Section eyebrow="Diagnostics">

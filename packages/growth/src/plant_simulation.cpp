@@ -186,6 +186,8 @@ Result<PlantSimulation> PlantSimulation::create(const BranchModulePrototypeLibra
         .fully_grown_age = *mature_age,
         .developed_diameters = std::vector<float>(
             root->segments.size(), plant_type.terminal_thickness * kCentimetersToMeters),
+        .terminal_reuse_phases = std::vector<TerminalReusePhase>(
+            root->nodes.size(), TerminalReusePhase::EligibleWhenVigorous),
         .diagnostics_active = true,
     });
     simulation.snapshot_attachment_events_.clear();
@@ -208,6 +210,7 @@ Result<void> PlantSimulation::step(float timestep)
     try {
         PlantSimulation next = *this;
         next.snapshot_attachment_events_.clear();
+        next.snapshot_shedding_events_.clear();
         for (auto& module : next.module_records_) {
             module.diagnostics_active = true;
         }
@@ -215,33 +218,89 @@ Result<void> PlantSimulation::step(float timestep)
         if (!current) {
             return std::unexpected(current.error());
         }
-        const std::size_t attachment_cohort_size = next.module_records_.size();
-        std::vector<float> preintegration_vigor;
-        preintegration_vigor.reserve(attachment_cohort_size);
-        std::vector<Sphere> orientation_spheres;
-        orientation_spheres.reserve(next.snapshot_modules_.size() + next.snapshot_terminals_.size());
-        for (const auto& module : next.snapshot_modules_) {
-            preintegration_vigor.push_back(module.vigor);
-            orientation_spheres.push_back(module.collision_sphere);
+
+        const std::size_t old_module_count = next.module_records_.size();
+        std::vector<std::vector<bool>> occupied_terminal_nodes;
+        occupied_terminal_nodes.reserve(old_module_count);
+        for (const auto& module : next.module_records_) {
+            occupied_terminal_nodes.emplace_back(
+                next.prepared_prototypes_[module.prototype_index].nodes.size(), false);
+        }
+        for (const auto& module : next.module_records_) {
+            if (module.parent_module_index) {
+                occupied_terminal_nodes[*module.parent_module_index][*module.parent_terminal_node] = true;
+            }
         }
 
-        std::vector<std::size_t> crossed_parent_indices;
-        crossed_parent_indices.reserve(attachment_cohort_size);
-        for (std::size_t module_index = 0; module_index < attachment_cohort_size; ++module_index) {
+        std::vector<std::vector<std::size_t>> pre_step_eligible_terminals(old_module_count);
+        std::vector<bool> mature_at_step_start(old_module_count, false);
+        std::vector<float> old_vigor;
+        std::vector<float> old_growth_rate;
+        std::vector<Sphere> old_collision_spheres;
+        old_vigor.reserve(old_module_count);
+        old_growth_rate.reserve(old_module_count);
+        old_collision_spheres.reserve(old_module_count);
+        for (std::size_t module_index = 0; module_index < old_module_count; ++module_index) {
+            auto& module = next.module_records_[module_index];
+            const auto& prototype = next.prepared_prototypes_[module.prototype_index];
+            mature_at_step_start[module_index] =
+                module.physiological_age + kEpsilon >= module.fully_grown_age;
+            for (const auto terminal_node : prototype.terminal_nodes) {
+                if (occupied_terminal_nodes[module_index][terminal_node]) {
+                    continue;
+                }
+                const float terminal_vigor =
+                    next.snapshot_node_vigor_[module_index][terminal_node];
+                auto& reuse_phase = module.terminal_reuse_phases[terminal_node];
+                if (reuse_phase == TerminalReusePhase::AwaitingLowVigor) {
+                    if (terminal_vigor <= kMinimumModuleVigor) {
+                        reuse_phase = TerminalReusePhase::AwaitingVigorRecovery;
+                    }
+                } else if (terminal_vigor > kMinimumModuleVigor) {
+                    pre_step_eligible_terminals[module_index].push_back(terminal_node);
+                }
+            }
+            old_vigor.push_back(next.snapshot_modules_[module_index].vigor);
+            old_growth_rate.push_back(next.snapshot_modules_[module_index].growth_rate);
+            old_collision_spheres.push_back(next.snapshot_modules_[module_index].collision_sphere);
+        }
+
+        const auto retained_old_indices = next.shed_below_threshold_subtrees();
+        const std::size_t survivor_count = retained_old_indices.size();
+        std::vector<std::vector<std::size_t>> eligible_terminal_nodes(survivor_count);
+        std::vector<float> preintegration_vigor;
+        std::vector<float> preintegration_growth_rate;
+        std::vector<Sphere> orientation_spheres;
+        preintegration_vigor.reserve(survivor_count);
+        preintegration_growth_rate.reserve(survivor_count);
+        orientation_spheres.reserve(survivor_count);
+        for (std::size_t module_index = 0; module_index < survivor_count; ++module_index) {
+            const auto old_index = retained_old_indices[module_index];
+            preintegration_vigor.push_back(old_vigor[old_index]);
+            preintegration_growth_rate.push_back(old_growth_rate[old_index]);
+            orientation_spheres.push_back(old_collision_spheres[old_index]);
+            if (mature_at_step_start[old_index]) {
+                eligible_terminal_nodes[module_index] =
+                    std::move(pre_step_eligible_terminals[old_index]);
+            }
+        }
+
+        for (std::size_t module_index = 0; module_index < survivor_count; ++module_index) {
             auto& module = next.module_records_[module_index];
             const float old_age = module.physiological_age;
             module.physiological_age = std::min(
                 module.fully_grown_age,
                 physiological_age_euler_step(
-                    old_age, next.snapshot_modules_[module_index].growth_rate, timestep));
+                    old_age, preintegration_growth_rate[module_index], timestep));
             if (old_age < module.fully_grown_age &&
                 module.physiological_age >= module.fully_grown_age) {
-                crossed_parent_indices.push_back(module_index);
+                eligible_terminal_nodes[module_index] =
+                    std::move(pre_step_eligible_terminals[retained_old_indices[module_index]]);
             }
         }
 
-        auto attached = next.attach_crossed_modules(
-            crossed_parent_indices, preintegration_vigor, std::move(orientation_spheres));
+        auto attached = next.attach_eligible_modules(
+            eligible_terminal_nodes, preintegration_vigor, std::move(orientation_spheres));
         if (!attached) {
             return std::unexpected(attached.error());
         }
@@ -269,31 +328,92 @@ PlantSnapshot PlantSimulation::snapshot() const
         .segments = snapshot_segments_,
         .mature_terminals = snapshot_terminals_,
         .attachment_events = snapshot_attachment_events_,
+        .shedding_events = snapshot_shedding_events_,
     };
 }
 
-Result<void> PlantSimulation::attach_crossed_modules(
-    std::span<const std::size_t> crossed_parent_indices,
+std::vector<std::size_t> PlantSimulation::shed_below_threshold_subtrees()
+{
+    const std::size_t module_count = module_records_.size();
+    std::vector<bool> removed(module_count, false);
+    std::vector<std::size_t> retained_old_indices;
+    retained_old_indices.reserve(module_count);
+    snapshot_shedding_events_.reserve(snapshot_shedding_events_.size() + module_count);
+
+    for (std::size_t module_index = 0; module_index < module_count; ++module_index) {
+        const auto& module = module_records_[module_index];
+        const bool ancestor_removed =
+            module.parent_module_index && removed[*module.parent_module_index];
+        const bool below_threshold =
+            snapshot_modules_[module_index].vigor < kMinimumModuleVigor;
+        removed[module_index] = ancestor_removed || below_threshold;
+        if (!removed[module_index]) {
+            retained_old_indices.push_back(module_index);
+        } else if (below_threshold && !ancestor_removed) {
+            if (module.parent_module_index) {
+                module_records_[*module.parent_module_index]
+                    .terminal_reuse_phases[*module.parent_terminal_node] =
+                    TerminalReusePhase::AwaitingLowVigor;
+            }
+            snapshot_shedding_events_.push_back({
+                .module_id = module.id,
+                .parent_module_id = module.parent_module_index
+                    ? std::optional<std::size_t>{module_records_[*module.parent_module_index].id}
+                    : std::nullopt,
+                .parent_terminal_node = module.parent_terminal_node,
+            });
+        }
+    }
+
+    std::vector<std::size_t> new_index_by_old_index(module_count, module_count);
+    for (std::size_t new_index = 0; new_index < retained_old_indices.size(); ++new_index) {
+        new_index_by_old_index[retained_old_indices[new_index]] = new_index;
+    }
+
+    std::vector<ModuleRecord> survivors;
+    survivors.reserve(retained_old_indices.size());
+    for (const auto old_index : retained_old_indices) {
+        auto module = std::move(module_records_[old_index]);
+        if (module.parent_module_index) {
+            module.parent_module_index = new_index_by_old_index[*module.parent_module_index];
+        }
+        survivors.push_back(std::move(module));
+    }
+    module_records_ = std::move(survivors);
+    return retained_old_indices;
+}
+
+Result<void> PlantSimulation::attach_eligible_modules(
+    std::span<const std::vector<std::size_t>> eligible_terminal_nodes,
     std::span<const float> preintegration_vigor,
     std::vector<Sphere> orientation_spheres)
 {
-    if (crossed_parent_indices.empty()) {
+    const bool has_eligible_terminal = std::ranges::any_of(
+        eligible_terminal_nodes, [](const auto& terminals) { return !terminals.empty(); });
+    if (!has_eligible_terminal) {
         return {};
     }
 
-    auto crossing_state = rebuild_snapshot();
-    if (!crossing_state) {
-        return crossing_state;
+    auto attachment_state = rebuild_snapshot();
+    if (!attachment_state) {
+        return attachment_state;
     }
     const float determinacy = parameter_for_plant_age(
         plant_type_.determinacy, plant_type_.mature_determinacy,
         plant_type_.flowering_age, plant_age_);
     const float apical_control = current_apical_control(plant_type_, plant_age_);
-    module_records_.reserve(module_records_.size() + snapshot_terminals_.size());
-    snapshot_attachment_events_.reserve(snapshot_terminals_.size());
-    orientation_spheres.reserve(orientation_spheres.size() + snapshot_terminals_.size());
+    std::size_t eligible_count = 0;
+    for (const auto& terminals : eligible_terminal_nodes) {
+        eligible_count += terminals.size();
+    }
+    module_records_.reserve(module_records_.size() + eligible_count);
+    snapshot_attachment_events_.reserve(snapshot_attachment_events_.size() + eligible_count);
+    orientation_spheres.reserve(orientation_spheres.size() + eligible_count);
 
-    for (const std::size_t parent_index : crossed_parent_indices) {
+    for (std::size_t parent_index = 0; parent_index < eligible_terminal_nodes.size(); ++parent_index) {
+        if (eligible_terminal_nodes[parent_index].empty()) {
+            continue;
+        }
         const std::size_t parent_id = module_records_[parent_index].id;
         const std::size_t parent_prototype_index = module_records_[parent_index].prototype_index;
         const RigidTransform parent_transform = module_records_[parent_index].transform;
@@ -312,11 +432,13 @@ Result<void> PlantSimulation::attach_crossed_modules(
         const auto& ordered_terminal_nodes =
             prototype_orientation_data_[parent_prototype_index].ordered_terminal_nodes;
         for (const std::size_t terminal_node : ordered_terminal_nodes) {
+            if (!std::ranges::contains(eligible_terminal_nodes[parent_index], terminal_node)) {
+                continue;
+            }
             const auto terminal = std::ranges::find_if(snapshot_terminals_, [&](const auto& value) {
                 return value.module_id == parent_id && value.terminal_node == terminal_node;
             });
-            if (terminal == snapshot_terminals_.end() || terminal->child_module_id ||
-                terminal->vigor <= kMinimumModuleVigor) {
+            if (terminal == snapshot_terminals_.end() || terminal->child_module_id) {
                 continue;
             }
 
@@ -325,6 +447,8 @@ Result<void> PlantSimulation::attach_crossed_modules(
                 parent_transform, terminal->position, terminal->tangent, *selected,
                 prototype_orientation_data_[selected_index].mature_sphere,
                 plant_type_, orientation_spheres);
+            module_records_[parent_index].terminal_reuse_phases[terminal_node] =
+                TerminalReusePhase::EligibleWhenVigorous;
             module_records_.push_back({
                 .id = child_id,
                 .prototype_index = selected_index,
@@ -335,6 +459,8 @@ Result<void> PlantSimulation::attach_crossed_modules(
                 .fully_grown_age = *selected_mature_age,
                 .developed_diameters = std::vector<float>(
                     selected->segments.size(), plant_type_.terminal_thickness * kCentimetersToMeters),
+                .terminal_reuse_phases = std::vector<TerminalReusePhase>(
+                    selected->nodes.size(), TerminalReusePhase::EligibleWhenVigorous),
                 .diagnostics_active = false,
             });
             snapshot_attachment_events_.push_back({
@@ -479,17 +605,17 @@ Result<void> PlantSimulation::rebuild_snapshot()
         }
     }
 
-    // Pass C: module-scale terminal vigor for mature modules. Paper: terminal light
-    // is the module's own direct exposure divided equally, q(n_i) = Q(u)/#n, and the
-    // module's vigor is distributed over that light. Its result gates attachment; it
-    // is module-scale v, distinct from the plant-scale v̄ computed above.
+    // Pass C: module-scale terminal vigor. Paper: terminal light is the module's
+    // own direct exposure divided equally, q(n_i) = Q(u)/#n, and the module's vigor
+    // is distributed over that light. Compute it before development for any module
+    // that may cross maturity this step, but expose terminals only after maturity.
+    // This v is distinct from the plant-scale v̄ computed above.
     std::vector<std::vector<float>> node_vigor(module_count);
     for (std::size_t module = 0; module < module_count; ++module) {
         const auto& record = module_records_[module];
         const auto& prototype = prepared_prototypes_[record.prototype_index];
         node_vigor[module].assign(prototype.nodes.size(), 0.0F);
-        if (!record.diagnostics_active ||
-            record.physiological_age + kEpsilon < record.fully_grown_age) {
+        if (!record.diagnostics_active) {
             continue;
         }
 
@@ -621,6 +747,7 @@ Result<void> PlantSimulation::rebuild_snapshot()
     snapshot_modules_ = std::move(next_modules);
     snapshot_segments_ = std::move(next_segments);
     snapshot_terminals_ = std::move(next_terminals);
+    snapshot_node_vigor_ = std::move(node_vigor);
     return {};
 }
 

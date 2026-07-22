@@ -214,12 +214,19 @@ struct AttachmentEvent {
     std::size_t prototype_id = 0;
 };
 
+struct SheddingEvent {
+    std::size_t module_id = 0;
+    std::optional<std::size_t> parent_module_id;
+    std::optional<std::size_t> parent_terminal_node;
+};
+
 struct PlantSnapshot {
     float plant_age = 0.0F;
     std::span<const PlantModuleSnapshot> modules;
     std::span<const PlantSegmentSnapshot> segments;
     std::span<const MatureTerminalSnapshot> mature_terminals;
     std::span<const AttachmentEvent> attachment_events;
+    std::span<const SheddingEvent> shedding_events;
 };
 
 class PlantSimulation {
@@ -239,6 +246,12 @@ private:
         std::vector<std::size_t> ordered_terminal_nodes;
     };
 
+    enum class TerminalReusePhase {
+        EligibleWhenVigorous,
+        AwaitingLowVigor,
+        AwaitingVigorRecovery,
+    };
+
     struct ModuleRecord {
         std::size_t id = 0;
         std::size_t prototype_index = 0;
@@ -248,13 +261,15 @@ private:
         float physiological_age = 0.0F;
         float fully_grown_age = 0.0F;
         std::vector<float> developed_diameters;
+        std::vector<TerminalReusePhase> terminal_reuse_phases;
         bool diagnostics_active = true;
     };
 
     PlantSimulation() = default;
 
-    [[nodiscard]] Result<void> attach_crossed_modules(
-        std::span<const std::size_t> crossed_parent_indices,
+    [[nodiscard]] std::vector<std::size_t> shed_below_threshold_subtrees();
+    [[nodiscard]] Result<void> attach_eligible_modules(
+        std::span<const std::vector<std::size_t>> eligible_terminal_nodes,
         std::span<const float> preintegration_vigor,
         std::vector<Sphere> orientation_spheres);
     [[nodiscard]] Result<void> rebuild_snapshot();
@@ -269,6 +284,8 @@ private:
     std::vector<PlantSegmentSnapshot> snapshot_segments_;
     std::vector<MatureTerminalSnapshot> snapshot_terminals_;
     std::vector<AttachmentEvent> snapshot_attachment_events_;
+    std::vector<SheddingEvent> snapshot_shedding_events_;
+    std::vector<std::vector<float>> snapshot_node_vigor_;
 };
 
 struct VigorSplit {

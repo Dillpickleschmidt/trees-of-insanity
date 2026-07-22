@@ -92,8 +92,11 @@ constexpr float kPrototypeLibraryGeometryScale = 2.0F;
     std::unreachable();
 }
 
-[[nodiscard]] float plant_vertical_midpoint(growth::PlantSnapshot snapshot)
+[[nodiscard]] std::optional<float> plant_vertical_midpoint(growth::PlantSnapshot snapshot)
 {
+    if (snapshot.segments.empty()) {
+        return std::nullopt;
+    }
     float minimum_z = snapshot.segments.front().parent_position.z;
     float maximum_z = minimum_z;
     for (const auto& segment : snapshot.segments) {
@@ -429,12 +432,22 @@ Result<ModulePreviewSnapshot> DesktopSession::module_preview_snapshot() const
 Result<PlantStateView> DesktopSession::plant_state() const
 {
     const auto snapshot = plant_simulation_.snapshot();
-    const auto& root = snapshot.modules.front();
+    std::optional<PlantRootStateView> root;
+    if (!snapshot.modules.empty()) {
+        const auto& module = snapshot.modules.front();
+        root = PlantRootStateView{
+            .physiological_age = module.physiological_age,
+            .fully_grown_age = module.fully_grown_age,
+            .direct_light_exposure = module.direct_light_exposure,
+            .accumulated_light = module.accumulated_light,
+            .vigor = module.vigor,
+            .growth_rate = module.growth_rate,
+        };
+    }
     const auto& diagnostics = project_.plant_workspace.diagnostics;
     return PlantStateView{
         .plant_age = snapshot.plant_age,
-        .root_physiological_age = root.physiological_age,
-        .root_fully_grown_age = root.fully_grown_age,
+        .root = root,
         .target_age = project_.plant_workspace.target_age,
         .step_size = project_.plant_workspace.step_size,
         .root_prototype_id = project_.plant_workspace.root_prototype_id,
@@ -444,10 +457,6 @@ Result<PlantStateView> DesktopSession::plant_state() const
         .module_accumulated_light_visible = diagnostics.module_accumulated_light_visible,
         .module_vigor_visible = diagnostics.module_vigor_visible,
         .mature_terminal_markers_visible = diagnostics.mature_terminal_markers_visible,
-        .direct_light_exposure = root.direct_light_exposure,
-        .accumulated_light = root.accumulated_light,
-        .vigor = root.vigor,
-        .growth_rate = root.growth_rate,
     };
 }
 
@@ -526,7 +535,9 @@ Result<PlantAdvanceResult> DesktopSession::advance_plant()
         return std::unexpected(from_growth_error(stepped.error()));
     }
 
-    plant_run_camera_target_z_ = plant_vertical_midpoint(plant_simulation_.snapshot());
+    if (const auto target_z = plant_vertical_midpoint(plant_simulation_.snapshot())) {
+        plant_run_camera_target_z_ = *target_z;
+    }
     return PlantAdvanceResult{
         .reached_target = plant_simulation_.snapshot().plant_age >= project_.plant_workspace.target_age,
     };
