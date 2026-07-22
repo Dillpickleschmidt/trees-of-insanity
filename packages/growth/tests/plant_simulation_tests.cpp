@@ -426,6 +426,10 @@ TEST_CASE("descendants attach in parent order with one cross-parent orientation 
     CHECK(module_by_id(second_generation, 3).parent_terminal_node == 1);
     CHECK(module_by_id(second_generation, 4).parent_module_id == 2);
     CHECK(module_by_id(second_generation, 4).parent_terminal_node == 1);
+    const auto parent_segments = module_segments(second_generation, module_by_id(second_generation, 1));
+    REQUIRE(parent_segments.size() == 1);
+    CHECK(parent_segments.front().main_continuation_segment ==
+          module_by_id(second_generation, 3).segments.offset);
     CHECK(module_by_id(second_generation, 3).physiological_age == Catch::Approx(0.0F));
     CHECK(module_by_id(second_generation, 4).physiological_age == Catch::Approx(0.0F));
     CHECK(module_by_id(second_generation, 3).vigor == Catch::Approx(0.0F));

@@ -234,8 +234,6 @@ public:
     [[nodiscard]] PlantSnapshot snapshot() const;
 
 private:
-    struct ConduitWorkset;
-
     struct PrototypeOrientationData {
         Sphere mature_sphere;
         std::vector<std::size_t> ordered_terminal_nodes;
@@ -259,7 +257,6 @@ private:
         std::span<const std::size_t> crossed_parent_indices,
         std::span<const float> preintegration_vigor,
         std::vector<Sphere> orientation_spheres);
-    [[nodiscard]] Result<void> rebuild_conduit(ConduitWorkset& workset);
     [[nodiscard]] Result<void> rebuild_snapshot();
 
     PlantTypeParameters plant_type_;
