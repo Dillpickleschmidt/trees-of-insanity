@@ -1,9 +1,10 @@
 #include "toi/growth/growth.hpp"
 
+#include "plant_conduit.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <functional>
-#include <limits>
 #include <numbers>
 #include <queue>
 #include <utility>
@@ -79,9 +80,6 @@ struct ForkVigorSplit {
 [[nodiscard]] EulerAngles euler_angles(const RigidTransform& transform);
 [[nodiscard]] RigidTransform transform_for_euler(EulerAngles angles, Vec3 translation);
 [[nodiscard]] Sphere sphere_for_points(std::span<const Vec3> points);
-[[nodiscard]] float segment_diameter_maturity(const BranchModulePrototype& prototype,
-                                              const BranchSegment& segment,
-                                              float module_physiological_age);
 [[nodiscard]] Result<ModuleGeometry> build_geometry(const BranchModulePrototype& prototype,
                                                     const PlantTypeParameters& plant_type,
                                                     const RigidTransform& transform,
@@ -93,26 +91,6 @@ struct ForkVigorSplit {
                                          std::span<const Sphere> existing_spheres);
 
 } // namespace
-
-struct PlantSimulation::ConduitWorkset {
-    struct Edge {
-        std::size_t module_index = 0;
-        std::size_t source_segment_id = 0;
-        std::size_t parent_node = 0;
-        std::size_t child_node = 0;
-    };
-
-    std::vector<std::size_t> module_node_offsets;
-    std::vector<std::size_t> module_edge_offsets;
-    std::vector<std::size_t> global_node_by_local_node;
-    std::vector<std::optional<std::size_t>> child_module_by_local_node;
-    std::vector<Edge> edges;
-    std::vector<std::size_t> child_edge_offsets;
-    std::vector<std::size_t> child_edges;
-    std::vector<std::size_t> preorder_edges;
-    std::vector<std::size_t> postorder_edges;
-    std::vector<float> current_diameters;
-};
 
 Vec3 transform_direction(const RigidTransform& transform, Vec3 direction)
 {
@@ -371,126 +349,25 @@ Result<void> PlantSimulation::attach_crossed_modules(
     return {};
 }
 
-Result<void> PlantSimulation::rebuild_conduit(ConduitWorkset& workset)
-{
-    const std::size_t module_count = module_records_.size();
-    workset = {};
-    workset.module_node_offsets.assign(module_count + 1, 0);
-    workset.module_edge_offsets.assign(module_count + 1, 0);
-    for (std::size_t module = 0; module < module_count; ++module) {
-        const auto& prototype = prepared_prototypes_[module_records_[module].prototype_index];
-        if (module_records_[module].developed_diameters.size() != prototype.segments.size()) {
-            return std::unexpected(invalid_prototype("module pipe state does not match its prototype"));
-        }
-        workset.module_node_offsets[module + 1] = workset.module_node_offsets[module] + prototype.nodes.size();
-        workset.module_edge_offsets[module + 1] = workset.module_edge_offsets[module] + prototype.segments.size();
-    }
-
-    const auto unassigned = std::numeric_limits<std::size_t>::max();
-    workset.global_node_by_local_node.assign(workset.module_node_offsets.back(), unassigned);
-    workset.child_module_by_local_node.resize(workset.module_node_offsets.back());
-    std::size_t node_count = 0;
-    for (std::size_t module = 0; module < module_count; ++module) {
-        const auto& record = module_records_[module];
-        const auto& prototype = prepared_prototypes_[record.prototype_index];
-        if (record.parent_module_index) {
-            if (*record.parent_module_index >= module || !record.parent_terminal_node) {
-                return std::unexpected(invalid_prototype("module attachments must follow parent-first order"));
-            }
-            const auto parent_local_node = workset.module_node_offsets[*record.parent_module_index] +
-                *record.parent_terminal_node;
-            workset.global_node_by_local_node[workset.module_node_offsets[module] + prototype.root_node] =
-                workset.global_node_by_local_node[parent_local_node];
-            workset.child_module_by_local_node[parent_local_node] = module;
-        }
-        for (std::size_t node = 0; node < prototype.nodes.size(); ++node) {
-            auto& global_node = workset.global_node_by_local_node[workset.module_node_offsets[module] + node];
-            if (global_node == unassigned) global_node = node_count++;
-        }
-    }
-
-    workset.edges.reserve(workset.module_edge_offsets.back());
-    std::vector<std::size_t> child_edge_counts(node_count, 0);
-    for (std::size_t module = 0; module < module_count; ++module) {
-        const auto& prototype = prepared_prototypes_[module_records_[module].prototype_index];
-        for (std::size_t source = 0; source < prototype.segments.size(); ++source) {
-            const auto& segment = prototype.segments[source];
-            const auto parent_node = workset.global_node_by_local_node[
-                workset.module_node_offsets[module] + segment.parent_node];
-            const auto child_node = workset.global_node_by_local_node[
-                workset.module_node_offsets[module] + segment.child_node];
-            workset.edges.push_back({
-                .module_index = module,
-                .source_segment_id = source,
-                .parent_node = parent_node,
-                .child_node = child_node,
-            });
-            ++child_edge_counts[parent_node];
-        }
-    }
-
-    workset.child_edge_offsets.assign(node_count + 1, 0);
-    for (std::size_t node = 0; node < node_count; ++node) {
-        workset.child_edge_offsets[node + 1] = workset.child_edge_offsets[node] + child_edge_counts[node];
-    }
-    workset.child_edges.resize(workset.edges.size());
-    auto child_edge_cursors = workset.child_edge_offsets;
-    for (std::size_t edge = 0; edge < workset.edges.size(); ++edge) {
-        workset.child_edges[child_edge_cursors[workset.edges[edge].parent_node]++] = edge;
-    }
-
-    workset.preorder_edges.reserve(workset.edges.size());
-    std::queue<std::size_t> nodes;
-    if (!module_records_.empty()) {
-        const auto& root_prototype = prepared_prototypes_[module_records_.front().prototype_index];
-        nodes.push(workset.global_node_by_local_node[root_prototype.root_node]);
-    }
-    while (!nodes.empty()) {
-        const auto node = nodes.front();
-        nodes.pop();
-        for (std::size_t index = workset.child_edge_offsets[node];
-             index < workset.child_edge_offsets[node + 1]; ++index) {
-            const auto edge = workset.child_edges[index];
-            workset.preorder_edges.push_back(edge);
-            nodes.push(workset.edges[edge].child_node);
-        }
-    }
-    if (workset.preorder_edges.size() != workset.edges.size()) {
-        return std::unexpected(invalid_prototype("plant conduit must be one rooted tree"));
-    }
-    workset.postorder_edges.assign(workset.preorder_edges.rbegin(), workset.preorder_edges.rend());
-
-    const float terminal_thickness = plant_type_.terminal_thickness * kCentimetersToMeters;
-    workset.current_diameters.assign(workset.edges.size(), terminal_thickness);
-    for (const auto edge_index : workset.postorder_edges) {
-        const auto& edge = workset.edges[edge_index];
-        const auto& record = module_records_[edge.module_index];
-        const auto& prototype = prepared_prototypes_[record.prototype_index];
-        const auto& segment = prototype.segments[edge.source_segment_id];
-        float child_area = 0.0F;
-        for (std::size_t index = workset.child_edge_offsets[edge.child_node];
-             index < workset.child_edge_offsets[edge.child_node + 1]; ++index) {
-            const float child_diameter = workset.current_diameters[workset.child_edges[index]];
-            child_area += child_diameter * child_diameter;
-        }
-        // Paper: d_b, supported segment diameter; φ, terminal_thickness.
-        const float support_diameter = child_area > 0.0F ? std::sqrt(child_area) : terminal_thickness;
-        const float maturity = segment_diameter_maturity(prototype, segment, record.physiological_age);
-        const float candidate = terminal_thickness + (support_diameter - terminal_thickness) * maturity;
-        auto& developed = module_records_[edge.module_index].developed_diameters[edge.source_segment_id];
-        developed = std::max(developed, candidate);
-        workset.current_diameters[edge_index] = developed;
-    }
-    return {};
-}
-
 Result<void> PlantSimulation::rebuild_snapshot()
 {
     const std::size_t module_count = module_records_.size();
-    ConduitWorkset conduit;
-    if (auto rebuilt = rebuild_conduit(conduit); !rebuilt) return rebuilt;
-    const auto& module_node_offsets = conduit.module_node_offsets;
-    const auto& child_module_by_node = conduit.child_module_by_local_node;
+    std::vector<detail::ConduitModuleView> conduit_modules;
+    conduit_modules.reserve(module_count);
+    for (auto& module : module_records_) {
+        conduit_modules.push_back({
+            .prototype = &prepared_prototypes_[module.prototype_index],
+            .parent_module_index = module.parent_module_index,
+            .parent_terminal_node = module.parent_terminal_node,
+            .physiological_age = module.physiological_age,
+            .developed_diameters = module.developed_diameters,
+        });
+    }
+    auto conduit = detail::PlantConduit::develop(
+        conduit_modules, plant_type_.terminal_thickness * kCentimetersToMeters);
+    if (!conduit) {
+        return std::unexpected(conduit.error());
+    }
 
     std::vector<ModuleGeometry> geometries;
     geometries.reserve(module_count);
@@ -564,7 +441,7 @@ Result<void> PlantSimulation::rebuild_snapshot()
         std::vector<std::size_t> lateral_children;
         float lateral_light = 0.0F;
         for (const auto terminal : prototype.terminal_nodes) {
-            const auto child = child_module_by_node[module_node_offsets[module] + terminal];
+            const auto child = conduit->attached_child(module, terminal);
             if (!child || !module_records_[*child].diagnostics_active) {
                 continue;
             }
@@ -682,21 +559,11 @@ Result<void> PlantSimulation::rebuild_snapshot()
         const auto& record = module_records_[module];
         const auto& prototype = prepared_prototypes_[record.prototype_index];
         const auto range_offset = next_segments.size();
+        const auto conduit_segments = conduit->module_segments(module);
         for (std::size_t source = 0; source < prototype.segments.size(); ++source) {
             const auto& definition = prototype.segments[source];
             const auto& current = geometries[module].current_segments[source];
-            const auto conduit_edge = conduit.module_edge_offsets[module] + source;
-            const float diameter = conduit.current_diameters[conduit_edge];
-            std::optional<std::size_t> continuation;
-            if (const auto main = prototype.main_child_segment_by_node[definition.child_node]) {
-                continuation = conduit.module_edge_offsets[module] + *main;
-            } else if (const auto child = child_module_by_node[
-                           module_node_offsets[module] + definition.child_node]) {
-                const auto& child_prototype =
-                    prepared_prototypes_[module_records_[*child].prototype_index];
-                continuation = conduit.module_edge_offsets[*child] +
-                    child_prototype.child_segments_by_node[child_prototype.root_node].front();
-            }
+            const auto& conduit_segment = conduit_segments[source];
             next_segments.push_back({
                 .module_id = record.id,
                 .source_segment_id = source,
@@ -704,9 +571,9 @@ Result<void> PlantSimulation::rebuild_snapshot()
                 .child_position = current ? current->child_position : geometries[module].current_nodes[definition.child_node],
                 .mature_parent_position = geometries[module].mature_segments[source].parent_position,
                 .mature_child_position = geometries[module].mature_segments[source].child_position,
-                .diameter = diameter,
+                .diameter = conduit_segment.diameter,
                 .state = current ? current->state : SegmentState::Growing,
-                .main_continuation_segment = continuation,
+                .main_continuation_segment = conduit_segment.main_continuation_segment,
             });
         }
 
@@ -714,7 +581,7 @@ Result<void> PlantSimulation::rebuild_snapshot()
             for (const auto terminal : prototype.terminal_nodes) {
                 const auto incoming = prototype.incoming_segment_by_node[terminal];
                 const auto& segment = next_segments[range_offset + *incoming];
-                const auto child = child_module_by_node[module_node_offsets[module] + terminal];
+                const auto child = conduit->attached_child(module, terminal);
                 next_terminals.push_back({
                     .module_id = record.id,
                     .terminal_node = terminal,
@@ -903,17 +770,6 @@ Result<ModuleGeometry> build_geometry(const BranchModulePrototype& prototype,
         .radius = local_sphere.radius,
     };
     return geometry;
-}
-
-float segment_diameter_maturity(const BranchModulePrototype& prototype,
-                                const BranchSegment& segment,
-                                float module_physiological_age)
-{
-    const float segment_age = std::max(
-        0.0F, module_physiological_age - prototype.nodes[segment.parent_node].physiological_age);
-    return segment.inverse_remaining_diameter_age <= 0.0F
-        ? 1.0F
-        : std::clamp(segment_age * segment.inverse_remaining_diameter_age, 0.0F, 1.0F);
 }
 
 OrientedChild orient_child(const RigidTransform& inherited, Vec3 translation,
