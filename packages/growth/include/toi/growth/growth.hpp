@@ -246,12 +246,6 @@ private:
         std::vector<std::size_t> ordered_terminal_nodes;
     };
 
-    enum class TerminalReusePhase {
-        EligibleWhenVigorous,
-        AwaitingLowVigor,
-        AwaitingVigorRecovery,
-    };
-
     struct ModuleRecord {
         std::size_t id = 0;
         std::size_t prototype_index = 0;
@@ -261,7 +255,7 @@ private:
         float physiological_age = 0.0F;
         float fully_grown_age = 0.0F;
         std::vector<float> developed_diameters;
-        std::vector<TerminalReusePhase> terminal_reuse_phases;
+        std::vector<bool> used_terminal_nodes;
         bool diagnostics_active = true;
     };
 

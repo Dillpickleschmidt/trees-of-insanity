@@ -186,8 +186,7 @@ Result<PlantSimulation> PlantSimulation::create(const BranchModulePrototypeLibra
         .fully_grown_age = *mature_age,
         .developed_diameters = std::vector<float>(
             root->segments.size(), plant_type.terminal_thickness * kCentimetersToMeters),
-        .terminal_reuse_phases = std::vector<TerminalReusePhase>(
-            root->nodes.size(), TerminalReusePhase::EligibleWhenVigorous),
+        .used_terminal_nodes = std::vector<bool>(root->nodes.size(), false),
         .diagnostics_active = true,
     });
     simulation.snapshot_attachment_events_.clear();
@@ -220,18 +219,6 @@ Result<void> PlantSimulation::step(float timestep)
         }
 
         const std::size_t old_module_count = next.module_records_.size();
-        std::vector<std::vector<bool>> occupied_terminal_nodes;
-        occupied_terminal_nodes.reserve(old_module_count);
-        for (const auto& module : next.module_records_) {
-            occupied_terminal_nodes.emplace_back(
-                next.prepared_prototypes_[module.prototype_index].nodes.size(), false);
-        }
-        for (const auto& module : next.module_records_) {
-            if (module.parent_module_index) {
-                occupied_terminal_nodes[*module.parent_module_index][*module.parent_terminal_node] = true;
-            }
-        }
-
         std::vector<std::vector<std::size_t>> pre_step_eligible_terminals(old_module_count);
         std::vector<bool> mature_at_step_start(old_module_count, false);
         std::vector<float> old_vigor;
@@ -241,22 +228,13 @@ Result<void> PlantSimulation::step(float timestep)
         old_growth_rate.reserve(old_module_count);
         old_collision_spheres.reserve(old_module_count);
         for (std::size_t module_index = 0; module_index < old_module_count; ++module_index) {
-            auto& module = next.module_records_[module_index];
+            const auto& module = next.module_records_[module_index];
             const auto& prototype = next.prepared_prototypes_[module.prototype_index];
             mature_at_step_start[module_index] =
                 module.physiological_age + kEpsilon >= module.fully_grown_age;
             for (const auto terminal_node : prototype.terminal_nodes) {
-                if (occupied_terminal_nodes[module_index][terminal_node]) {
-                    continue;
-                }
-                const float terminal_vigor =
-                    next.snapshot_node_vigor_[module_index][terminal_node];
-                auto& reuse_phase = module.terminal_reuse_phases[terminal_node];
-                if (reuse_phase == TerminalReusePhase::AwaitingLowVigor) {
-                    if (terminal_vigor <= kMinimumModuleVigor) {
-                        reuse_phase = TerminalReusePhase::AwaitingVigorRecovery;
-                    }
-                } else if (terminal_vigor > kMinimumModuleVigor) {
+                if (!module.used_terminal_nodes[terminal_node] &&
+                    next.snapshot_node_vigor_[module_index][terminal_node] > kMinimumModuleVigor) {
                     pre_step_eligible_terminals[module_index].push_back(terminal_node);
                 }
             }
@@ -350,11 +328,6 @@ std::vector<std::size_t> PlantSimulation::shed_below_threshold_subtrees()
         if (!removed[module_index]) {
             retained_old_indices.push_back(module_index);
         } else if (below_threshold && !ancestor_removed) {
-            if (module.parent_module_index) {
-                module_records_[*module.parent_module_index]
-                    .terminal_reuse_phases[*module.parent_terminal_node] =
-                    TerminalReusePhase::AwaitingLowVigor;
-            }
             snapshot_shedding_events_.push_back({
                 .module_id = module.id,
                 .parent_module_id = module.parent_module_index
@@ -447,8 +420,7 @@ Result<void> PlantSimulation::attach_eligible_modules(
                 parent_transform, terminal->position, terminal->tangent, *selected,
                 prototype_orientation_data_[selected_index].mature_sphere,
                 plant_type_, orientation_spheres);
-            module_records_[parent_index].terminal_reuse_phases[terminal_node] =
-                TerminalReusePhase::EligibleWhenVigorous;
+            module_records_[parent_index].used_terminal_nodes[terminal_node] = true;
             module_records_.push_back({
                 .id = child_id,
                 .prototype_index = selected_index,
@@ -459,8 +431,7 @@ Result<void> PlantSimulation::attach_eligible_modules(
                 .fully_grown_age = *selected_mature_age,
                 .developed_diameters = std::vector<float>(
                     selected->segments.size(), plant_type_.terminal_thickness * kCentimetersToMeters),
-                .terminal_reuse_phases = std::vector<TerminalReusePhase>(
-                    selected->nodes.size(), TerminalReusePhase::EligibleWhenVigorous),
+                .used_terminal_nodes = std::vector<bool>(selected->nodes.size(), false),
                 .diagnostics_active = false,
             });
             snapshot_attachment_events_.push_back({

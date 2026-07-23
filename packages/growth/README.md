@@ -1,6 +1,6 @@
 # Trees of Insanity Growth
 
-Standalone C++23 library for deterministic branch-module growth, paper-derived equations, and staged single-plant simulation. `PlantSimulation` implements arbitrary-depth repeated attachment, batched subtree shedding, recovery-gated terminal reuse, whole-plant conduit pipes, and current-state diagnostics.
+Standalone C++23 library for deterministic branch-module growth, paper-derived equations, and staged single-plant simulation. `PlantSimulation` implements arbitrary-depth repeated attachment over never-used terminals, batched subtree shedding, whole-plant conduit pipes, and current-state diagnostics.
 
 ```sh
 cmake -S . -B build -G Ninja
