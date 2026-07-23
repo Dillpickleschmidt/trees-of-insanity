@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by 0020
 ---
 
 # Gate terminal reuse on vigor recovery

@@ -593,7 +593,7 @@ TEST_CASE("below-threshold module sheds its descendant subtree before survivors 
     }));
 }
 
-TEST_CASE("mature unoccupied terminal is reconsidered after its parent's maturity-crossing step")
+TEST_CASE("mature never-used terminal is reconsidered after its parent's maturity-crossing step")
 {
     using namespace toi::growth;
     auto plant_type = make_plant_type();

@@ -11,7 +11,6 @@
 #include <fstream>
 #include <map>
 #include <nlohmann/json.hpp>
-#include <set>
 #include <string>
 #include <string_view>
 
@@ -57,7 +56,7 @@ TEST_CASE("bundled OBJ imports branch module prototypes")
     CHECK(prototype.segments.front().max_length == Catch::Approx(0.242014F));
 }
 
-TEST_CASE("vacated high-vigor terminal waits for recovery before reuse")
+TEST_CASE("a spent terminal does not reattach while still vigorous")
 {
     auto library = toi::import::load_branch_module_prototype_library_from_obj(prototype_path(), 2.0F);
     REQUIRE(library);
@@ -80,14 +79,14 @@ TEST_CASE("vacated high-vigor terminal waits for recovery before reuse")
     REQUIRE(shed_event->parent_module_id);
     REQUIRE(shed_event->parent_terminal_node);
     const auto shed_snapshot = simulation->snapshot();
-    const auto freed_terminal = std::ranges::find_if(
+    const auto spent_terminal = std::ranges::find_if(
         shed_snapshot.mature_terminals, [&](const auto& terminal) {
             return terminal.module_id == *shed_event->parent_module_id &&
                 terminal.terminal_node == *shed_event->parent_terminal_node;
         });
-    REQUIRE(freed_terminal != shed_snapshot.mature_terminals.end());
-    CHECK_FALSE(freed_terminal->child_module_id);
-    CHECK(freed_terminal->vigor > toi::growth::kMinimumModuleVigor);
+    REQUIRE(spent_terminal != shed_snapshot.mature_terminals.end());
+    CHECK_FALSE(spent_terminal->child_module_id);
+    CHECK(spent_terminal->vigor > toi::growth::kMinimumModuleVigor);
 
     REQUIRE(simulation->step(10.0F));
     CHECK(std::ranges::none_of(simulation->snapshot().attachment_events, [&](const auto& event) {
@@ -96,7 +95,7 @@ TEST_CASE("vacated high-vigor terminal waits for recovery before reuse")
     }));
 }
 
-TEST_CASE("terminal reuse after vigor recovery allocates a new stable id")
+TEST_CASE("a terminal attaches at most one module lifetime")
 {
     auto library = toi::import::load_branch_module_prototype_library_from_obj(prototype_path(), 2.0F);
     REQUIRE(library);
@@ -109,34 +108,17 @@ TEST_CASE("terminal reuse after vigor recovery allocates a new stable id")
     REQUIRE(simulation);
 
     std::map<std::pair<std::size_t, std::size_t>, std::size_t> attached_child_by_terminal;
-    std::set<std::size_t> shed_module_ids;
-    std::optional<std::size_t> removed_child_id;
-    std::optional<std::size_t> replacement_child_id;
-    for (int step = 0; step < 100 && !replacement_child_id; ++step) {
+    std::size_t shedding_event_count = 0;
+    for (int step = 0; step < 100; ++step) {
         REQUIRE(simulation->step(10.0F));
         const auto snapshot = simulation->snapshot();
-        for (const auto& event : snapshot.shedding_events) {
-            shed_module_ids.insert(event.module_id);
-        }
+        shedding_event_count += snapshot.shedding_events.size();
         for (const auto& event : snapshot.attachment_events) {
             const auto terminal = std::pair{event.parent_module_id, event.parent_terminal_node};
-            if (const auto previous = attached_child_by_terminal.find(terminal);
-                previous != attached_child_by_terminal.end()) {
-                removed_child_id = previous->second;
-                replacement_child_id = event.child_module_id;
-                break;
-            }
-            attached_child_by_terminal.emplace(terminal, event.child_module_id);
+            CHECK(attached_child_by_terminal.emplace(terminal, event.child_module_id).second);
         }
     }
-
-    REQUIRE(removed_child_id);
-    REQUIRE(replacement_child_id);
-    CHECK(shed_module_ids.contains(*removed_child_id));
-    CHECK(*replacement_child_id > *removed_child_id);
-    CHECK(std::ranges::none_of(simulation->snapshot().modules, [&](const auto& module) {
-        return module.id == *removed_child_id;
-    }));
+    CHECK(shedding_event_count > 0);
 }
 
 TEST_CASE("fresh project contains complete typed workspace state")

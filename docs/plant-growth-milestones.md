@@ -42,12 +42,12 @@ Verify the first attached generation before long runs.
 
 ## 5. Repeated growth and shedding
 
-- Allow descendants to mature and every mature unoccupied terminal to retry attachment.
+- Allow descendants to mature and every mature never-used terminal to retry attachment.
 - Shed below-threshold modules and descendant subtrees before growth.
-- Reuse terminals freed by shedding only after their vigor is observed low while empty and later recovers.
-- Keep provisional `v̄_min = 0.02` until full-plant calibration.
+- Leave terminals spent after their first attached module; study reattachment separately.
+- Keep provisional `v̄_min = 0.02`; the finite-horizon sweep did not identify a preferable global increase, so revisit it with senescence acceptance targets.
 
-Verified deterministic runs, stable non-reused IDs, retained survivor pipes, light/vigor conservation, empty root death, and absence of stateless attach/shed oscillation across bundled plant types.
+Verified deterministic runs, stable non-reused IDs, retained survivor pipes, light/vigor conservation, empty root death, and single-use terminals across bundled plant types.
 
 ## 6. Senescence
 

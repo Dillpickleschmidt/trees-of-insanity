@@ -9,15 +9,15 @@ This package implements renderer-independent branch-module development, paper eq
 - **Module physiological age**: developmental state `a_u`, not calendar time; it advances from vigor-dependent growth rate through Eq. 6.
 - **Growth snapshot**: visible state of one module at a physiological age.
 - **Plant snapshot**: immutable lightweight view of current plant modules, geometry, and diagnostics, valid until the next plant step or reset.
-- **Mature module**: module whose physiological age has reached its fully grown age. Every unoccupied terminal is reconsidered for attachment each plant step; a newly mature module is first considered in its maturity-crossing step.
+- **Mature module**: module whose physiological age has reached its fully grown age. Every never-used terminal is reconsidered for attachment each plant step; a newly mature module is first considered in its maturity-crossing step.
 - **Module ID**: monotonically increasing plant-local integer assigned at attachment, stable for the module's lifetime and never reused after shedding. It is machine identity, not label content.
 - **Plant type**: complete Table 4 parameter set; never call it a species in library code.
 - **Vigor**: one module's growth potential `v̄(u)`.
 - **Maximum module vigor**: shared per-module scale `v̄_max = 1`; it is distinct from a plant type's maximum root vigor. It normalizes the Eq. 5 growth rate and morphospace `D'` only, so a module's vigor may exceed it.
 - **Module-scale terminal vigor**: per-terminal vigor `v` inside a mature module, distributed over that module's own direct exposure divided equally across its terminals. It gates attachment and is distinct from plant-scale `v̄(u)`.
-- **Minimum module vigor**: provisional shared cutoff `v̄_min = 0.02` used by growth, attachment, and shedding until whole-plant calibration is possible.
+- **Minimum module vigor**: provisional shared cutoff `v̄_min = 0.02` used by growth, attachment, and shedding. A finite-horizon whole-library sweep retained it provisionally; revisit with senescence and explicit acceptance targets.
 - **Shedding**: removal of a below-minimum-vigor module and its attached descendant subtree before surviving modules grow or attach children in that plant step.
-- **Terminal vigor recovery**: a terminal vacated by shedding must be observed at or below `v̄_min` while empty, then later rise strictly above it before reuse. Never-occupied terminals attach whenever mature, unoccupied, and vigorous.
+- **Used terminal**: terminal that has attached a module at any time. Each terminal is used at most once; shedding its child subtree exposes the terminal geometrically but does not make it available for another attachment.
 - **Root vigor**: the root module's vigor, equal to its accumulated light capped by the plant type's maximum root vigor. It is the whole plant's vigor flux, divided without loss among descendants.
 - **Maximum root vigor**: plant type's Table 4 cap `v̄_rootmax` on the root vigor budget.
 - **Direct light exposure**: one module's available light/space estimate `Q(u)`, derived from raw bounding-sphere intersections with every other module except itself.
